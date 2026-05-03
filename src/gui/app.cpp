@@ -1,24 +1,16 @@
-#include <cmath>
 #include <QAction>
 #include <QApplication>
-#include <QComboBox>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QCompleter>
 #include <QDialog>
 #include <QDialogButtonBox>
-#include <QLabel>
-#include <QScrollArea>
-#include <QPushButton>
-#include <QRegularExpression>
-#include <QShortcut>
-#include <QStandardPaths>
-#include <QToolBar>
+#include <QDir>
 #include <QDrag>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QEvent>
-#include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -51,12 +43,16 @@
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QProcess>
+#include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSet>
 #include <QSettings>
+#include <QShortcut>
 #include <QSplitter>
 #include <QStandardItemModel>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QStringListModel>
 #include <QStyleOptionGraphicsItem>
@@ -64,10 +60,12 @@
 #include <QTextCharFormat>
 #include <QTextDocument>
 #include <QTimer>
-#include <QTreeView>
+#include <QToolBar>
 #include <QToolTip>
+#include <QTreeView>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+#include <cmath>
 
 #include "hdl-compose/src/gui/bridge.cxxqt.h"
 
@@ -83,7 +81,7 @@ constexpr int kClickThresholdPx = 5;
 constexpr double kZoomMin = 0.2;
 constexpr double kZoomMax = 5.0;
 constexpr double kZoomStep = 1.15;
-constexpr int kTopPortMargin = 800;      // x offset of top-level connectors from origin
+constexpr int kTopPortMargin = 800; // x offset of top-level connectors from origin
 constexpr int kTopPortSpacing = 44;
 
 void apply_material_dark_theme(QApplication &app) {
@@ -118,8 +116,7 @@ void update_window_title(QMainWindow *window, AppState *state) {
         window->setWindowTitle(QStringLiteral("HDL Compose"));
     } else {
         QString suffix = state->getDirty() ? QStringLiteral(" *") : QString();
-        window->setWindowTitle(
-            QStringLiteral("HDL Compose — %1%2").arg(project, suffix));
+        window->setWindowTitle(QStringLiteral("HDL Compose — %1%2").arg(project, suffix));
     }
 }
 
@@ -169,9 +166,8 @@ class CanvasLayer;
 enum class PinSide { Left, Right };
 
 class PortPinItem : public QGraphicsItem {
-public:
-    PortPinItem(const QString &name, int direction, int width, PinSide side,
-                InstanceItem *parent);
+  public:
+    PortPinItem(const QString &name, int direction, int width, PinSide side, InstanceItem *parent);
     ~PortPinItem() override;
 
     void setSlot(int slot_index) {
@@ -223,19 +219,18 @@ public:
         return p;
     }
 
-    void paint(QPainter *painter, const QStyleOptionGraphicsItem *,
-               QWidget *) override;
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override;
 
-protected:
+  protected:
     void mousePressEvent(QGraphicsSceneMouseEvent *event) override;
     void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override;
     void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override;
     void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override;
 
     QString m_name;
-    QString m_key;       // "<inst>.<port>"
-    int m_direction;     // 0 in, 1 out, 2 inout
-    int m_width;         // 0 scalar; N vector
+    QString m_key;   // "<inst>.<port>"
+    int m_direction; // 0 in, 1 out, 2 inout
+    int m_width;     // 0 scalar; N vector
     PinSide m_side;
     InstanceItem *m_parent;
     int m_slot = 0;
@@ -251,11 +246,9 @@ protected:
 //   - header:    arrow + name above the member pin list; click collapses.
 // Member pin list is rendered as separate PortPinItems by the parent.
 class BundlePinItem : public PortPinItem {
-public:
-    BundlePinItem(const QString &bundle_name, PinSide side, bool header,
-                  int member_count, InstanceItem *parent)
-        : PortPinItem(bundle_name, -1, 0, side, parent), m_header(header),
-          m_member_count(member_count) {
+  public:
+    BundlePinItem(const QString &bundle_name, PinSide side, bool header, int member_count, InstanceItem *parent)
+        : PortPinItem(bundle_name, -1, 0, side, parent), m_header(header), m_member_count(member_count) {
         setAcceptedMouseButtons(Qt::LeftButton | Qt::RightButton);
     }
 
@@ -265,13 +258,12 @@ public:
         return QRectF(x, m_slot * kPinSlotHeight, w, kPinSlotHeight);
     }
 
-    void paint(QPainter *painter, const QStyleOptionGraphicsItem *,
-               QWidget *) override;
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override;
 
-protected:
+  protected:
     void mousePressEvent(QGraphicsSceneMouseEvent *event) override;
 
-private:
+  private:
     bool m_header;
     int m_member_count;
 };
@@ -279,9 +271,8 @@ private:
 // --- InstanceItem -----------------------------------------------------------
 
 class InstanceItem : public QGraphicsRectItem {
-public:
-    InstanceItem(AppState *state, const QString &name, const QString &module,
-                 QGraphicsItem *parent = nullptr)
+  public:
+    InstanceItem(AppState *state, const QString &name, const QString &module, QGraphicsItem *parent = nullptr)
         : QGraphicsRectItem(0, 0, kInstanceWidth, kInstanceHeaderHeight + kMinInstanceBodyHeight, parent),
           m_state(state), m_name(name), m_module(module) {
         setFlags(QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemIsSelectable |
@@ -323,9 +314,7 @@ public:
         relayoutPins();
     }
 
-    bool bundleExpanded(const QString &bundle) const {
-        return m_expanded_bundles.contains(bundle);
-    }
+    bool bundleExpanded(const QString &bundle) const { return m_expanded_bundles.contains(bundle); }
 
     void relayoutPins() {
         for (auto *pin : m_pins) {
@@ -339,14 +328,13 @@ public:
 
     void layoutPins();
 
-    void paint(QPainter *painter, const QStyleOptionGraphicsItem *option,
-               QWidget *) override {
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) override {
         QRectF r = rect();
         QPen pen;
         int idx = find_instance_index(m_state, m_name);
         bool dirty = (idx >= 0) && m_state->instance_is_dirty(idx);
-        bool selected = (m_state->selected_instance() == m_name) ||
-                        (option && (option->state & QStyle::State_Selected));
+        bool selected =
+            (m_state->selected_instance() == m_name) || (option && (option->state & QStyle::State_Selected));
 
         if (dirty) {
             pen.setColor(QColor(220, 60, 60));
@@ -367,22 +355,19 @@ public:
         name_font.setPointSizeF(name_font.pointSizeF() + 1.0);
         painter->setFont(name_font);
         painter->setPen(QColor(235, 235, 235));
-        painter->drawText(
-            QRectF(r.left() + 10, r.top() + 8, r.width() - 20, 20),
-            Qt::AlignLeft | Qt::AlignVCenter, m_name);
+        painter->drawText(QRectF(r.left() + 10, r.top() + 8, r.width() - 20, 20), Qt::AlignLeft | Qt::AlignVCenter,
+                          m_name);
 
         QFont mod_font = painter->font();
         mod_font.setBold(false);
         mod_font.setPointSizeF(mod_font.pointSizeF() - 1.5);
         painter->setFont(mod_font);
         painter->setPen(QColor(170, 170, 170));
-        painter->drawText(
-            QRectF(r.left() + 10, r.top() + 30, r.width() - 20, 18),
-            Qt::AlignLeft | Qt::AlignVCenter,
-            QStringLiteral(": %1").arg(m_module));
+        painter->drawText(QRectF(r.left() + 10, r.top() + 30, r.width() - 20, 18), Qt::AlignLeft | Qt::AlignVCenter,
+                          QStringLiteral(": %1").arg(m_module));
     }
 
-protected:
+  protected:
     void mousePressEvent(QGraphicsSceneMouseEvent *event) override {
         if (event->button() == Qt::LeftButton) {
             m_pressScenePos = event->scenePos();
@@ -417,7 +402,7 @@ protected:
 
     QVariant itemChange(GraphicsItemChange change, const QVariant &value) override;
 
-private:
+  private:
     AppState *m_state;
     QString m_name;
     QString m_module;
@@ -432,10 +417,8 @@ private:
 
 // --- PortPinItem / BundlePinItem impls --------------------------------------
 
-PortPinItem::PortPinItem(const QString &name, int direction, int width,
-                         PinSide side, InstanceItem *parent)
-    : QGraphicsItem(parent), m_name(name), m_direction(direction),
-      m_width(width), m_side(side), m_parent(parent) {
+PortPinItem::PortPinItem(const QString &name, int direction, int width, PinSide side, InstanceItem *parent)
+    : QGraphicsItem(parent), m_name(name), m_direction(direction), m_width(width), m_side(side), m_parent(parent) {
     setAcceptedMouseButtons(Qt::LeftButton);
 }
 
@@ -446,8 +429,7 @@ static QString format_width(int w) {
     return QStringLiteral("[%1:0]").arg(w - 1);
 }
 
-void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *,
-                        QWidget *) {
+void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
     // Tip point at slot center, on the side edge.
     qreal y = m_slot * kPinSlotHeight + kPinSlotHeight / 2.0;
     qreal tip_x = (m_side == PinSide::Left) ? 0 : kInstanceWidth;
@@ -479,8 +461,8 @@ void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *,
         // Diamond
         QPolygonF diamond;
         qreal half = kPinShapeSize / 2.0;
-        diamond << QPointF(tip_x - half, y) << QPointF(tip_x, y - half)
-                << QPointF(tip_x + half, y) << QPointF(tip_x, y + half);
+        diamond << QPointF(tip_x - half, y) << QPointF(tip_x, y - half) << QPointF(tip_x + half, y)
+                << QPointF(tip_x, y + half);
         painter->drawPolygon(diamond);
     } else {
         // Triangle always points right (signal flows L→R). Tip is to the
@@ -489,13 +471,11 @@ void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *,
         QPolygonF tri;
         if (m_side == PinSide::Left) {
             // Input on left edge: tip at module edge (tip_x), base outside-left.
-            tri << QPointF(tip_x - kPinShapeSize, y - kPinShapeSize / 2.0)
-                << QPointF(tip_x, y)
+            tri << QPointF(tip_x - kPinShapeSize, y - kPinShapeSize / 2.0) << QPointF(tip_x, y)
                 << QPointF(tip_x - kPinShapeSize, y + kPinShapeSize / 2.0);
         } else {
             // Output on right edge: tip extends past module edge, base at edge.
-            tri << QPointF(tip_x, y - kPinShapeSize / 2.0)
-                << QPointF(tip_x + kPinShapeSize, y)
+            tri << QPointF(tip_x, y - kPinShapeSize / 2.0) << QPointF(tip_x + kPinShapeSize, y)
                 << QPointF(tip_x, y + kPinShapeSize / 2.0);
         }
         painter->drawPolygon(tri);
@@ -516,19 +496,16 @@ void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *,
     painter->setPen(QColor(220, 220, 220));
     QRectF label_rect;
     if (m_side == PinSide::Left) {
-        label_rect = QRectF(tip_x + 4, y - kPinSlotHeight / 2.0,
-                            kInstanceWidth - 8, kPinSlotHeight);
+        label_rect = QRectF(tip_x + 4, y - kPinSlotHeight / 2.0, kInstanceWidth - 8, kPinSlotHeight);
         painter->drawText(label_rect, Qt::AlignLeft | Qt::AlignVCenter, label);
     } else {
-        label_rect = QRectF(tip_x - kInstanceWidth + 4, y - kPinSlotHeight / 2.0,
-                            kInstanceWidth - 8, kPinSlotHeight);
+        label_rect = QRectF(tip_x - kInstanceWidth + 4, y - kPinSlotHeight / 2.0, kInstanceWidth - 8, kPinSlotHeight);
         painter->drawText(label_rect, Qt::AlignRight | Qt::AlignVCenter, label);
     }
     setToolTip(label);
 }
 
-void BundlePinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *,
-                          QWidget *) {
+void BundlePinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
     painter->setRenderHint(QPainter::Antialiasing);
     qreal y = m_slot * kPinSlotHeight + kPinSlotHeight / 2.0;
     qreal tip_x = (m_side == PinSide::Left) ? 0 : kInstanceWidth;
@@ -560,16 +537,14 @@ void BundlePinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *,
     f.setBold(true);
     f.setPointSizeF(f.pointSizeF() - 1.0);
     painter->setFont(f);
-    painter->setPen(QColor(m_header ? 180 : 235, m_header ? 200 : 235,
-                           m_header ? 220 : 235));
+    painter->setPen(QColor(m_header ? 180 : 235, m_header ? 200 : 235, m_header ? 220 : 235));
     QRectF label_rect;
     if (m_side == PinSide::Left) {
-        label_rect = QRectF(tip_x + half + 4, y - kPinSlotHeight / 2.0,
-                            kInstanceWidth - half - 8, kPinSlotHeight);
+        label_rect = QRectF(tip_x + half + 4, y - kPinSlotHeight / 2.0, kInstanceWidth - half - 8, kPinSlotHeight);
         painter->drawText(label_rect, Qt::AlignLeft | Qt::AlignVCenter, label);
     } else {
-        label_rect = QRectF(tip_x - kInstanceWidth + 4, y - kPinSlotHeight / 2.0,
-                            kInstanceWidth - half - 8, kPinSlotHeight);
+        label_rect =
+            QRectF(tip_x - kInstanceWidth + 4, y - kPinSlotHeight / 2.0, kInstanceWidth - half - 8, kPinSlotHeight);
         painter->drawText(label_rect, Qt::AlignRight | Qt::AlignVCenter, label);
     }
 }
@@ -609,8 +584,7 @@ void InstanceItem::layoutPins() {
             QString bname = m_state->manual_bundle_name(idx, b);
             int pc = m_state->manual_bundle_port_count(idx, b);
             for (int pp = 0; pp < pc; ++pp) {
-                manual_bundle_of.insert(
-                    m_state->manual_bundle_port_name(idx, b, pp), bname);
+                manual_bundle_of.insert(m_state->manual_bundle_port_name(idx, b, pp), bname);
             }
         }
     }
@@ -619,19 +593,13 @@ void InstanceItem::layoutPins() {
     entries.reserve(port_count);
     for (int p = 0; p < port_count; ++p) {
         QString port_name = m_state->instance_port_name(idx, p);
-        QString bundle = manual_bundle_of.value(
-            port_name, m_state->instance_port_bundle(idx, p));
-        entries.push_back({p,
-                           port_name,
-                           m_state->instance_port_direction(idx, p),
-                           m_state->instance_port_width(idx, p),
-                           bundle});
+        QString bundle = manual_bundle_of.value(port_name, m_state->instance_port_bundle(idx, p));
+        entries.push_back(
+            {p, port_name, m_state->instance_port_direction(idx, p), m_state->instance_port_width(idx, p), bundle});
     }
 
     // Direction → side. InOut → Left (convention).
-    auto side_for = [](int dir) {
-        return (dir == 1) ? PinSide::Right : PinSide::Left;
-    };
+    auto side_for = [](int dir) { return (dir == 1) ? PinSide::Right : PinSide::Left; };
 
     // QMap keeps bundles sorted by name for stable layout.
     QMap<QString, std::vector<int>> left_bundles;
@@ -662,12 +630,9 @@ void InstanceItem::layoutPins() {
         m_port_anchor.insert(e.name, pin);
         slot++;
     };
-    auto add_bundle_group = [&](const QString &bname,
-                                 const std::vector<int> &members,
-                                 PinSide side, int &slot) {
+    auto add_bundle_group = [&](const QString &bname, const std::vector<int> &members, PinSide side, int &slot) {
         bool expanded = bundleExpanded(bname);
-        auto *header = new BundlePinItem(
-            bname, side, expanded, static_cast<int>(members.size()), this);
+        auto *header = new BundlePinItem(bname, side, expanded, static_cast<int>(members.size()), this);
         header->setSlot(slot);
         header->setPos(0, kInstanceHeaderHeight);
         m_pins.push_back(header);
@@ -685,11 +650,13 @@ void InstanceItem::layoutPins() {
         }
     };
 
-    for (int p : left_ports) add_port_pin(p, PinSide::Left, left_slot);
+    for (int p : left_ports)
+        add_port_pin(p, PinSide::Left, left_slot);
     for (auto it = left_bundles.constBegin(); it != left_bundles.constEnd(); ++it) {
         add_bundle_group(it.key(), it.value(), PinSide::Left, left_slot);
     }
-    for (int p : right_ports) add_port_pin(p, PinSide::Right, right_slot);
+    for (int p : right_ports)
+        add_port_pin(p, PinSide::Right, right_slot);
     for (auto it = right_bundles.constBegin(); it != right_bundles.constEnd(); ++it) {
         add_bundle_group(it.key(), it.value(), PinSide::Right, right_slot);
     }
@@ -705,9 +672,8 @@ void InstanceItem::layoutPins() {
 class WireItem;
 
 class WireTool {
-public:
-    WireTool(AppState *state, QGraphicsScene *scene)
-        : m_state(state), m_scene(scene) {}
+  public:
+    WireTool(AppState *state, QGraphicsScene *scene) : m_state(state), m_scene(scene) {}
 
     // Press on a pin: either commits (if click-click mid-flight) or arms+starts drag.
     void onPinPressed(PortPinItem *pin, const QPointF &scene_pos);
@@ -718,11 +684,12 @@ public:
 
     void cancel();
     void notifyPinDestroyed(PortPinItem *pin) {
-        if (m_armed == pin) m_armed = nullptr;
+        if (m_armed == pin)
+            m_armed = nullptr;
     }
     PortPinItem *armed() const { return m_armed; }
 
-private:
+  private:
     // Compatibility check. Returns empty string if compatible, else reason.
     QString compatibilityError(PortPinItem *src, PortPinItem *dst) const;
     // Attempt to commit src→dst; flash-red if incompatible. Returns true on commit.
@@ -744,7 +711,7 @@ private:
 };
 
 class WireItem : public QGraphicsPathItem {
-public:
+  public:
     WireItem(const QString &source_key, const QString &target_key)
         : m_source_key(source_key), m_target_key(target_key) {
         setFlag(QGraphicsItem::ItemIsSelectable, true);
@@ -772,10 +739,8 @@ public:
     // instance edge. The caller passes each endpoint's owning instance bounds
     // (empty rect = top-port) plus any *other* instance bounds in the scene
     // so detour paths clear the instance bodies they would otherwise cross.
-    void routeBetween(const QPointF &src, bool src_on_right,
-                      const QRectF &src_bounds, const QPointF &dst,
-                      bool dst_on_right, const QRectF &dst_bounds,
-                      const QList<QRectF> &obstacles = {}) {
+    void routeBetween(const QPointF &src, bool src_on_right, const QRectF &src_bounds, const QPointF &dst,
+                      bool dst_on_right, const QRectF &dst_bounds, const QList<QRectF> &obstacles = {}) {
         constexpr qreal kStub = 20.0;
         constexpr qreal kDetourPad = 20.0;
         // Per-wire offsets, fanned out alternating above/below by route
@@ -795,13 +760,8 @@ public:
             jitter_x = step_count * kStepX;
         } else {
             const QString wire_key = m_source_key + QChar('|') + m_target_key;
-            jitter_y =
-                static_cast<qreal>(static_cast<int>(qHash(wire_key) % 11) - 5)
-                * 15.0;
-            jitter_x =
-                static_cast<qreal>(
-                    static_cast<int>(qHash(m_target_key + m_source_key) % 9) - 4)
-                * 12.0;
+            jitter_y = static_cast<qreal>(static_cast<int>(qHash(wire_key) % 11) - 5) * 15.0;
+            jitter_x = static_cast<qreal>(static_cast<int>(qHash(m_target_key + m_source_key) % 9) - 4) * 12.0;
         }
 
         // Same-side wiring (input↔input or output↔output on same side of
@@ -811,10 +771,8 @@ public:
             // Spread the outward stub length per-wire so stub x's don't stack.
             qreal src_stub_len = kStub + std::abs(jitter_x);
             qreal dst_stub_len = kStub + std::abs(jitter_x);
-            QPointF src_stub(
-                src.x() + (src_on_right ? src_stub_len : -src_stub_len), src.y());
-            QPointF dst_stub(
-                dst.x() + (dst_on_right ? dst_stub_len : -dst_stub_len), dst.y());
+            QPointF src_stub(src.x() + (src_on_right ? src_stub_len : -src_stub_len), src.y());
+            QPointF dst_stub(dst.x() + (dst_on_right ? dst_stub_len : -dst_stub_len), dst.y());
             qreal top = std::min(src.y(), dst.y());
             qreal bot = std::max(src.y(), dst.y());
             if (!src_bounds.isNull()) {
@@ -831,20 +789,19 @@ public:
             qreal corridor_lo = std::min(src_stub.x(), dst_stub.x());
             qreal corridor_hi = std::max(src_stub.x(), dst_stub.x());
             for (const QRectF &o : obstacles) {
-                if (o.right() < corridor_lo || o.left() > corridor_hi) continue;
+                if (o.right() < corridor_lo || o.left() > corridor_hi)
+                    continue;
                 top = std::min(top, o.top());
                 bot = std::max(bot, o.bottom());
             }
             qreal via_top = top - kDetourPad;
             qreal via_bot = bot + kDetourPad;
             qreal pin_mid = (src.y() + dst.y()) / 2.0;
-            qreal detour_y =
-                std::abs(pin_mid - via_top) <= std::abs(pin_mid - via_bot)
-                    ? via_top - std::abs(jitter_y)
-                    : via_bot + std::abs(jitter_y);
+            qreal detour_y = std::abs(pin_mid - via_top) <= std::abs(pin_mid - via_bot) ? via_top - std::abs(jitter_y)
+                                                                                        : via_bot + std::abs(jitter_y);
             QPainterPath p;
             p.moveTo(src);
-            p.lineTo(src_stub);  // outward jut first
+            p.lineTo(src_stub); // outward jut first
             p.lineTo(src_stub.x(), detour_y);
             p.lineTo(dst_stub.x(), detour_y);
             p.lineTo(dst_stub.x(), dst.y());
@@ -860,8 +817,8 @@ public:
         p.moveTo(src);
         p.lineTo(src_stub);
 
-        bool forward = (src_on_right && dst_stub.x() >= src_stub.x()) ||
-                       (!src_on_right && dst_stub.x() <= src_stub.x());
+        bool forward =
+            (src_on_right && dst_stub.x() >= src_stub.x()) || (!src_on_right && dst_stub.x() <= src_stub.x());
 
         if (forward) {
             qreal mid_x = (src_stub.x() + dst_stub.x()) / 2.0 + jitter_x;
@@ -871,14 +828,13 @@ public:
             qreal y_lo = std::min(src_stub.y(), dst_stub.y());
             qreal y_hi = std::max(src_stub.y(), dst_stub.y());
             for (const QRectF &o : obstacles) {
-                if (o.bottom() < y_lo || o.top() > y_hi) continue;
+                if (o.bottom() < y_lo || o.top() > y_hi)
+                    continue;
                 if (o.left() <= mid_x && o.right() >= mid_x) {
                     // Push past the closer edge of the obstacle.
                     qreal push_left = o.left() - kDetourPad;
                     qreal push_right = o.right() + kDetourPad;
-                    mid_x = std::abs(push_left - mid_x) < std::abs(push_right - mid_x)
-                                ? push_left
-                                : push_right;
+                    mid_x = std::abs(push_left - mid_x) < std::abs(push_right - mid_x) ? push_left : push_right;
                 }
             }
             p.lineTo(mid_x, src_stub.y());
@@ -900,7 +856,8 @@ public:
             qreal corridor_lo = std::min(src_stub.x(), dst_stub.x()) - kDetourPad;
             qreal corridor_hi = std::max(src_stub.x(), dst_stub.x()) + kDetourPad;
             for (const QRectF &o : obstacles) {
-                if (o.right() < corridor_lo || o.left() > corridor_hi) continue;
+                if (o.right() < corridor_lo || o.left() > corridor_hi)
+                    continue;
                 top = std::min(top, o.top());
                 bot = std::max(bot, o.bottom());
             }
@@ -908,10 +865,8 @@ public:
             qreal via_top = top - kDetourPad;
             qreal via_bot = bot + kDetourPad;
             qreal pin_mid = (src.y() + dst.y()) / 2.0;
-            qreal detour_y =
-                std::abs(pin_mid - via_top) <= std::abs(pin_mid - via_bot)
-                    ? via_top - std::abs(jitter_y)
-                    : via_bot + std::abs(jitter_y);
+            qreal detour_y = std::abs(pin_mid - via_top) <= std::abs(pin_mid - via_bot) ? via_top - std::abs(jitter_y)
+                                                                                        : via_bot + std::abs(jitter_y);
             p.lineTo(src_stub.x() + jitter_x, detour_y);
             p.lineTo(dst_stub.x() - jitter_x, detour_y);
             p.lineTo(dst_stub);
@@ -931,15 +886,12 @@ public:
     // Inflate the path bbox so the bus-width slash + label (drawn ~9 px
     // perpendicular to the segment) stays inside the repaint area. Without
     // this, dragging a wire leaves stale label artifacts on screen.
-    QRectF boundingRect() const override {
-        return QGraphicsPathItem::boundingRect().adjusted(-16, -16, 16, 16);
-    }
+    QRectF boundingRect() const override { return QGraphicsPathItem::boundingRect().adjusted(-16, -16, 16, 16); }
 
     void setAppState(AppState *s) { m_state = s; }
     void setWidth(int w) { m_width = w; }
 
-    void paint(QPainter *painter, const QStyleOptionGraphicsItem *option,
-               QWidget *widget) override {
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget) override {
         // Render selected state in a distinct high-contrast color.
         if (option->state & QStyle::State_Selected) {
             QPen sel_pen(QColor(66, 180, 244), 2.0);
@@ -953,9 +905,11 @@ public:
         // Bus annotation: short slash + width number on multi-bit wires.
         // VHDL/Verilog schematic convention — single line with `--/--` cap and
         // the bit count above. Skipped for scalar (width 1) and unknown (-1).
-        if (m_width <= 1) return;
+        if (m_width <= 1)
+            return;
         const QPainterPath p = path();
-        if (p.elementCount() < 2) return;
+        if (p.elementCount() < 2)
+            return;
         // Pick the longest segment so the annotation lands somewhere visible.
         qreal best_len = 0;
         QPointF a, b;
@@ -964,9 +918,14 @@ public:
             QPointF p1(p.elementAt(i).x, p.elementAt(i).y);
             qreal dx = p1.x() - p0.x(), dy = p1.y() - p0.y();
             qreal len = std::sqrt(dx * dx + dy * dy);
-            if (len > best_len) { best_len = len; a = p0; b = p1; }
+            if (len > best_len) {
+                best_len = len;
+                a = p0;
+                b = p1;
+            }
         }
-        if (best_len < 16.0) return;
+        if (best_len < 16.0)
+            return;
         QPointF mid((a.x() + b.x()) / 2.0, (a.y() + b.y()) / 2.0);
         // Slash perpendicular to the segment, centered on mid.
         QPointF dir(b.x() - a.x(), b.y() - a.y());
@@ -986,15 +945,14 @@ public:
         QFont f = painter->font();
         f.setPointSizeF(9.0);
         painter->setFont(f);
-        QPointF label_pt(mid.x() + perp.x() * 9.0 - 4.0,
-                         mid.y() + perp.y() * 9.0 + 4.0);
+        QPointF label_pt(mid.x() + perp.x() * 9.0 - 4.0, mid.y() + perp.y() * 9.0 + 4.0);
         painter->drawText(label_pt, QString::number(m_width));
     }
 
-protected:
+  protected:
     void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override;
 
-private:
+  private:
     QString m_source_key;
     QString m_target_key;
     AppState *m_state = nullptr;
@@ -1046,13 +1004,14 @@ void PortPinItem::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
 
 // Prompt the user to create or edit a manual bundle on `instance`. If
 // `preselected_port` is non-empty it starts checked. Returns true on success.
-static bool prompt_create_manual_bundle(QWidget *parent, AppState *state,
-                                        const QString &instance,
+static bool prompt_create_manual_bundle(QWidget *parent, AppState *state, const QString &instance,
                                         const QString &preselected_port) {
     int idx = find_instance_index(state, instance);
-    if (idx < 0) return false;
+    if (idx < 0)
+        return false;
     int n = state->instance_port_count(idx);
-    if (n == 0) return false;
+    if (n == 0)
+        return false;
 
     QDialog dlg(parent);
     dlg.setWindowTitle(QStringLiteral("Group into interface"));
@@ -1066,13 +1025,13 @@ static bool prompt_create_manual_bundle(QWidget *parent, AppState *state,
     for (int p = 0; p < n; ++p) {
         QString pname = state->instance_port_name(idx, p);
         auto *cb = new QCheckBox(pname, &dlg);
-        if (pname == preselected_port) cb->setChecked(true);
+        if (pname == preselected_port)
+            cb->setChecked(true);
         box_layout->addWidget(cb);
         checks.append(cb);
     }
 
-    auto *buttons =
-        new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
@@ -1092,50 +1051,53 @@ static bool prompt_create_manual_bundle(QWidget *parent, AppState *state,
     layout->addWidget(scroll);
     layout->addWidget(buttons);
 
-    if (dlg.exec() != QDialog::Accepted) return false;
+    if (dlg.exec() != QDialog::Accepted)
+        return false;
     QString name = name_edit->text().trimmed();
-    if (name.isEmpty()) return false;
+    if (name.isEmpty())
+        return false;
     QStringList picked;
     for (auto *cb : checks) {
-        if (cb->isChecked()) picked << cb->text();
+        if (cb->isChecked())
+            picked << cb->text();
     }
-    if (picked.size() < 2) return false;
+    if (picked.size() < 2)
+        return false;
     return state->create_manual_bundle(instance, name, picked.join(QChar(',')));
 }
 
 // Dialog: enter a driver expression + slice spec for a multi-bit port.
 // Returns true if a slice was applied.
-static bool prompt_connect_slice(QWidget *parent, AppState *state,
-                                 const QString &instance, const QString &port) {
+static bool prompt_connect_slice(QWidget *parent, AppState *state, const QString &instance, const QString &port) {
     QDialog dlg(parent);
     dlg.setWindowTitle(QStringLiteral("Connect slice"));
     auto *driver_edit = new QLineEdit(&dlg);
-    driver_edit->setPlaceholderText(
-        QStringLiteral("driver (e.g. u_counter.count, or clk for a top-port)"));
+    driver_edit->setPlaceholderText(QStringLiteral("driver (e.g. u_counter.count, or clk for a top-port)"));
     auto *slice_edit = new QLineEdit(&dlg);
     slice_edit->setPlaceholderText(QStringLiteral("slice (e.g. 0 or 7:4)"));
     auto *form = new QFormLayout;
     form->addRow(QStringLiteral("Driver:"), driver_edit);
     form->addRow(QStringLiteral("Slice:"), slice_edit);
-    auto *buttons =
-        new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     auto *layout = new QVBoxLayout(&dlg);
     layout->addLayout(form);
     layout->addWidget(buttons);
-    if (dlg.exec() != QDialog::Accepted) return false;
+    if (dlg.exec() != QDialog::Accepted)
+        return false;
 
     QString driver = driver_edit->text().trimmed();
     QString slice = slice_edit->text().trimmed();
     slice.remove(QChar('[')).remove(QChar(']'));
-    if (driver.isEmpty() || slice.isEmpty()) return false;
+    if (driver.isEmpty() || slice.isEmpty())
+        return false;
 
     // driver_inst / driver_port split on first '.'
     QString driver_inst, driver_port;
     int dot = driver.indexOf(QChar('.'));
     if (dot < 0) {
-        driver_inst = QString();  // top-port
+        driver_inst = QString(); // top-port
         driver_port = driver;
     } else {
         driver_inst = driver.left(dot);
@@ -1148,17 +1110,19 @@ static bool prompt_connect_slice(QWidget *parent, AppState *state,
     bool ok = false;
     if (colon < 0) {
         int v = slice.toInt(&ok);
-        if (!ok) return false;
+        if (!ok)
+            return false;
         high = v;
         low = v;
     } else {
         high = slice.left(colon).trimmed().toInt(&ok);
-        if (!ok) return false;
+        if (!ok)
+            return false;
         low = slice.mid(colon + 1).trimmed().toInt(&ok);
-        if (!ok) return false;
+        if (!ok)
+            return false;
     }
-    return state->set_port_map_entry_slice(
-        instance, port, driver_inst, driver_port, high, low);
+    return state->set_port_map_entry_slice(instance, port, driver_inst, driver_port, high, low);
 }
 
 void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
@@ -1194,14 +1158,13 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     if (chosen == promoteAct) {
         QString resolved = state->promote_port_to_top(inst, m_name);
         if (!resolved.isEmpty() && resolved != m_name) {
-            QToolTip::showText(
-                QCursor::pos(),
-                QStringLiteral("Promoted as '%1'").arg(resolved));
+            QToolTip::showText(QCursor::pos(), QStringLiteral("Promoted as '%1'").arg(resolved));
         }
     } else if (chosen == groupAct) {
         QWidget *parent_w = nullptr;
         if (auto *s = scene()) {
-            if (!s->views().isEmpty()) parent_w = s->views().first()->window();
+            if (!s->views().isEmpty())
+                parent_w = s->views().first()->window();
         }
         prompt_create_manual_bundle(parent_w, state, inst, m_name);
     } else if (chosen == ungroupAct) {
@@ -1211,7 +1174,8 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     } else if (chosen == sliceAct) {
         QWidget *parent_w = nullptr;
         if (auto *s = scene()) {
-            if (!s->views().isEmpty()) parent_w = s->views().first()->window();
+            if (!s->views().isEmpty())
+                parent_w = s->views().first()->window();
         }
         prompt_connect_slice(parent_w, state, inst, m_name);
     }
@@ -1223,7 +1187,7 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
 // Top-level port on the scene boundary. Inherits PortPinItem so it participates
 // in WireTool dragging/clicking exactly like an instance pin.
 class TopPortItem : public PortPinItem {
-public:
+  public:
     TopPortItem(const QString &name, int direction, int width, PinSide side)
         : PortPinItem(name, direction, width, side, /*parent*/ nullptr) {
         setKey(QStringLiteral("top:%1").arg(name));
@@ -1241,12 +1205,9 @@ public:
     }
 
     // Right-click on a top-port: no menu yet (rename alias can land later).
-    void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override {
-        event->accept();
-    }
+    void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override { event->accept(); }
 
-    void paint(QPainter *painter, const QStyleOptionGraphicsItem *,
-               QWidget *) override {
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override {
         painter->setRenderHint(QPainter::Antialiasing);
 
         // Armed-state halo around the chevron tip.
@@ -1256,8 +1217,7 @@ public:
             painter->drawEllipse(QPointF(0, 0), kPinShapeSize + 2, kPinShapeSize + 2);
         }
 
-        QColor c = (direction() == 0) ? QColor(140, 200, 140)
-                                      : QColor(200, 160, 110);
+        QColor c = (direction() == 0) ? QColor(140, 200, 140) : QColor(200, 160, 110);
         painter->setBrush(c);
         painter->setPen(QPen(QColor(30, 30, 30), 1));
         // Top-level chevrons always point right. Wire connects at (0,0) which
@@ -1267,20 +1227,18 @@ public:
         QPolygonF poly;
         if (side() == PinSide::Left) {
             // Input: tip at (0,0) (where wire starts), base to the left.
-            poly << QPointF(-kPinShapeSize, -kPinShapeSize / 2.0)
-                 << QPointF(0, 0)
+            poly << QPointF(-kPinShapeSize, -kPinShapeSize / 2.0) << QPointF(0, 0)
                  << QPointF(-kPinShapeSize, kPinShapeSize / 2.0);
         } else {
             // Output: base at (0,0) (where wire ends), tip extends right.
-            poly << QPointF(0, -kPinShapeSize / 2.0)
-                 << QPointF(kPinShapeSize, 0)
-                 << QPointF(0, kPinShapeSize / 2.0);
+            poly << QPointF(0, -kPinShapeSize / 2.0) << QPointF(kPinShapeSize, 0) << QPointF(0, kPinShapeSize / 2.0);
         }
         painter->drawPolygon(poly);
 
         QString label = portName();
         QString w = format_width(width());
-        if (!w.isEmpty()) label += w;
+        if (!w.isEmpty())
+            label += w;
         QFont f = painter->font();
         f.setBold(true);
         painter->setFont(f);
@@ -1289,12 +1247,10 @@ public:
         // so it never overlaps the wire that runs from the chevron into the
         // design.
         if (side() == PinSide::Left) {
-            painter->drawText(QRectF(-180 - kPinShapeSize - 6, -kPinSlotHeight / 2.0,
-                                     180, kPinSlotHeight),
+            painter->drawText(QRectF(-180 - kPinShapeSize - 6, -kPinSlotHeight / 2.0, 180, kPinSlotHeight),
                               Qt::AlignRight | Qt::AlignVCenter, label);
         } else {
-            painter->drawText(QRectF(kPinShapeSize + 6, -kPinSlotHeight / 2.0, 180,
-                                     kPinSlotHeight),
+            painter->drawText(QRectF(kPinShapeSize + 6, -kPinSlotHeight / 2.0, 180, kPinSlotHeight),
                               Qt::AlignLeft | Qt::AlignVCenter, label);
         }
     }
@@ -1303,11 +1259,9 @@ public:
         // Match the painter's rectangle (label extends 180px outward from the
         // chevron base, plus the chevron itself out to ±kPinShapeSize).
         if (side() == PinSide::Left) {
-            return QRectF(-180 - kPinShapeSize - 6, -kPinSlotHeight / 2.0,
-                          180 + kPinShapeSize + 6, kPinSlotHeight);
+            return QRectF(-180 - kPinShapeSize - 6, -kPinSlotHeight / 2.0, 180 + kPinShapeSize + 6, kPinSlotHeight);
         }
-        return QRectF(0, -kPinSlotHeight / 2.0,
-                      kPinShapeSize + 6 + 180, kPinSlotHeight);
+        return QRectF(0, -kPinSlotHeight / 2.0, kPinShapeSize + 6 + 180, kPinSlotHeight);
     }
 };
 
@@ -1323,16 +1277,17 @@ QString WireTool::compatibilityError(PortPinItem *src, PortPinItem *dst) const {
     // driver/load semantics (top-output is a load, top-input is a driver), so
     // any pair with a top-port involved passes through the direction check.
     if (!src_top && !dst_top && src->direction() == 1 && dst->direction() == 1) {
-        return QStringLiteral(
-            "output-to-output: only one driver per net allowed");
+        return QStringLiteral("output-to-output: only one driver per net allowed");
     }
     int sw = src->width();
     int dw = dst->width();
     // Width-1 vector ≡ scalar for connection purposes (single wire either
     // way). Normalize so std_logic ↔ std_logic_vector(0 downto 0) connects
     // cleanly; codegen handles the index when it emits the port_map.
-    if (sw == 1) sw = 0;
-    if (dw == 1) dw = 0;
+    if (sw == 1)
+        sw = 0;
+    if (dw == 1)
+        dw = 0;
     // Width semantics: 0 = scalar (or width-1 vec), N>1 = resolved vector,
     // -1 = unresolved-width vector (generic-sized). Two unresolved vectors
     // pass through (cannot prove mismatch without generic eval).
@@ -1394,8 +1349,7 @@ bool WireTool::tryCommit(PortPinItem *src, PortPinItem *dst) {
 
     // Top-port ↔ top-port: not modelled (net identity is a single top-port).
     if (src_top && dst_top) {
-        QToolTip::showText(QCursor::pos(),
-                           QStringLiteral("cannot wire two top-level ports"));
+        QToolTip::showText(QCursor::pos(), QStringLiteral("cannot wire two top-level ports"));
         return false;
     }
 
@@ -1407,10 +1361,11 @@ bool WireTool::tryCommit(PortPinItem *src, PortPinItem *dst) {
         PortPinItem *inst_pin = src_top ? dst : src;
         QString inst_key = inst_pin->key();
         int dot = inst_key.indexOf(QChar('.'));
-        if (dot < 0) return false;
+        if (dot < 0)
+            return false;
         QString inst = inst_key.left(dot);
         QString port = inst_key.mid(dot + 1);
-        QString top_name = top->key().mid(4);  // strip "top:"
+        QString top_name = top->key().mid(4); // strip "top:"
         m_state->set_port_map_entry(inst, port, top_name);
         return true;
     }
@@ -1424,13 +1379,12 @@ bool WireTool::tryCommit(PortPinItem *src, PortPinItem *dst) {
     PortPinItem *load = (driver == src) ? dst : src;
     QString load_key = load->key();
     int dot = load_key.indexOf(QChar('.'));
-    if (dot < 0) return false;
+    if (dot < 0)
+        return false;
     QString inst = load_key.left(dot);
     QString port = load_key.mid(dot + 1);
     QString dkey = driver->key();
-    QString driver_rhs = dkey.startsWith(QStringLiteral("top:"))
-                             ? dkey.mid(4)
-                             : dkey;
+    QString driver_rhs = dkey.startsWith(QStringLiteral("top:")) ? dkey.mid(4) : dkey;
     // std_logic_vector(0 downto 0) driving std_logic: VHDL needs an explicit
     // index on the vector side. Store as a Bit(0) slice so codegen emits
     // `<load> => <driver>(0)`.
@@ -1450,7 +1404,8 @@ bool WireTool::tryCommit(PortPinItem *src, PortPinItem *dst) {
 static bool parse_pin_key(PortPinItem *pin, QString *inst, QString *port) {
     QString k = pin->key();
     int dot = k.indexOf(QChar('.'));
-    if (dot < 0) return false;
+    if (dot < 0)
+        return false;
     *inst = k.left(dot);
     *port = k.mid(dot + 1);
     return true;
@@ -1458,8 +1413,10 @@ static bool parse_pin_key(PortPinItem *pin, QString *inst, QString *port) {
 
 bool WireTool::tryCommitMultiLoad(PortPinItem *a, PortPinItem *b) {
     QString a_inst, a_port, b_inst, b_port;
-    if (!parse_pin_key(a, &a_inst, &a_port)) return false;
-    if (!parse_pin_key(b, &b_inst, &b_port)) return false;
+    if (!parse_pin_key(a, &a_inst, &a_port))
+        return false;
+    if (!parse_pin_key(b, &b_inst, &b_port))
+        return false;
 
     QString a_rhs = m_state->port_map_entry(a_inst, a_port);
     QString b_rhs = m_state->port_map_entry(b_inst, b_port);
@@ -1492,7 +1449,8 @@ bool WireTool::tryCommitMultiLoad(PortPinItem *a, PortPinItem *b) {
 }
 
 void WireTool::onPinPressed(PortPinItem *pin, const QPointF &scene_pos) {
-    if (!pin) return;
+    if (!pin)
+        return;
     m_press_pos = scene_pos;
     if (m_armed && m_armed != pin) {
         // Click-click commit attempt — finish the pending wire, no new provisional.
@@ -1500,7 +1458,7 @@ void WireTool::onPinPressed(PortPinItem *pin, const QPointF &scene_pos) {
         if (m_sticky_after_commit) {
             m_sticky_after_commit = false;
             clearProvisional();
-            return;  // keep armed for net-building
+            return; // keep armed for net-building
         }
         cancel();
         return;
@@ -1517,7 +1475,8 @@ void WireTool::onPinPressed(PortPinItem *pin, const QPointF &scene_pos) {
 }
 
 void WireTool::onPinDragMove(const QPointF &scene_pos) {
-    if (!m_armed || !m_provisional) return;
+    if (!m_armed || !m_provisional)
+        return;
     QPainterPath p;
     p.moveTo(m_armed->tipScenePos());
     p.lineTo(scene_pos);
@@ -1525,7 +1484,8 @@ void WireTool::onPinDragMove(const QPointF &scene_pos) {
 }
 
 void WireTool::onPinReleased(const QPointF &scene_pos) {
-    if (!m_armed) return;
+    if (!m_armed)
+        return;
     // Check what's at the release point.
     PortPinItem *target = nullptr;
     for (QGraphicsItem *it : m_scene->items(scene_pos)) {
@@ -1550,7 +1510,7 @@ void WireTool::onPinReleased(const QPointF &scene_pos) {
     // No target pin. Short press with minimal movement = keep armed for click-click.
     if ((scene_pos - m_press_pos).manhattanLength() < kClickThresholdPx) {
         clearProvisional();
-        return;  // stay armed
+        return; // stay armed
     }
     // Long drag ended on empty space — cancel.
     cancel();
@@ -1566,11 +1526,10 @@ void WireItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     if (chosen == renameAct) {
         // Driver key is the net identity; ask for alias.
         bool ok = false;
-        QString current;  // fetched signal name not exposed; leave blank
-        QString text = QInputDialog::getText(
-            nullptr, QStringLiteral("Rename Wire"),
-            QStringLiteral("Alias for %1:").arg(m_source_key),
-            QLineEdit::Normal, current, &ok);
+        QString current; // fetched signal name not exposed; leave blank
+        QString text =
+            QInputDialog::getText(nullptr, QStringLiteral("Rename Wire"),
+                                  QStringLiteral("Alias for %1:").arg(m_source_key), QLineEdit::Normal, current, &ok);
         if (ok) {
             m_state->set_alias(m_source_key, text.trimmed());
         }
@@ -1581,7 +1540,7 @@ void WireItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
 // --- CanvasView --------------------------------------------------------------
 
 class CanvasView : public QGraphicsView {
-public:
+  public:
     CanvasView(QGraphicsScene *scene, AppState *state, QWidget *parent = nullptr)
         : QGraphicsView(scene, parent), m_state(state) {
         setRenderHint(QPainter::Antialiasing);
@@ -1597,11 +1556,13 @@ public:
 
     void setWireTool(WireTool *wt) { m_wire_tool = wt; }
 
-protected:
+  protected:
     void keyPressEvent(QKeyEvent *event) override {
         if (event->key() == Qt::Key_Escape) {
-            if (m_wire_tool) m_wire_tool->cancel();
-            if (scene()) scene()->clearSelection();
+            if (m_wire_tool)
+                m_wire_tool->cancel();
+            if (scene())
+                scene()->clearSelection();
             event->accept();
             return;
         }
@@ -1655,7 +1616,8 @@ protected:
             // so each gesture step zooms less. Avoids the old "every tick =
             // 15 % jump" sensitivity.
             double delta = event->angleDelta().y();
-            if (delta == 0) delta = event->pixelDelta().y() * 4.0;
+            if (delta == 0)
+                delta = event->pixelDelta().y() * 4.0;
             if (delta == 0) {
                 event->accept();
                 return;
@@ -1684,8 +1646,7 @@ protected:
         }
         // Detect empty-canvas left click BEFORE delegating to base class —
         // base may consume it for rubber-band drag start.
-        bool empty_click = event->button() == Qt::LeftButton
-                           && itemAt(event->pos()) == nullptr;
+        bool empty_click = event->button() == Qt::LeftButton && itemAt(event->pos()) == nullptr;
         QGraphicsView::mousePressEvent(event);
         if (empty_click) {
             // Deselect: hides mini editor and unhighlights any instance.
@@ -1728,8 +1689,7 @@ protected:
     }
 
     void dropEvent(QDropEvent *event) override {
-        QByteArray data = event->mimeData()->data(
-            QString::fromLatin1(kModuleMimeType));
+        QByteArray data = event->mimeData()->data(QString::fromLatin1(kModuleMimeType));
         if (data.isEmpty()) {
             return;
         }
@@ -1743,7 +1703,7 @@ protected:
         event->acceptProposedAction();
     }
 
-private:
+  private:
     AppState *m_state;
     QPoint m_panAnchor;
     bool m_panning = false;
@@ -1754,9 +1714,8 @@ private:
 // --- CanvasLayer: manages scene <-> AppState sync ----------------------------
 
 class CanvasLayer {
-public:
-    CanvasLayer(QGraphicsScene *scene, AppState *state)
-        : m_scene(scene), m_state(state), m_wire_tool(state, scene) {}
+  public:
+    CanvasLayer(QGraphicsScene *scene, AppState *state) : m_scene(scene), m_state(state), m_wire_tool(state, scene) {}
 
     WireTool *wireTool() { return &m_wire_tool; }
 
@@ -1802,8 +1761,10 @@ public:
         std::vector<int> inputs, outputs;
         for (int i = 0; i < n; ++i) {
             int d = m_state->top_port_direction(i);
-            if (d == 0) inputs.push_back(i);
-            else outputs.push_back(i);
+            if (d == 0)
+                inputs.push_back(i);
+            else
+                outputs.push_back(i);
         }
         int in_total = static_cast<int>(inputs.size()) * kTopPortSpacing;
         int out_total = static_cast<int>(outputs.size()) * kTopPortSpacing;
@@ -1811,8 +1772,7 @@ public:
         int out_y = -out_total / 2;
         for (int i : inputs) {
             QString nm = m_state->top_port_name(i);
-            auto *tp = new TopPortItem(nm, 0,
-                                       m_state->top_port_width(i), PinSide::Left);
+            auto *tp = new TopPortItem(nm, 0, m_state->top_port_width(i), PinSide::Left);
             tp->setPos(-kTopPortMargin, in_y);
             tp->setWireTool(&m_wire_tool);
             m_scene->addItem(tp);
@@ -1822,8 +1782,7 @@ public:
         }
         for (int i : outputs) {
             QString nm = m_state->top_port_name(i);
-            auto *tp = new TopPortItem(nm, 1,
-                                       m_state->top_port_width(i), PinSide::Right);
+            auto *tp = new TopPortItem(nm, 1, m_state->top_port_width(i), PinSide::Right);
             tp->setPos(kTopPortMargin, out_y);
             tp->setWireTool(&m_wire_tool);
             m_scene->addItem(tp);
@@ -1836,23 +1795,25 @@ public:
     // Resolve a wire endpoint key to a scene position, the side it exits, and
     // the scene bounds of its owning instance (null rect for top-ports).
     // Keys: "top:<name>"  or  "<inst>.<port>"
-    bool resolveKey(const QString &key, QPointF &out, bool &on_right,
-                    QRectF &bounds) const {
+    bool resolveKey(const QString &key, QPointF &out, bool &on_right, QRectF &bounds) const {
         if (key.startsWith(QStringLiteral("top:"))) {
             QString nm = key.mid(4);
             auto *tp = m_top_port_by_name.value(nm, nullptr);
-            if (!tp) return false;
+            if (!tp)
+                return false;
             out = tp->tipScenePos();
             on_right = (tp->side() == PinSide::Left);
             bounds = QRectF();
             return true;
         }
         int dot = key.indexOf(QChar('.'));
-        if (dot < 0) return false;
+        if (dot < 0)
+            return false;
         QString inst = key.left(dot);
         QString port = key.mid(dot + 1);
         auto *item = m_items.value(inst, nullptr);
-        if (!item) return false;
+        if (!item)
+            return false;
         out = item->portAnchorScenePos(port);
         QRectF r = item->sceneBoundingRect();
         bounds = r;
@@ -1873,8 +1834,7 @@ public:
             QPointF src_pt, dst_pt;
             bool src_right = false, dst_right = false;
             QRectF src_b, dst_b;
-            if (!resolveKey(src_key, src_pt, src_right, src_b)
-                || !resolveKey(dst_key, dst_pt, dst_right, dst_b)) {
+            if (!resolveKey(src_key, src_pt, src_right, src_b) || !resolveKey(dst_key, dst_pt, dst_right, dst_b)) {
                 continue;
             }
             auto *w = new WireItem(src_key, dst_key);
@@ -1882,9 +1842,8 @@ public:
             w->setWidth(m_state->wire_width(i));
             w->setRouteIndex(static_cast<int>(m_wires.size()));
             QList<QRectF> obstacles = collectObstacles(src_b, dst_b);
-            w->routeBetween(src_pt, src_right, src_b, dst_pt, dst_right, dst_b,
-                            obstacles);
-            w->setZValue(-1);  // behind instances
+            w->routeBetween(src_pt, src_right, src_b, dst_pt, dst_right, dst_b, obstacles);
+            w->setZValue(-1); // behind instances
             m_scene->addItem(w);
             m_wires.push_back(w);
         }
@@ -1898,13 +1857,12 @@ public:
             QPointF src_pt, dst_pt;
             bool src_right = false, dst_right = false;
             QRectF src_b, dst_b;
-            if (!resolveKey(w->sourceKey(), src_pt, src_right, src_b)
-                || !resolveKey(w->targetKey(), dst_pt, dst_right, dst_b)) {
+            if (!resolveKey(w->sourceKey(), src_pt, src_right, src_b) ||
+                !resolveKey(w->targetKey(), dst_pt, dst_right, dst_b)) {
                 continue;
             }
             QList<QRectF> obstacles = collectObstacles(src_b, dst_b);
-            w->routeBetween(src_pt, src_right, src_b, dst_pt, dst_right, dst_b,
-                            obstacles);
+            w->routeBetween(src_pt, src_right, src_b, dst_pt, dst_right, dst_b, obstacles);
         }
     }
 
@@ -1915,7 +1873,8 @@ public:
         QList<QRectF> out;
         for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
             QRectF b = it.value()->sceneBoundingRect();
-            if (b == src || b == dst) continue;
+            if (b == src || b == dst)
+                continue;
             out.push_back(b);
         }
         return out;
@@ -1977,11 +1936,9 @@ public:
         Q_UNUSED(name);
     }
 
-    InstanceItem *itemFor(const QString &name) const {
-        return m_items.value(name, nullptr);
-    }
+    InstanceItem *itemFor(const QString &name) const { return m_items.value(name, nullptr); }
 
-private:
+  private:
     QGraphicsScene *m_scene;
     AppState *m_state;
     QHash<QString, InstanceItem *> m_items;
@@ -2003,7 +1960,7 @@ QVariant InstanceItem::itemChange(GraphicsItemChange change, const QVariant &val
 // --- Library view (drag source) ---------------------------------------------
 
 class LibraryView : public QListView {
-public:
+  public:
     explicit LibraryView(QWidget *parent = nullptr) : QListView(parent) {
         setDragEnabled(true);
         setDragDropMode(QAbstractItemView::DragOnly);
@@ -2013,7 +1970,7 @@ public:
         setSelectionBehavior(QAbstractItemView::SelectRows);
     }
 
-protected:
+  protected:
     void startDrag(Qt::DropActions supportedActions) override {
         QModelIndexList indexes = selectedIndexes();
         if (indexes.isEmpty()) {
@@ -2031,8 +1988,7 @@ protected:
 
 // --- Sidebar model rebuild helpers ------------------------------------------
 
-void rebuild_tree_model(QStandardItemModel *model, AppState *state,
-                        const QIcon &dirty_icon) {
+void rebuild_tree_model(QStandardItemModel *model, AppState *state, const QIcon &dirty_icon) {
     model->clear();
     if (!state->has_project()) {
         return;
@@ -2046,8 +2002,7 @@ void rebuild_tree_model(QStandardItemModel *model, AppState *state,
     for (int i = 0; i < count; ++i) {
         QString name = state->instance_name(i);
         QString module = state->instance_module(i);
-        auto *item = new QStandardItem(
-            QStringLiteral("%1 : %2").arg(name, module));
+        auto *item = new QStandardItem(QStringLiteral("%1 : %2").arg(name, module));
         item->setEditable(false);
         item->setData(name, Qt::UserRole);
         if (state->instance_is_dirty(i)) {
@@ -2060,21 +2015,17 @@ void rebuild_tree_model(QStandardItemModel *model, AppState *state,
         for (int d = 0; d < dc; ++d) {
             QString dep_name = state->instance_dependency_name(i, d);
             bool present = state->instance_dependency_present(i, d);
-            QString label =
-                present ? dep_name
-                        : QStringLiteral("\u26A0 %1").arg(dep_name);  // ⚠ prefix
+            QString label = present ? dep_name : QStringLiteral("\u26A0 %1").arg(dep_name); // ⚠ prefix
             auto *dep_item = new QStandardItem(label);
             dep_item->setEditable(false);
             dep_item->setSelectable(false);
             // Empty UserRole — clicking a dep row shouldn't trigger selection
             dep_item->setData(QStringLiteral(""), Qt::UserRole);
             if (!present) {
-                dep_item->setData(QVariant(QColor(220, 60, 60)),
-                                  Qt::ForegroundRole);
+                dep_item->setData(QVariant(QColor(220, 60, 60)), Qt::ForegroundRole);
                 dep_item->setToolTip(QStringLiteral("Module not in library"));
             } else {
-                dep_item->setToolTip(
-                    QStringLiteral("Module %1 present in library").arg(dep_name));
+                dep_item->setToolTip(QStringLiteral("Module %1 present in library").arg(dep_name));
             }
             item->appendRow(dep_item);
         }
@@ -2097,16 +2048,17 @@ void rebuild_library_model(QStringListModel *model, AppState *state) {
 // Render one instance's bindings as a VHDL component-instantiation buffer.
 // Returns an empty string if `instance_name` is empty or unknown.
 static QString build_instance_buffer(AppState *state, const QString &instance_name) {
-    if (instance_name.isEmpty()) return QString();
+    if (instance_name.isEmpty())
+        return QString();
     int idx = find_instance_index(state, instance_name);
-    if (idx < 0) return QString();
+    if (idx < 0)
+        return QString();
     QString module = state->instance_module(idx);
 
     QString out;
     if (state->instance_is_dirty(idx)) {
-        out += QStringLiteral(
-            "-- Source file changed. Review the bindings below;\n"
-            "-- ports whose direction/type changed were dropped by re-parse.\n");
+        out += QStringLiteral("-- Source file changed. Review the bindings below;\n"
+                              "-- ports whose direction/type changed were dropped by re-parse.\n");
     }
     out += QStringLiteral("%1 : %2\n").arg(instance_name, module);
 
@@ -2117,18 +2069,16 @@ static QString build_instance_buffer(AppState *state, const QString &instance_na
         int name_width = 0;
         for (int g = 0; g < gc; ++g) {
             int w = static_cast<int>(state->module_generic_name(idx, g).size());
-            if (w > name_width) name_width = w;
+            if (w > name_width)
+                name_width = w;
         }
         for (int g = 0; g < gc; ++g) {
             QString gname = state->module_generic_name(idx, g);
             QString current = state->generic_map_entry(instance_name, gname);
-            QString value = current.isEmpty()
-                                ? state->module_generic_default(idx, g)
-                                : current;
+            QString value = current.isEmpty() ? state->module_generic_default(idx, g) : current;
             // Always trailing comma — punctuation is uniform regardless of
             // the project language. Parser strips them.
-            out += QStringLiteral("    %1 => %2,\n")
-                       .arg(gname.leftJustified(name_width), value);
+            out += QStringLiteral("    %1 => %2,\n").arg(gname.leftJustified(name_width), value);
         }
         out += QStringLiteral("  )\n");
     }
@@ -2139,14 +2089,15 @@ static QString build_instance_buffer(AppState *state, const QString &instance_na
     int name_width = 0;
     for (int p = 0; p < pc; ++p) {
         int w = static_cast<int>(state->instance_port_name(idx, p).size());
-        if (w > name_width) name_width = w;
+        if (w > name_width)
+            name_width = w;
     }
     for (int p = 0; p < pc; ++p) {
         QString pname = state->instance_port_name(idx, p);
         QString rhs = state->port_map_entry(instance_name, pname);
-        if (rhs.isEmpty()) rhs = QStringLiteral("open");
-        out += QStringLiteral("    %1 => %2,\n")
-                   .arg(pname.leftJustified(name_width), rhs);
+        if (rhs.isEmpty())
+            rhs = QStringLiteral("open");
+        out += QStringLiteral("    %1 => %2,\n").arg(pname.leftJustified(name_width), rhs);
     }
     out += QStringLiteral("  );\n");
     return out;
@@ -2158,17 +2109,17 @@ static QString build_instance_buffer(AppState *state, const QString &instance_na
 //   <instance>.<port>            → instance-port driver
 //   <driver>[<i>] | <driver>[<h>:<l>]  → slice
 //   open                         → unconnected (returned as empty rhs string)
-static bool parse_editor_line(const QString &name, const QString &rhs,
-                              QString *out_clean_rhs, QString *err) {
+static bool parse_editor_line(const QString &name, const QString &rhs, QString *out_clean_rhs, QString *err) {
     QString r = rhs.trimmed();
-    while (r.endsWith(QChar(','))) r.chop(1);
+    while (r.endsWith(QChar(',')))
+        r.chop(1);
     r = r.trimmed();
     if (r.isEmpty()) {
         *err = QStringLiteral("%1: empty RHS").arg(name);
         return false;
     }
     if (r.compare(QStringLiteral("open"), Qt::CaseInsensitive) == 0) {
-        *out_clean_rhs = QString();  // empty = open
+        *out_clean_rhs = QString(); // empty = open
         return true;
     }
     // Very permissive: allow identifiers, dots, brackets, digits, colons.
@@ -2186,15 +2137,16 @@ static bool parse_editor_line(const QString &name, const QString &rhs,
 // line is a comment, blank, a section header, or `);`.
 static bool extract_binding(const QString &line, QString *lhs, QString *rhs) {
     QString s = line.trimmed();
-    if (s.isEmpty() || s.startsWith(QStringLiteral("--"))) return false;
-    if (s.startsWith(QStringLiteral("generic map")) ||
-        s.startsWith(QStringLiteral("port map")) ||
+    if (s.isEmpty() || s.startsWith(QStringLiteral("--")))
+        return false;
+    if (s.startsWith(QStringLiteral("generic map")) || s.startsWith(QStringLiteral("port map")) ||
         s == QStringLiteral(")") || s == QStringLiteral(");") ||
         s.contains(QStringLiteral(":")) && !s.contains(QStringLiteral("=>"))) {
         return false;
     }
     int arrow = s.indexOf(QStringLiteral("=>"));
-    if (arrow < 0) return false;
+    if (arrow < 0)
+        return false;
     *lhs = s.left(arrow).trimmed();
     *rhs = s.mid(arrow + 2).trimmed();
     return !lhs->isEmpty();
@@ -2203,9 +2155,9 @@ static bool extract_binding(const QString &line, QString *lhs, QString *rhs) {
 // Result of parsing an editor buffer. Errors carry the offending line
 // number so the inline highlighter can underline the right block.
 struct EditorParseResult {
-    QList<QPair<QString, QString>> generic_commits;  // (name, rhs)
-    QList<QPair<QString, QString>> port_commits;     // (name, rhs_clean)
-    QList<QPair<int, QString>> errors;               // (line_index_0based, message)
+    QList<QPair<QString, QString>> generic_commits; // (name, rhs)
+    QList<QPair<QString, QString>> port_commits;    // (name, rhs_clean)
+    QList<QPair<int, QString>> errors;              // (line_index_0based, message)
 };
 
 static EditorParseResult parse_editor_buffer(const QString &buffer) {
@@ -2225,7 +2177,8 @@ static EditorParseResult parse_editor_buffer(const QString &buffer) {
             continue;
         }
         QString lhs, rhs;
-        if (!extract_binding(raw, &lhs, &rhs)) continue;
+        if (!extract_binding(raw, &lhs, &rhs))
+            continue;
         if (section == Ports) {
             QString clean;
             QString err;
@@ -2236,7 +2189,8 @@ static EditorParseResult parse_editor_buffer(const QString &buffer) {
             r.port_commits.append({lhs, clean});
         } else if (section == Generics) {
             QString v = rhs;
-            while (v.endsWith(QChar(','))) v.chop(1);
+            while (v.endsWith(QChar(',')))
+                v.chop(1);
             r.generic_commits.append({lhs, v.trimmed()});
         }
     }
@@ -2245,17 +2199,19 @@ static EditorParseResult parse_editor_buffer(const QString &buffer) {
 
 // Commit a buffer back to the model. Returns the list of error messages;
 // empty on success. On any parse error the model is NOT mutated.
-static QStringList commit_editor_buffer(AppState *state,
-                                        const QString &instance_name,
-                                        const QString &buffer) {
+static QStringList commit_editor_buffer(AppState *state, const QString &instance_name, const QString &buffer) {
     QStringList errors;
-    if (instance_name.isEmpty()) return errors;
+    if (instance_name.isEmpty())
+        return errors;
     int idx = find_instance_index(state, instance_name);
-    if (idx < 0) return errors;
+    if (idx < 0)
+        return errors;
 
     EditorParseResult parsed = parse_editor_buffer(buffer);
-    for (const auto &e : parsed.errors) errors << e.second;
-    if (!errors.isEmpty()) return errors;
+    for (const auto &e : parsed.errors)
+        errors << e.second;
+    if (!errors.isEmpty())
+        return errors;
 
     for (const auto &p : parsed.generic_commits) {
         state->set_generic_map_entry(instance_name, p.first, p.second);
@@ -2272,20 +2228,21 @@ static QStringList commit_editor_buffer(AppState *state,
 // Underlines the RHS of port-map lines that fail validation. The set of
 // bad line indices is recomputed on every textChanged in the editor.
 class MiniEditorHighlighter : public QSyntaxHighlighter {
-public:
-    explicit MiniEditorHighlighter(QTextDocument *doc)
-        : QSyntaxHighlighter(doc) {}
+  public:
+    explicit MiniEditorHighlighter(QTextDocument *doc) : QSyntaxHighlighter(doc) {}
 
     void setErrorLines(const QSet<int> &lines) {
-        if (lines == m_error_lines) return;
+        if (lines == m_error_lines)
+            return;
         m_error_lines = lines;
         rehighlight();
     }
 
-protected:
+  protected:
     void highlightBlock(const QString &text) override {
         int blk = currentBlock().blockNumber();
-        if (!m_error_lines.contains(blk)) return;
+        if (!m_error_lines.contains(blk))
+            return;
         QTextCharFormat fmt;
         fmt.setUnderlineColor(QColor(220, 60, 60));
         fmt.setUnderlineStyle(QTextCharFormat::WaveUnderline);
@@ -2293,13 +2250,15 @@ protected:
         int start = 0;
         if (arrow >= 0) {
             start = arrow + 2;
-            while (start < text.length() && text[start].isSpace()) ++start;
+            while (start < text.length() && text[start].isSpace())
+                ++start;
         }
         int len = text.length() - start;
-        if (len > 0) setFormat(start, len, fmt);
+        if (len > 0)
+            setFormat(start, len, fmt);
     }
 
-private:
+  private:
     QSet<int> m_error_lines;
 };
 
@@ -2315,7 +2274,8 @@ static QStringList rhs_candidates(AppState *state, const QString &editing_inst) 
     int ic = state->instance_count();
     for (int i = 0; i < ic; ++i) {
         QString iname = state->instance_name(i);
-        if (iname == editing_inst) continue;
+        if (iname == editing_inst)
+            continue;
         int pc = state->instance_port_count(i);
         for (int p = 0; p < pc; ++p) {
             out << QStringLiteral("%1.%2").arg(iname, state->instance_port_name(i, p));
@@ -2331,7 +2291,8 @@ static QStringList instance_port_candidates(AppState *state, const QString &inst
     QStringList out;
     int ic = state->instance_count();
     for (int i = 0; i < ic; ++i) {
-        if (state->instance_name(i) != inst_name) continue;
+        if (state->instance_name(i) != inst_name)
+            continue;
         int pc = state->instance_port_count(i);
         for (int p = 0; p < pc; ++p) {
             out << state->instance_port_name(i, p);
@@ -2348,14 +2309,15 @@ static QStringList instance_port_candidates(AppState *state, const QString &inst
 //   DotPort — right after `<inst>.`; offer that instance's ports only.
 struct CompletionContext {
     enum Kind { None, Rhs, DotPort } kind = None;
-    QString prefix;        // chars typed so far (popup filter)
-    QString instance;      // for DotPort: the instance name before the dot
+    QString prefix;   // chars typed so far (popup filter)
+    QString instance; // for DotPort: the instance name before the dot
 };
 
 static CompletionContext detect_completion_context(const QString &line_before_cursor) {
     CompletionContext ctx;
     int arrow = line_before_cursor.indexOf(QStringLiteral("=>"));
-    if (arrow < 0) return ctx;
+    if (arrow < 0)
+        return ctx;
 
     // Slice off the RHS portion.
     QString rhs = line_before_cursor.mid(arrow + 2);
@@ -2386,11 +2348,8 @@ static CompletionContext detect_completion_context(const QString &line_before_cu
 }
 
 static QString default_open_dir() {
-    QSettings settings(QStringLiteral("hdl-compose"),
-                       QStringLiteral("hdl-compose"));
-    QString dir = settings.value(QStringLiteral("default_open_dir"))
-                      .toString()
-                      .trimmed();
+    QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+    QString dir = settings.value(QStringLiteral("default_open_dir")).toString().trimmed();
     if (dir.isEmpty()) {
         dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     }
@@ -2405,31 +2364,37 @@ static QString sh_quote(const QString &s) {
 
 void launch_goto_source(QWidget *parent, const QString &source_path) {
     if (source_path.isEmpty()) {
-        QMessageBox::information(parent, QStringLiteral("Goto Source"),
-                                 QStringLiteral("Source path unavailable."));
+        QMessageBox::information(parent, QStringLiteral("Goto Source"), QStringLiteral("Source path unavailable."));
         return;
     }
-    QSettings settings(QStringLiteral("hdl-compose"),
-                       QStringLiteral("hdl-compose"));
+    QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
     QString cmd = settings.value(QStringLiteral("editor_command")).toString().trimmed();
     if (cmd.isEmpty()) {
-        QMessageBox::information(
-            parent, QStringLiteral("Goto Source"),
-            QStringLiteral("No external editor configured. Set one in "
-                           "File → Preferences."));
+        QMessageBox::information(parent, QStringLiteral("Goto Source"),
+                                 QStringLiteral("No external editor configured. Set one in "
+                                                "File → Preferences."));
         return;
     }
-    bool in_terminal =
-        settings.value(QStringLiteral("editor_in_terminal"), false).toBool();
+    bool in_terminal = settings.value(QStringLiteral("editor_in_terminal"), false).toBool();
 
-    QStringList parts = cmd.split(QRegularExpression(QStringLiteral("\\s+")),
-                                  Qt::SkipEmptyParts);
+    QStringList parts = cmd.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
     QString program = parts.takeFirst();
     parts << source_path;
 
     if (in_terminal) {
+#ifdef __APPLE__
         // .app bundles have no TTY — terminal editors (nvim, vim, emacs -nw)
-        // exit immediately. Launch them inside Terminal.app via osascript.
+        // exit immediately. Launch inside the user's preferred macOS terminal
+        // app via osascript. Default "Terminal" (always present on macOS);
+        // user-configurable in Preferences (e.g. "iTerm", "Alacritty",
+        // "kitty", "Ghostty" — anything that implements `do script`).
+        QString terminal_app = settings
+            .value(QStringLiteral("terminal_app"), QStringLiteral("Terminal"))
+            .toString()
+            .trimmed();
+        if (terminal_app.isEmpty()) {
+            terminal_app = QStringLiteral("Terminal");
+        }
         QString shell_cmd = sh_quote(program);
         for (const QString &p : parts) {
             shell_cmd += QChar(' ');
@@ -2438,23 +2403,59 @@ void launch_goto_source(QWidget *parent, const QString &source_path) {
         QString as_escaped = shell_cmd;
         as_escaped.replace(QChar('\\'), QStringLiteral("\\\\"));
         as_escaped.replace(QChar('"'), QStringLiteral("\\\""));
-        QString script =
-            QStringLiteral(
-                "tell application \"Terminal\" to do script \"%1\"\n"
-                "tell application \"Terminal\" to activate")
-                .arg(as_escaped);
-        if (!QProcess::startDetached(QStringLiteral("/usr/bin/osascript"),
-                                     QStringList{QStringLiteral("-e"), script})) {
-            QMessageBox::warning(
-                parent, QStringLiteral("Goto Source"),
-                QStringLiteral("Failed to launch in Terminal: %1").arg(cmd));
+        // iTerm uses a different AppleScript dialect — `do script` is a
+        // Terminal.app-only command. iTerm needs `create window` + a session
+        // `write text`. Branch on app name so both Just Work.
+        QString script;
+        if (terminal_app.compare(QStringLiteral("iTerm"), Qt::CaseInsensitive) == 0
+            || terminal_app.compare(QStringLiteral("iTerm2"), Qt::CaseInsensitive) == 0) {
+            script = QStringLiteral(
+                "tell application \"%1\"\n"
+                "  activate\n"
+                "  set newWin to (create window with default profile)\n"
+                "  tell current session of newWin to write text \"%2\"\n"
+                "end tell")
+                .arg(terminal_app, as_escaped);
+        } else {
+            script = QStringLiteral("tell application \"%1\" to do script \"%2\"\n"
+                                    "tell application \"%1\" to activate")
+                         .arg(terminal_app, as_escaped);
+        }
+        // Run synchronously so we can surface osascript's exit code + stderr.
+        // startDetached only fails if the process couldn't spawn at all; it
+        // returns true even when AppleScript itself errors out, which made the
+        // failure mode silent. Sync wait on osascript is fast (sub-second).
+        QProcess proc;
+        proc.start(QStringLiteral("/usr/bin/osascript"),
+                   QStringList{QStringLiteral("-e"), script});
+        if (!proc.waitForStarted(2000)) {
+            QMessageBox::warning(parent, QStringLiteral("Goto Source"),
+                                 QStringLiteral("Could not start osascript."));
+            return;
+        }
+        proc.waitForFinished(5000);
+        if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
+            QString err = QString::fromLocal8Bit(proc.readAllStandardError()).trimmed();
+            if (err.isEmpty()) {
+                err = QStringLiteral("exit code %1").arg(proc.exitCode());
+            }
+            QMessageBox::warning(parent, QStringLiteral("Goto Source"),
+                                 QStringLiteral("Failed to launch %1 in %2:\n%3")
+                                     .arg(cmd, terminal_app, err));
         }
         return;
+#else
+        QMessageBox::warning(parent, QStringLiteral("Goto Source"),
+            QStringLiteral("Terminal-mode launch is currently macOS-only. "
+                           "Either uncheck \"Run editor in terminal\" or set "
+                           "editor_command to a self-contained terminal "
+                           "wrapper (e.g. \"xterm -e nvim\")."));
+        return;
+#endif
     }
 
     if (!QProcess::startDetached(program, parts)) {
-        QMessageBox::warning(parent, QStringLiteral("Goto Source"),
-                             QStringLiteral("Failed to launch: %1").arg(cmd));
+        QMessageBox::warning(parent, QStringLiteral("Goto Source"), QStringLiteral("Failed to launch: %1").arg(cmd));
     }
 }
 
@@ -2473,8 +2474,7 @@ bool prompt_new_project(QWidget *parent, QString &out_name, int &out_lang) {
     form->addRow(QStringLiteral("&Name:"), name_edit);
     form->addRow(QStringLiteral("&Language:"), lang_combo);
 
-    auto *buttons =
-        new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
@@ -2500,30 +2500,31 @@ void prompt_preferences(QWidget *parent) {
     dlg.setWindowTitle(QStringLiteral("Preferences"));
 
     auto *editor_edit = new QLineEdit(&dlg);
-    editor_edit->setText(
-        settings.value(QStringLiteral("editor_command"), QString()).toString());
+    editor_edit->setText(settings.value(QStringLiteral("editor_command"), QString()).toString());
     editor_edit->setPlaceholderText(QStringLiteral("e.g. nvim, code, zed"));
 
     auto *in_term_check = new QCheckBox(
-        QStringLiteral("Run editor in Terminal.app (required for nvim/vim)"),
-        &dlg);
-    in_term_check->setChecked(
-        settings.value(QStringLiteral("editor_in_terminal"), false).toBool());
+        QStringLiteral("Run editor in terminal (required for nvim/vim)"), &dlg);
+    in_term_check->setChecked(settings.value(QStringLiteral("editor_in_terminal"), false).toBool());
+
+    auto *terminal_edit = new QLineEdit(&dlg);
+    terminal_edit->setText(
+        settings.value(QStringLiteral("terminal_app"), QStringLiteral("Terminal")).toString());
+    terminal_edit->setPlaceholderText(QStringLiteral("Terminal, iTerm, Alacritty, kitty, Ghostty"));
+    terminal_edit->setToolTip(QStringLiteral(
+        "macOS only. Application name used by AppleScript `do script` to host "
+        "the editor process. Must support `do script`."));
 
     auto *default_dir_edit = new QLineEdit(&dlg);
-    default_dir_edit->setText(
-        settings.value(QStringLiteral("default_open_dir"), QString()).toString());
-    default_dir_edit->setPlaceholderText(
-        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation));
+    default_dir_edit->setText(settings.value(QStringLiteral("default_open_dir"), QString()).toString());
+    default_dir_edit->setPlaceholderText(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation));
     auto *browse_btn = new QPushButton(QStringLiteral("Browse..."), &dlg);
     QObject::connect(browse_btn, &QPushButton::clicked, &dlg, [&dlg, default_dir_edit]() {
         QString seed = default_dir_edit->text();
         if (seed.isEmpty()) {
-            seed = QStandardPaths::writableLocation(
-                QStandardPaths::DocumentsLocation);
+            seed = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
         }
-        QString picked = QFileDialog::getExistingDirectory(
-            &dlg, QStringLiteral("Default Open Directory"), seed);
+        QString picked = QFileDialog::getExistingDirectory(&dlg, QStringLiteral("Default Open Directory"), seed);
         if (!picked.isEmpty()) {
             default_dir_edit->setText(picked);
         }
@@ -2535,10 +2536,10 @@ void prompt_preferences(QWidget *parent) {
     auto *form = new QFormLayout;
     form->addRow(QStringLiteral("&External editor command:"), editor_edit);
     form->addRow(QString(), in_term_check);
+    form->addRow(QStringLiteral("&Terminal app (macOS):"), terminal_edit);
     form->addRow(QStringLiteral("&Default open directory:"), dir_row);
 
-    auto *buttons =
-        new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
@@ -2548,10 +2549,9 @@ void prompt_preferences(QWidget *parent) {
 
     if (dlg.exec() == QDialog::Accepted) {
         settings.setValue(QStringLiteral("editor_command"), editor_edit->text());
-        settings.setValue(QStringLiteral("editor_in_terminal"),
-                          in_term_check->isChecked());
-        settings.setValue(QStringLiteral("default_open_dir"),
-                          default_dir_edit->text().trimmed());
+        settings.setValue(QStringLiteral("editor_in_terminal"), in_term_check->isChecked());
+        settings.setValue(QStringLiteral("terminal_app"), terminal_edit->text().trimmed());
+        settings.setValue(QStringLiteral("default_open_dir"), default_dir_edit->text().trimmed());
     }
 }
 
@@ -2560,8 +2560,7 @@ void prompt_preferences(QWidget *parent) {
 extern "C" int run_gui(int *argc, char **argv) {
     // HiDPI: pass-through fractional scale factors (e.g. 2x Retina) without
     // rounding — keeps fonts and pixmaps crisp on macOS.
-    QGuiApplication::setHighDpiScaleFactorRoundingPolicy(
-        Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
+    QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
 
     QApplication app(*argc, argv);
     app.setOrganizationName(QStringLiteral("hdl-compose"));
@@ -2622,8 +2621,8 @@ extern "C" int run_gui(int *argc, char **argv) {
     editor_layout->setSpacing(2);
     auto *editor_top_level_btn = new QPushButton(QStringLiteral("Top Level"), editor_panel);
     editor_top_level_btn->setCheckable(true);
-    editor_top_level_btn->setToolTip(QStringLiteral(
-        "Edit the top-level entity declaration: add/remove ports and generics."));
+    editor_top_level_btn->setToolTip(
+        QStringLiteral("Edit the top-level entity declaration: add/remove ports and generics."));
     editor_layout->addWidget(editor_top_level_btn);
     auto *editor = new QPlainTextEdit(editor_panel);
     // Stretch factor 1 so the editor absorbs all extra vertical space when
@@ -2631,7 +2630,7 @@ extern "C" int run_gui(int *argc, char **argv) {
     // hidden — without it, QVBoxLayout would center the lone button.
     editor_layout->addWidget(editor, 1);
     editor_layout->addStretch();
-    editor->hide();  // shown only while an instance is selected or top-level mode active
+    editor->hide(); // shown only while an instance is selected or top-level mode active
     // Panel itself stays visible so the Top Level toggle button is always
     // reachable even when nothing is selected on the canvas.
     {
@@ -2667,10 +2666,10 @@ extern "C" int run_gui(int *argc, char **argv) {
     // Tab on the popup accepts the currently-highlighted candidate. Default
     // QCompleter binds Return only.
     class TabAcceptFilter : public QObject {
-    public:
-        TabAcceptFilter(QCompleter *c, QObject *parent)
-            : QObject(parent), m_completer(c) {}
-    protected:
+      public:
+        TabAcceptFilter(QCompleter *c, QObject *parent) : QObject(parent), m_completer(c) {}
+
+      protected:
         bool eventFilter(QObject *obj, QEvent *ev) override {
             if (ev->type() == QEvent::KeyPress) {
                 auto *ke = static_cast<QKeyEvent *>(ev);
@@ -2689,7 +2688,8 @@ extern "C" int run_gui(int *argc, char **argv) {
             }
             return QObject::eventFilter(obj, ev);
         }
-    private:
+
+      private:
         QCompleter *m_completer;
     };
     completer->popup()->installEventFilter(new TabAcceptFilter(completer, editor));
@@ -2721,60 +2721,54 @@ extern "C" int run_gui(int *argc, char **argv) {
     };
 
     auto commit_editor = [=, &window]() {
-        if (!*editor_editing) return;  // nothing to commit
+        if (!*editor_editing)
+            return; // nothing to commit
         if (*top_level_mode) {
             if (!state->commit_top_level_buffer(editor->toPlainText())) {
                 QString err = state->last_error();
                 window.statusBar()->showMessage(
-                    QStringLiteral("Top-level: %1").arg(err.isEmpty()
-                        ? QStringLiteral("commit refused")
-                        : err),
-                    5000);
+                    QStringLiteral("Top-level: %1").arg(err.isEmpty() ? QStringLiteral("commit refused") : err), 5000);
                 return;
             }
             *editor_editing = false;
-            window.statusBar()->showMessage(
-                QStringLiteral("Top-level entity updated"), 2000);
+            window.statusBar()->showMessage(QStringLiteral("Top-level entity updated"), 2000);
             return;
         }
-        if (editor_inst->isEmpty()) return;
-        QStringList errs =
-            commit_editor_buffer(state, *editor_inst, editor->toPlainText());
+        if (editor_inst->isEmpty())
+            return;
+        QStringList errs = commit_editor_buffer(state, *editor_inst, editor->toPlainText());
         if (!errs.isEmpty()) {
             // Refuse silently: squiggles + status bar already told the user.
             // Editor stays as-is; user fixes and retries.
             window.statusBar()->showMessage(
-                QStringLiteral("Mini editor: %1 parse error(s) — fix to commit")
-                    .arg(errs.size()),
-                4000);
+                QStringLiteral("Mini editor: %1 parse error(s) — fix to commit").arg(errs.size()), 4000);
             return;
         }
         // Don't re-render: that would jump the cursor and clobber the user's
         // formatting. Just mark the buffer clean. Column normalization will
         // happen the next time selection_changed switches away.
         *editor_editing = false;
-        window.statusBar()->showMessage(QStringLiteral("Mini editor changes applied"),
-                                        2000);
+        window.statusBar()->showMessage(QStringLiteral("Mini editor changes applied"), 2000);
     };
 
     // Toggle: enter top-level mode → deselect any instance and load the
     // top-level entity buffer. Exit → repopulate from the still-selected
     // instance (or hide the editor if none).
-    QObject::connect(editor_top_level_btn, &QPushButton::toggled, &window,
-                     [=](bool checked) {
-                         commit_editor();  // flush in-flight edit before swapping
-                         *top_level_mode = checked;
-                         if (checked) {
-                             state->set_selected_instance(QString());
-                             editor_inst->clear();
-                         }
-                         repopulate_editor();
-                     });
+    QObject::connect(editor_top_level_btn, &QPushButton::toggled, &window, [=](bool checked) {
+        commit_editor(); // flush in-flight edit before swapping
+        *top_level_mode = checked;
+        if (checked) {
+            state->set_selected_instance(QString());
+            editor_inst->clear();
+        }
+        repopulate_editor();
+    });
 
     // Lightweight: textChanged just restarts the debounce timer. All real
     // work (parsing, highlighter, completer popup) waits for 300 ms idle.
     QObject::connect(editor, &QPlainTextEdit::textChanged, &window, [=]() {
-        if (*editor_suppressing) return;
+        if (*editor_suppressing)
+            return;
         *editor_editing = true;
         parse_timer->start();
     });
@@ -2789,14 +2783,13 @@ extern "C" int run_gui(int *argc, char **argv) {
         }
         EditorParseResult parsed = parse_editor_buffer(editor->toPlainText());
         QSet<int> err_lines;
-        for (const auto &e : parsed.errors) err_lines.insert(e.first);
+        for (const auto &e : parsed.errors)
+            err_lines.insert(e.first);
         highlighter->setErrorLines(err_lines);
         if (parsed.errors.isEmpty()) {
             window.statusBar()->clearMessage();
         } else {
-            window.statusBar()->showMessage(
-                QStringLiteral("Mini editor: %1 parse error(s)")
-                    .arg(parsed.errors.size()));
+            window.statusBar()->showMessage(QStringLiteral("Mini editor: %1 parse error(s)").arg(parsed.errors.size()));
         }
 
         // Completer popup based on cursor context.
@@ -2823,45 +2816,45 @@ extern "C" int run_gui(int *argc, char **argv) {
             completer->popup()->hide();
             return;
         }
-        completer->popup()->setCurrentIndex(
-            completer->completionModel()->index(0, 0));
+        completer->popup()->setCurrentIndex(completer->completionModel()->index(0, 0));
         QRect rect = editor->cursorRect();
-        rect.setWidth(completer->popup()->sizeHintForColumn(0)
-                      + completer->popup()->verticalScrollBar()->sizeHint().width());
+        rect.setWidth(completer->popup()->sizeHintForColumn(0) +
+                      completer->popup()->verticalScrollBar()->sizeHint().width());
         completer->complete(rect);
     });
 
-    QObject::connect(
-        completer, QOverload<const QString &>::of(&QCompleter::activated),
-        &window, [=](const QString &text) {
-            QTextCursor c = editor->textCursor();
-            int n = completer->completionPrefix().length();
-            if (n > 0) {
-                c.movePosition(QTextCursor::Left, QTextCursor::KeepAnchor, n);
-            }
-            c.insertText(text);
-            editor->setTextCursor(c);
-        });
+    QObject::connect(completer, QOverload<const QString &>::of(&QCompleter::activated), &window,
+                     [=](const QString &text) {
+                         QTextCursor c = editor->textCursor();
+                         int n = completer->completionPrefix().length();
+                         if (n > 0) {
+                             c.movePosition(QTextCursor::Left, QTextCursor::KeepAnchor, n);
+                         }
+                         c.insertText(text);
+                         editor->setTextCursor(c);
+                     });
 
     // Focus-out → commit. QPlainTextEdit has no direct focusOut signal;
     // install an event filter on the widget.
     class FocusOutFilter : public QObject {
-    public:
+      public:
         FocusOutFilter(std::function<void()> on_focus_out, QObject *parent)
             : QObject(parent), m_cb(std::move(on_focus_out)) {}
-    protected:
+
+      protected:
         bool eventFilter(QObject *obj, QEvent *ev) override {
-            if (ev->type() == QEvent::FocusOut) m_cb();
+            if (ev->type() == QEvent::FocusOut)
+                m_cb();
             return QObject::eventFilter(obj, ev);
         }
-    private:
+
+      private:
         std::function<void()> m_cb;
     };
     editor->installEventFilter(new FocusOutFilter(commit_editor, editor));
 
     // Ctrl+Return also commits.
-    auto *commit_sc = new QShortcut(
-        QKeySequence(Qt::CTRL | Qt::Key_Return), editor);
+    auto *commit_sc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), editor);
     commit_sc->setContext(Qt::WidgetWithChildrenShortcut);
     QObject::connect(commit_sc, &QShortcut::activated, &window, commit_editor);
 
@@ -2902,12 +2895,10 @@ extern "C" int run_gui(int *argc, char **argv) {
     auto *redoAct = editMenu->addAction(QStringLiteral("&Redo"));
     redoAct->setShortcut(QKeySequence::Redo);
     editMenu->addSeparator();
-    auto *matchByNameAct = editMenu->addAction(
-        QStringLiteral("&Match Ports by Name"));
+    auto *matchByNameAct = editMenu->addAction(QStringLiteral("&Match Ports by Name"));
     matchByNameAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_M));
-    matchByNameAct->setToolTip(QStringLiteral(
-        "Connect unmapped ports on the selected instance to matching top-level "
-        "ports (same name + direction + type)"));
+    matchByNameAct->setToolTip(QStringLiteral("Connect unmapped ports on the selected instance to matching top-level "
+                                              "ports (same name + direction + type)"));
 
     QObject::connect(undoAct, &QAction::triggered, &window, [state, &window]() {
         if (state->undo()) {
@@ -2926,9 +2917,7 @@ extern "C" int run_gui(int *argc, char **argv) {
     refresh_undo_actions();
     QObject::connect(state, &AppState::project_loaded, &window, refresh_undo_actions);
     QObject::connect(state, &AppState::port_map_changed, &window,
-                     [refresh_undo_actions](const QString &, const QString &) {
-                         refresh_undo_actions();
-                     });
+                     [refresh_undo_actions](const QString &, const QString &) { refresh_undo_actions(); });
     QObject::connect(state, &AppState::port_map_changed_bulk, &window, refresh_undo_actions);
     QObject::connect(state, &AppState::instance_added, &window,
                      [refresh_undo_actions](const QString &) { refresh_undo_actions(); });
@@ -2969,46 +2958,35 @@ extern "C" int run_gui(int *argc, char **argv) {
                      [&window, state]() { update_window_title(&window, state); });
     QObject::connect(state, &AppState::dirtyChanged, &window,
                      [&window, state]() { update_window_title(&window, state); });
-    QObject::connect(state, &AppState::validation_changed, &window,
-                     [&window, state]() {
-                         int errs = state->validation_error_count();
-                         int warns = state->validation_warning_count();
-                         window.statusBar()->showMessage(
-                             QStringLiteral("%1 error(s), %2 warning(s)")
-                                 .arg(errs)
-                                 .arg(warns));
-                     });
+    QObject::connect(state, &AppState::validation_changed, &window, [&window, state]() {
+        int errs = state->validation_error_count();
+        int warns = state->validation_warning_count();
+        window.statusBar()->showMessage(QStringLiteral("%1 error(s), %2 warning(s)").arg(errs).arg(warns));
+    });
 
     // Sidebar + canvas reactive
-    QObject::connect(state, &AppState::project_loaded, &window,
-                     [refresh_sidebar, &canvas_layer]() {
-                         refresh_sidebar();
-                         canvas_layer.rebuild();
-                     });
-    QObject::connect(state, &AppState::instance_added, &window,
-                     [refresh_sidebar, &canvas_layer](const QString &name) {
-                         refresh_sidebar();
-                         canvas_layer.onInstanceAdded(name);
-                     });
+    QObject::connect(state, &AppState::project_loaded, &window, [refresh_sidebar, &canvas_layer]() {
+        refresh_sidebar();
+        canvas_layer.rebuild();
+    });
+    QObject::connect(state, &AppState::instance_added, &window, [refresh_sidebar, &canvas_layer](const QString &name) {
+        refresh_sidebar();
+        canvas_layer.onInstanceAdded(name);
+    });
     QObject::connect(state, &AppState::instance_removed, &window,
                      [refresh_sidebar, &canvas_layer](const QString &name) {
                          refresh_sidebar();
                          canvas_layer.onInstanceRemoved(name);
                      });
-    QObject::connect(state, &AppState::instance_moved, &window,
-                     [&canvas_layer](const QString &name, double x, double y) {
-                         canvas_layer.onInstanceMoved(name, x, y);
-                     });
+    QObject::connect(
+        state, &AppState::instance_moved, &window,
+        [&canvas_layer](const QString &name, double x, double y) { canvas_layer.onInstanceMoved(name, x, y); });
     QObject::connect(state, &AppState::port_map_changed, &window,
-                     [&canvas_layer](const QString &, const QString &) {
-                         canvas_layer.onPortMapChanged();
-                     });
+                     [&canvas_layer](const QString &, const QString &) { canvas_layer.onPortMapChanged(); });
     QObject::connect(state, &AppState::port_map_changed_bulk, &window,
                      [&canvas_layer]() { canvas_layer.onPortMapChanged(); });
     QObject::connect(state, &AppState::alias_changed, &window,
-                     [&canvas_layer](const QString &) {
-                         canvas_layer.onPortMapChanged();
-                     });
+                     [&canvas_layer](const QString &) { canvas_layer.onPortMapChanged(); });
     QObject::connect(state, &AppState::library_changed, &window, refresh_sidebar);
 
     // Module re-parse: watch every library path and auto-reload when the
@@ -3024,9 +3002,11 @@ extern "C" int run_gui(int *argc, char **argv) {
         QStringList existing;
         for (int i = 0; i < n; ++i) {
             QString p = state->library_path(i);
-            if (QFileInfo::exists(p)) existing << p;
+            if (QFileInfo::exists(p))
+                existing << p;
         }
-        if (!existing.isEmpty()) fs_watcher->addPaths(existing);
+        if (!existing.isEmpty())
+            fs_watcher->addPaths(existing);
     };
     QObject::connect(state, &AppState::library_changed, &window, refresh_watcher);
     QObject::connect(state, &AppState::project_loaded, &window, refresh_watcher);
@@ -3039,13 +3019,10 @@ extern "C" int run_gui(int *argc, char **argv) {
                              refresh_watcher();
                          });
                          window.statusBar()->showMessage(
-                             QStringLiteral("Source changed: %1 — reloading")
-                                 .arg(QFileInfo(path).fileName()),
-                             3000);
+                             QStringLiteral("Source changed: %1 — reloading").arg(QFileInfo(path).fileName()), 3000);
                      });
     QObject::connect(state, &AppState::selection_changed, &window,
-                     [&canvas_layer, tree_view, tree_model, editor_inst,
-                      top_level_mode, editor_top_level_btn,
+                     [&canvas_layer, tree_view, tree_model, editor_inst, top_level_mode, editor_top_level_btn,
                       commit_editor, repopulate_editor](const QString &name) {
                          // Commit any outgoing edit against the previous instance
                          // before switching so the user doesn't lose work.
@@ -3076,89 +3053,78 @@ extern "C" int run_gui(int *argc, char **argv) {
     // Model-change signals: refresh the mini editor only when it's not being
     // actively edited. Once the user is typing we wait for focus-out.
     auto editor_model_changed = [=]() {
-        if (*editor_editing) return;
+        if (*editor_editing)
+            return;
         repopulate_editor();
     };
     QObject::connect(state, &AppState::port_map_changed, &window,
-                     [editor_model_changed](const QString &, const QString &) {
-                         editor_model_changed();
-                     });
-    QObject::connect(state, &AppState::port_map_changed_bulk, &window,
-                     editor_model_changed);
-    QObject::connect(state, &AppState::project_loaded, &window,
-                     [editor_inst, repopulate_editor]() {
-                         editor_inst->clear();
-                         repopulate_editor();
-                     });
+                     [editor_model_changed](const QString &, const QString &) { editor_model_changed(); });
+    QObject::connect(state, &AppState::port_map_changed_bulk, &window, editor_model_changed);
+    QObject::connect(state, &AppState::project_loaded, &window, [editor_inst, repopulate_editor]() {
+        editor_inst->clear();
+        repopulate_editor();
+    });
 
     // Tree: single-click → set selection via AppState
-    QObject::connect(tree_view, &QTreeView::clicked, &window,
-                     [state](const QModelIndex &index) {
-                         QString name = index.data(Qt::UserRole).toString();
-                         if (name.isEmpty()) {
-                             return;
-                         }
-                         state->set_selected_instance(name);
-                     });
+    QObject::connect(tree_view, &QTreeView::clicked, &window, [state](const QModelIndex &index) {
+        QString name = index.data(Qt::UserRole).toString();
+        if (name.isEmpty()) {
+            return;
+        }
+        state->set_selected_instance(name);
+    });
 
     // Tree: double-click → goto source
-    QObject::connect(tree_view, &QTreeView::doubleClicked, &window,
-                     [&window, state](const QModelIndex &index) {
-                         QString inst_name = index.data(Qt::UserRole).toString();
+    QObject::connect(tree_view, &QTreeView::doubleClicked, &window, [&window, state](const QModelIndex &index) {
+        QString inst_name = index.data(Qt::UserRole).toString();
+        if (inst_name.isEmpty()) {
+            return;
+        }
+        int idx = find_instance_index(state, inst_name);
+        if (idx < 0) {
+            return;
+        }
+        QString src = state->instance_source_path(idx);
+        launch_goto_source(&window, src);
+    });
+
+    // Tree: right-click → context menu
+    QObject::connect(tree_view, &QTreeView::customContextMenuRequested, &window,
+                     [&window, state, tree_view](const QPoint &pos) {
+                         QModelIndex idx = tree_view->indexAt(pos);
+                         if (!idx.isValid()) {
+                             return;
+                         }
+                         QString inst_name = idx.data(Qt::UserRole).toString();
                          if (inst_name.isEmpty()) {
                              return;
                          }
-                         int idx = find_instance_index(state, inst_name);
-                         if (idx < 0) {
-                             return;
+                         QMenu menu(tree_view);
+                         QAction *renameAct = menu.addAction(QStringLiteral("Rename..."));
+                         QAction *deleteAct = menu.addAction(QStringLiteral("Delete"));
+                         QAction *chosen = menu.exec(tree_view->viewport()->mapToGlobal(pos));
+                         if (chosen == renameAct) {
+                             bool ok = false;
+                             QString new_name =
+                                 QInputDialog::getText(&window, QStringLiteral("Rename Instance"),
+                                                       QStringLiteral("New name:"), QLineEdit::Normal, inst_name, &ok);
+                             if (!ok || new_name.trimmed().isEmpty() || new_name == inst_name) {
+                                 return;
+                             }
+                             if (!state->rename_instance(inst_name, new_name.trimmed())) {
+                                 show_state_error(&window, state, QStringLiteral("Rename"));
+                             }
+                         } else if (chosen == deleteAct) {
+                             auto btn = QMessageBox::question(&window, QStringLiteral("Delete Instance"),
+                                                              QStringLiteral("Delete instance %1?").arg(inst_name));
+                             if (btn != QMessageBox::Yes) {
+                                 return;
+                             }
+                             if (!state->remove_instance(inst_name)) {
+                                 show_state_error(&window, state, QStringLiteral("Delete"));
+                             }
                          }
-                         QString src = state->instance_source_path(idx);
-                         launch_goto_source(&window, src);
                      });
-
-    // Tree: right-click → context menu
-    QObject::connect(
-        tree_view, &QTreeView::customContextMenuRequested, &window,
-        [&window, state, tree_view](const QPoint &pos) {
-            QModelIndex idx = tree_view->indexAt(pos);
-            if (!idx.isValid()) {
-                return;
-            }
-            QString inst_name = idx.data(Qt::UserRole).toString();
-            if (inst_name.isEmpty()) {
-                return;
-            }
-            QMenu menu(tree_view);
-            QAction *renameAct = menu.addAction(QStringLiteral("Rename..."));
-            QAction *deleteAct = menu.addAction(QStringLiteral("Delete"));
-            QAction *chosen = menu.exec(tree_view->viewport()->mapToGlobal(pos));
-            if (chosen == renameAct) {
-                bool ok = false;
-                QString new_name = QInputDialog::getText(
-                    &window, QStringLiteral("Rename Instance"),
-                    QStringLiteral("New name:"), QLineEdit::Normal, inst_name,
-                    &ok);
-                if (!ok || new_name.trimmed().isEmpty() ||
-                    new_name == inst_name) {
-                    return;
-                }
-                if (!state->rename_instance(inst_name, new_name.trimmed())) {
-                    show_state_error(&window, state,
-                                     QStringLiteral("Rename"));
-                }
-            } else if (chosen == deleteAct) {
-                auto btn = QMessageBox::question(
-                    &window, QStringLiteral("Delete Instance"),
-                    QStringLiteral("Delete instance %1?").arg(inst_name));
-                if (btn != QMessageBox::Yes) {
-                    return;
-                }
-                if (!state->remove_instance(inst_name)) {
-                    show_state_error(&window, state,
-                                     QStringLiteral("Delete"));
-                }
-            }
-        });
 
     // Menu actions
     QObject::connect(newAct, &QAction::triggered, &window, [&window, state]() {
@@ -3171,14 +3137,12 @@ extern "C" int run_gui(int *argc, char **argv) {
             show_state_error(&window, state, QStringLiteral("New Project"));
             return;
         }
-        window.statusBar()->showMessage(
-            QStringLiteral("Created new project: %1").arg(name), 3000);
+        window.statusBar()->showMessage(QStringLiteral("Created new project: %1").arg(name), 3000);
     });
 
     QObject::connect(openAct, &QAction::triggered, &window, [&window, state]() {
-        QString path = QFileDialog::getOpenFileName(
-            &window, QStringLiteral("Open Project"), default_open_dir(),
-            QStringLiteral("HDL Compose Projects (*.hdlc)"));
+        QString path = QFileDialog::getOpenFileName(&window, QStringLiteral("Open Project"), default_open_dir(),
+                                                    QStringLiteral("HDL Compose Projects (*.hdlc)"));
         if (path.isEmpty()) {
             return;
         }
@@ -3186,20 +3150,18 @@ extern "C" int run_gui(int *argc, char **argv) {
             show_state_error(&window, state, QStringLiteral("Open Project"));
             return;
         }
-        window.statusBar()->showMessage(QStringLiteral("Opened %1").arg(path),
-                                        3000);
+        window.statusBar()->showMessage(QStringLiteral("Opened %1").arg(path), 3000);
     });
 
     QObject::connect(addSourceAct, &QAction::triggered, &window, [&window, state]() {
         if (!state->has_project()) {
-            QMessageBox::information(
-                &window, QStringLiteral("Add HDL Source"),
-                QStringLiteral("Create or open a project first."));
+            QMessageBox::information(&window, QStringLiteral("Add HDL Source"),
+                                     QStringLiteral("Create or open a project first."));
             return;
         }
-        QStringList paths = QFileDialog::getOpenFileNames(
-            &window, QStringLiteral("Add HDL Source(s)"), default_open_dir(),
-            QStringLiteral("HDL sources (*.vhd *.vhdl *.v *.sv);;All files (*)"));
+        QStringList paths =
+            QFileDialog::getOpenFileNames(&window, QStringLiteral("Add HDL Source(s)"), default_open_dir(),
+                                          QStringLiteral("HDL sources (*.vhd *.vhdl *.v *.sv);;All files (*)"));
         if (paths.isEmpty()) {
             return;
         }
@@ -3214,18 +3176,15 @@ extern "C" int run_gui(int *argc, char **argv) {
             }
         }
         if (!failed.isEmpty()) {
-            QMessageBox::warning(
-                &window, QStringLiteral("Add HDL Source"),
-                QStringLiteral("Failed to add:\n%1").arg(failed.join(QChar('\n'))));
+            QMessageBox::warning(&window, QStringLiteral("Add HDL Source"),
+                                 QStringLiteral("Failed to add:\n%1").arg(failed.join(QChar('\n'))));
         }
-        window.statusBar()->showMessage(
-            QStringLiteral("Added %1 source(s)").arg(added), 3000);
+        window.statusBar()->showMessage(QStringLiteral("Added %1 source(s)").arg(added), 3000);
     });
 
     auto save_as = [&window, state]() -> bool {
-        QString path = QFileDialog::getSaveFileName(
-            &window, QStringLiteral("Save Project As"), default_open_dir(),
-            QStringLiteral("HDL Compose Projects (*.hdlc)"));
+        QString path = QFileDialog::getSaveFileName(&window, QStringLiteral("Save Project As"), default_open_dir(),
+                                                    QStringLiteral("HDL Compose Projects (*.hdlc)"));
         if (path.isEmpty()) {
             return false;
         }
@@ -3236,65 +3195,53 @@ extern "C" int run_gui(int *argc, char **argv) {
             show_state_error(&window, state, QStringLiteral("Save Project"));
             return false;
         }
-        window.statusBar()->showMessage(QStringLiteral("Saved to %1").arg(path),
-                                        3000);
+        window.statusBar()->showMessage(QStringLiteral("Saved to %1").arg(path), 3000);
         return true;
     };
 
-    QObject::connect(saveAct, &QAction::triggered, &window,
-                     [&window, state, save_as]() {
-                         if (!state->has_project()) {
-                             QMessageBox::information(
-                                 &window, QStringLiteral("Save"),
-                                 QStringLiteral("No project to save."));
-                             return;
-                         }
-                         if (state->save_project()) {
-                             window.statusBar()->showMessage(
-                                 QStringLiteral("Saved"), 3000);
-                         } else {
-                             save_as();
-                         }
-                     });
+    QObject::connect(saveAct, &QAction::triggered, &window, [&window, state, save_as]() {
+        if (!state->has_project()) {
+            QMessageBox::information(&window, QStringLiteral("Save"), QStringLiteral("No project to save."));
+            return;
+        }
+        if (state->save_project()) {
+            window.statusBar()->showMessage(QStringLiteral("Saved"), 3000);
+        } else {
+            save_as();
+        }
+    });
 
-    QObject::connect(saveAsAct, &QAction::triggered, &window,
-                     [save_as]() { save_as(); });
+    QObject::connect(saveAsAct, &QAction::triggered, &window, [save_as]() { save_as(); });
 
     QObject::connect(generateAct, &QAction::triggered, &window, [&window, state]() {
         if (!state->has_project()) {
-            QMessageBox::information(&window, QStringLiteral("Generate HDL"),
-                                     QStringLiteral("No project loaded."));
+            QMessageBox::information(&window, QStringLiteral("Generate HDL"), QStringLiteral("No project loaded."));
             return;
         }
         int lang = state->project_language();
         QString filter;
         QString lang_label;
         switch (lang) {
-            case 0:
-                filter = QStringLiteral("VHDL (*.vhd *.vhdl)");
-                lang_label = QStringLiteral("VHDL");
-                break;
-            case 1:
-                filter = QStringLiteral("SystemVerilog (*.sv *.v)");
-                lang_label = QStringLiteral("SystemVerilog");
-                break;
-            default:
-                QMessageBox::warning(&window, QStringLiteral("Generate HDL"),
-                                     QStringLiteral("Unknown project language."));
-                return;
+        case 0:
+            filter = QStringLiteral("VHDL (*.vhd *.vhdl)");
+            lang_label = QStringLiteral("VHDL");
+            break;
+        case 1:
+            filter = QStringLiteral("SystemVerilog (*.sv *.v)");
+            lang_label = QStringLiteral("SystemVerilog");
+            break;
+        default:
+            QMessageBox::warning(&window, QStringLiteral("Generate HDL"), QStringLiteral("Unknown project language."));
+            return;
         }
         QString suggested = state->suggest_codegen_path();
-        QString path = QFileDialog::getSaveFileName(
-            &window,
-            QStringLiteral("Generate %1").arg(lang_label),
-            suggested,
-            filter);
+        QString path =
+            QFileDialog::getSaveFileName(&window, QStringLiteral("Generate %1").arg(lang_label), suggested, filter);
         if (path.isEmpty()) {
             return;
         }
         if (state->generate_code(path)) {
-            window.statusBar()->showMessage(
-                QStringLiteral("Generated %1").arg(path), 5000);
+            window.statusBar()->showMessage(QStringLiteral("Generated %1").arg(path), 5000);
         } else {
             show_state_error(&window, state, QStringLiteral("Generate HDL"));
         }
@@ -3302,13 +3249,11 @@ extern "C" int run_gui(int *argc, char **argv) {
 
     QObject::connect(reloadAct, &QAction::triggered, &window, [&window, state]() {
         if (!state->has_project()) {
-            QMessageBox::information(&window, QStringLiteral("Refresh Library"),
-                                     QStringLiteral("No project loaded."));
+            QMessageBox::information(&window, QStringLiteral("Refresh Library"), QStringLiteral("No project loaded."));
             return;
         }
         if (state->reload_library()) {
-            window.statusBar()->showMessage(
-                QStringLiteral("Library refreshed"), 3000);
+            window.statusBar()->showMessage(QStringLiteral("Library refreshed"), 3000);
         } else {
             show_state_error(&window, state, QStringLiteral("Refresh Library"));
         }
@@ -3317,9 +3262,8 @@ extern "C" int run_gui(int *argc, char **argv) {
     QObject::connect(copySourcesAct, &QAction::triggered, &window, [&window, state]() {
         QString proj_path = state->current_project_path();
         if (proj_path.isEmpty()) {
-            QMessageBox::information(
-                &window, QStringLiteral("Copy Sources"),
-                QStringLiteral("Save the project first so we know where to copy to."));
+            QMessageBox::information(&window, QStringLiteral("Copy Sources"),
+                                     QStringLiteral("Save the project first so we know where to copy to."));
             return;
         }
         QDir proj_dir = QFileInfo(proj_path).absoluteDir();
@@ -3331,9 +3275,7 @@ extern "C" int run_gui(int *argc, char **argv) {
         }
         auto btn = QMessageBox::question(
             &window, QStringLiteral("Copy Sources"),
-            QStringLiteral("Copy %1 source file(s) into %2?")
-                .arg(n)
-                .arg(proj_dir.absolutePath()));
+            QStringLiteral("Copy %1 source file(s) into %2?").arg(n).arg(proj_dir.absolutePath()));
         if (btn != QMessageBox::Yes) {
             return;
         }
@@ -3351,12 +3293,11 @@ extern "C" int run_gui(int *argc, char **argv) {
             }
             QString target = proj_dir.absoluteFilePath(src_info.fileName());
             if (QFileInfo(target) == src_info) {
-                continue;  // already in project dir
+                continue; // already in project dir
             }
             if (QFile::exists(target)) {
-                auto overwrite = QMessageBox::question(
-                    &window, QStringLiteral("Overwrite?"),
-                    QStringLiteral("%1 exists. Overwrite?").arg(target));
+                auto overwrite = QMessageBox::question(&window, QStringLiteral("Overwrite?"),
+                                                       QStringLiteral("%1 exists. Overwrite?").arg(target));
                 if (overwrite != QMessageBox::Yes) {
                     failures << QStringLiteral("%1 (skipped)").arg(src);
                     continue;
@@ -3378,26 +3319,22 @@ extern "C" int run_gui(int *argc, char **argv) {
         QMessageBox::information(&window, QStringLiteral("Copy Sources"), msg);
     });
 
-    QObject::connect(prefsAct, &QAction::triggered, &window,
-                     [&window]() { prompt_preferences(&window); });
+    QObject::connect(prefsAct, &QAction::triggered, &window, [&window]() { prompt_preferences(&window); });
 
     QObject::connect(exitAct, &QAction::triggered, &app, &QApplication::quit);
 
     QObject::connect(matchByNameAct, &QAction::triggered, &window, [&window, state]() {
         QString sel = state->selected_instance();
         if (sel.isEmpty()) {
-            window.statusBar()->showMessage(
-                QStringLiteral("Match by Name: select an instance first"), 3000);
+            window.statusBar()->showMessage(QStringLiteral("Match by Name: select an instance first"), 3000);
             return;
         }
         int count = state->match_by_name(sel);
         if (count > 0) {
-            window.statusBar()->showMessage(
-                QStringLiteral("Matched %1 port(s) by name").arg(count), 3000);
+            window.statusBar()->showMessage(QStringLiteral("Matched %1 port(s) by name").arg(count), 3000);
         } else {
-            window.statusBar()->showMessage(
-                QStringLiteral("No matching top-level ports found for '%1'").arg(sel),
-                3000);
+            window.statusBar()->showMessage(QStringLiteral("No matching top-level ports found for '%1'").arg(sel),
+                                            3000);
         }
     });
 
