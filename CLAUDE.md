@@ -45,6 +45,11 @@ Use abstractions wisely.
 
     #### **ALWAYS** check for entries in your memory on entry, and **ALWAYS** document your progress (technical, architectural, contextual, etc) to your memory to help out your future self.
 
+    #### Memstate project_id for this codebase
+    - Historical: `block_editor` (34+ memories — design decisions, sessions, gotchas, TODOs from when this was a non-git working copy at `~/git/hdl_tooling/block-editor`)
+    - Repo-side: `hdl_compose` and `hdl_compose_dev` hold pointers back to `block_editor`
+    - **On entry, load `block_editor` first.** Write new memories to `block_editor` to preserve continuity.
+
 USER PROMPT END
 
 Please follow the guidelines within the USER GUIDELINES START and END, they were hand-written by the actual human you are meant to help.  I don't know how many prompts you get automatically by all the
