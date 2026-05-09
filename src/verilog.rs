@@ -126,8 +126,15 @@ fn extract_parameters(tree: &SyntaxTree, header: RefNode) -> Vec<GenericDef> {
 
     for node in header {
         if let RefNode::ParameterDeclarationParam(param) = node {
-            // Get data type as string
-            let type_str = get_node_text(tree, RefNode::DataTypeOrImplicit(&param.nodes.1));
+            // Get data type as string. Trimmed because sv-parser's `Locate`
+            // tokens include trailing trivia (whitespace / newlines) which
+            // would otherwise leak into the captured string and corrupt
+            // downstream codegen — the codegen would emit `parameter integer\n
+            // WIDTH = 8\n\n`, which re-parses with extra whitespace and breaks
+            // round-trip equality on `default_value`.
+            let type_str = get_node_text(tree, RefNode::DataTypeOrImplicit(&param.nodes.1))
+                .trim()
+                .to_string();
 
             // Get each parameter assignment
             for assign_node in RefNode::ListOfParamAssignments(&param.nodes.2) {
@@ -138,6 +145,8 @@ fn extract_parameters(tree: &SyntaxTree, header: RefNode) -> Vec<GenericDef> {
                     {
                         let default_value = assign.nodes.2.as_ref().map(|(_, expr)| {
                             get_node_text(tree, RefNode::ConstantParamExpression(expr))
+                                .trim()
+                                .to_string()
                         });
 
                         generics.push(GenericDef {
@@ -501,6 +510,35 @@ endmodule
         assert_eq!(m.generics[0].name, "WIDTH");
         assert_eq!(m.generics[0].default_value, Some("8".to_string()));
         assert_eq!(m.generics[1].name, "DEPTH");
+    }
+
+    /// Regression: the source-level newline trailing the last parameter must
+    /// not be captured into `default_value` or `type_name`. Before the fix,
+    /// `default_value` was `Some("8 \n")` and `type_name` was `"\n"`, which
+    /// made the codegen emit malformed output and broke generic round-trip.
+    #[test]
+    fn parameter_default_and_type_strip_trailing_whitespace() {
+        let v =
+            "module counter #(\n    parameter WIDTH = 8\n) (\n    input wire clk\n);\nendmodule\n";
+        let modules = parse_verilog_str(v, "v").unwrap();
+        let m = &modules[0];
+        assert_eq!(m.generics.len(), 1);
+        assert_eq!(m.generics[0].name, "WIDTH");
+        assert_eq!(
+            m.generics[0].default_value,
+            Some("8".to_string()),
+            "default_value must not contain trailing source whitespace"
+        );
+        assert!(
+            !m.generics[0].type_name.contains('\n'),
+            "type_name must not contain newlines, got {:?}",
+            m.generics[0].type_name
+        );
+        assert_eq!(
+            m.generics[0].type_name.trim(),
+            m.generics[0].type_name,
+            "type_name must already be trimmed"
+        );
     }
 
     #[test]
