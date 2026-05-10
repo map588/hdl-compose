@@ -31,7 +31,7 @@ fn parse_verilog_fixture() {
     assert_eq!(m.name, "counter");
     assert_eq!(m.generics.len(), 1);
     assert_eq!(m.generics[0].name, "WIDTH");
-    assert_eq!(m.ports.len(), 4);
+    assert_eq!(m.ports.len(), 5);
 }
 
 #[test]

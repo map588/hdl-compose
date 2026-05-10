@@ -1,0 +1,113 @@
+{
+  "version": 3,
+  "top_name": "fixture_project_sv",
+  "language": "SystemVerilog",
+  "top_generics": [],
+  "top_ports": [
+    {
+      "name": "clk",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "dout",
+      "direction": "Out",
+      "port_type": {
+        "StdLogicVector": {
+          "high": {
+            "Expr": "WIDTH - 1"
+          },
+          "low": {
+            "Literal": 0
+          },
+          "dir": "Downto"
+        }
+      },
+      "bundle": null
+    },
+    {
+      "name": "rst_n",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "full",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "empty",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    }
+  ],
+  "instances": [
+    {
+      "name": "counter_0",
+      "module_ref": "counter",
+      "generic_map": {},
+      "port_map": {
+        "rst_n": {
+          "TopPort": "rst_n"
+        },
+        "count": null,
+        "clk": {
+          "TopPort": "clk"
+        }
+      },
+      "position": [
+        -636.0,
+        77.0
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "fifo_sync_0",
+      "module_ref": "fifo_sync",
+      "generic_map": {},
+      "port_map": {
+        "wr_en": {
+          "InstancePort": [
+            "counter_0",
+            "msb"
+          ]
+        },
+        "clk": {
+          "TopPort": "clk"
+        },
+        "rst_n": {
+          "TopPort": "rst_n"
+        },
+        "dout": {
+          "TopPort": "dout"
+        },
+        "empty": {
+          "TopPort": "empty"
+        },
+        "full": {
+          "TopPort": "full"
+        },
+        "din": {
+          "InstancePort": [
+            "counter_0",
+            "count"
+          ]
+        }
+      },
+      "position": [
+        145.0,
+        -127.0
+      ],
+      "manual_bundles": {}
+    }
+  ],
+  "aliases": {},
+  "library_paths": [
+    "counter.v",
+    "fifo_sync.v"
+  ]
+}

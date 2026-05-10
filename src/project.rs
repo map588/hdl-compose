@@ -56,6 +56,18 @@ pub fn load_project(path: &Path) -> Result<(Schematic, Vec<String>), ProjectErro
     let mut schematic = project.schematic;
     let mut warnings = Vec::new();
 
+    // Resolve relative library paths against the project file's directory so
+    // .hdlc projects can use relative paths and remain portable. Absolute
+    // paths are preserved as-is. After this, every entry is an absolute path
+    // (or unchanged, if already absolute).
+    if let Some(project_dir) = path.parent() {
+        for lib_path in schematic.library_paths.iter_mut() {
+            if lib_path.is_relative() {
+                *lib_path = project_dir.join(&lib_path);
+            }
+        }
+    }
+
     // Verify library paths exist (warn on missing, don't fail)
     schematic.library_paths.retain(|lib_path| {
         if lib_path.exists() {

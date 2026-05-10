@@ -4,7 +4,8 @@ module counter #(
     input  wire             clk,
     input  wire             rst_n,
     input  wire             en,
-    output reg  [WIDTH-1:0] count
+    output reg  [WIDTH-1:0] count,
+    output wire             msb
 );
 
 always @(posedge clk or negedge rst_n) begin
@@ -13,5 +14,7 @@ always @(posedge clk or negedge rst_n) begin
     else if (en)
         count <= count + 1;
 end
+
+assign msb = count[WIDTH-1];
 
 endmodule

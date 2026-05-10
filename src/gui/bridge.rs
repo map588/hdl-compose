@@ -691,15 +691,23 @@ impl qobject::AppState {
         let Some(schematic) = self.rust().schematic.as_ref() else {
             return QString::default();
         };
-        // Wrap in entity-shaped scaffolding for readability. The parser
+        // Wrap in language-shaped scaffolding for readability. The parser
         // ignores these decoration tokens, so users can edit them freely.
         // Always trailing comma after every entry — the editor's grammar
         // doesn't try to mimic the language's terminator rules. The parser
-        // strips trailing commas anyway.
+        // strips trailing commas anyway. Body grammar (`name : in/out type`,
+        // `name : type [:= value]`) is shared across languages.
+        let sv = matches!(schematic.language, Language::SystemVerilog);
         let mut out = String::new();
-        out.push_str(&format!("entity {} is\n", schematic.top_name));
+        if sv {
+            out.push_str(&format!("module {} (\n", schematic.top_name));
+        } else {
+            out.push_str(&format!("entity {} is\n", schematic.top_name));
+        }
         if !schematic.top_generics.is_empty() {
-            out.push_str("  generic (\n");
+            if !sv {
+                out.push_str("  generic (\n");
+            }
             for g in &schematic.top_generics {
                 let value = match &g.default_value {
                     Some(v) => format!(" := {v}"),
@@ -707,10 +715,14 @@ impl qobject::AppState {
                 };
                 out.push_str(&format!("    {} : {}{},\n", g.name, g.type_name, value));
             }
-            out.push_str("  );\n");
+            if !sv {
+                out.push_str("  );\n");
+            }
         }
         if !schematic.top_ports.is_empty() {
-            out.push_str("  port (\n");
+            if !sv {
+                out.push_str("  port (\n");
+            }
             for p in &schematic.top_ports {
                 let dir = match p.direction {
                     Direction::In => "in",
@@ -720,9 +732,15 @@ impl qobject::AppState {
                 let type_str = port_type_brief(&p.port_type);
                 out.push_str(&format!("    {} : {} {},\n", p.name, dir, type_str));
             }
-            out.push_str("  );\n");
+            if !sv {
+                out.push_str("  );\n");
+            }
         }
-        out.push_str(&format!("end entity {};\n", schematic.top_name));
+        if sv {
+            out.push_str(");\nendmodule\n");
+        } else {
+            out.push_str(&format!("end entity {};\n", schematic.top_name));
+        }
         QString::from(out.as_str())
     }
 
@@ -2062,19 +2080,26 @@ pub(super) fn parse_top_level_buffer(buffer: &str) -> Result<ParsedTopLevel, Str
 
     for (i, raw_line) in buffer.lines().enumerate() {
         let line_no = i + 1;
+        // Strip line comments — VHDL `--` and SV `//`.
         let stripped = match raw_line.split_once("--") {
             Some((before, _)) => before,
-            None => raw_line,
+            None => match raw_line.split_once("//") {
+                Some((before, _)) => before,
+                None => raw_line,
+            },
         };
         let mut line = stripped.trim().trim_end_matches(',');
         if line.is_empty() {
             continue;
         }
-        // Decoration we silently skip.
+        // Decoration we silently skip — VHDL (`entity / end / generic / port`)
+        // and SV (`module / endmodule`) shapes.
         let lower = line.to_ascii_lowercase();
         if lower.starts_with("entity ")
             || lower.starts_with("end ")
             || lower == "end"
+            || lower == "endmodule"
+            || lower.starts_with("module ")
             || (lower.starts_with("generic") && line.contains('('))
             || (lower.starts_with("port") && line.contains('('))
             || line == ")"
@@ -2362,6 +2387,24 @@ mod tests {
         let buf = "clk : in -- main system clock\n";
         let parsed = parse_top_level_buffer(buf).unwrap();
         assert_eq!(parsed.ports.len(), 1);
+    }
+
+    #[test]
+    fn parse_top_level_strips_sv_comments() {
+        let buf = "clk : in // main system clock\n";
+        let parsed = parse_top_level_buffer(buf).unwrap();
+        assert_eq!(parsed.ports.len(), 1);
+    }
+
+    #[test]
+    fn parse_top_level_ignores_sv_decoration() {
+        let buf = "module top (\n    WIDTH : integer := 8,\n    clk : in logic,\n    dout : out logic[7:0],\n);\nendmodule\n";
+        let parsed = parse_top_level_buffer(buf).unwrap();
+        assert_eq!(parsed.generics.len(), 1);
+        assert_eq!(parsed.generics[0].name, "WIDTH");
+        assert_eq!(parsed.ports.len(), 2);
+        assert_eq!(parsed.ports[0].name, "clk");
+        assert_eq!(parsed.ports[1].name, "dout");
     }
 
     #[test]

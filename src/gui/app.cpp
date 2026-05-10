@@ -23,6 +23,7 @@
 #include <QGraphicsSceneContextMenuEvent>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsView>
+#include <QGuiApplication>
 #include <QHash>
 #include <QInputDialog>
 #include <QKeyEvent>
@@ -45,6 +46,7 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScreen>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSet>
@@ -2047,6 +2049,24 @@ void rebuild_library_model(QStringListModel *model, AppState *state) {
 
 // Render one instance's bindings as a VHDL component-instantiation buffer.
 // Returns an empty string if `instance_name` is empty or unknown.
+//
+// VHDL form:
+//   u_fifo : fifo_sync
+//     generic map (
+//       WIDTH => 16,
+//     )
+//     port map (
+//       clk => clk_sys,
+//     );
+//
+// SV form (project_language == 1):
+//   fifo_sync #(
+//     .WIDTH(16),
+//   ) u_fifo (
+//     .clk(clk_sys),
+//   );
+//
+// Trailing comma on every entry — punctuation is uniform; parser strips them.
 static QString build_instance_buffer(AppState *state, const QString &instance_name) {
     if (instance_name.isEmpty())
         return QString();
@@ -2054,16 +2074,59 @@ static QString build_instance_buffer(AppState *state, const QString &instance_na
     if (idx < 0)
         return QString();
     QString module = state->instance_module(idx);
+    bool sv = state->project_language() == 1;
 
     QString out;
     if (state->instance_is_dirty(idx)) {
-        out += QStringLiteral("-- Source file changed. Review the bindings below;\n"
-                              "-- ports whose direction/type changed were dropped by re-parse.\n");
+        QString prefix = sv ? QStringLiteral("//") : QStringLiteral("--");
+        out += QStringLiteral("%1 Source file changed. Review the bindings below;\n"
+                              "%1 ports whose direction/type changed were dropped by re-parse.\n")
+                   .arg(prefix);
     }
-    out += QStringLiteral("%1 : %2\n").arg(instance_name, module);
 
-    // generic map
     int gc = state->module_generic_count(idx);
+    int pc = state->instance_port_count(idx);
+
+    if (sv) {
+        // SV: `module #( .P(v), ) inst ( .port(net), );`
+        if (gc > 0) {
+            out += QStringLiteral("%1 #(\n").arg(module);
+            int name_width = 0;
+            for (int g = 0; g < gc; ++g) {
+                int w = static_cast<int>(state->module_generic_name(idx, g).size());
+                if (w > name_width)
+                    name_width = w;
+            }
+            for (int g = 0; g < gc; ++g) {
+                QString gname = state->module_generic_name(idx, g);
+                QString current = state->generic_map_entry(instance_name, gname);
+                QString value =
+                    current.isEmpty() ? state->module_generic_default(idx, g) : current;
+                out += QStringLiteral("  .%1(%2),\n").arg(gname.leftJustified(name_width), value);
+            }
+            out += QStringLiteral(") %1 (\n").arg(instance_name);
+        } else {
+            out += QStringLiteral("%1 %2 (\n").arg(module, instance_name);
+        }
+        int name_width = 0;
+        for (int p = 0; p < pc; ++p) {
+            int w = static_cast<int>(state->instance_port_name(idx, p).size());
+            if (w > name_width)
+                name_width = w;
+        }
+        for (int p = 0; p < pc; ++p) {
+            QString pname = state->instance_port_name(idx, p);
+            QString rhs = state->port_map_entry(instance_name, pname);
+            if (rhs.isEmpty())
+                rhs = QStringLiteral("open");
+            out += QStringLiteral("  .%1(%2),\n").arg(pname.leftJustified(name_width), rhs);
+        }
+        out += QStringLiteral(");\n");
+        return out;
+    }
+
+    // VHDL form
+    out += QStringLiteral("%1 : %2\n").arg(instance_name, module);
     if (gc > 0) {
         out += QStringLiteral("  generic map (\n");
         int name_width = 0;
@@ -2076,15 +2139,11 @@ static QString build_instance_buffer(AppState *state, const QString &instance_na
             QString gname = state->module_generic_name(idx, g);
             QString current = state->generic_map_entry(instance_name, gname);
             QString value = current.isEmpty() ? state->module_generic_default(idx, g) : current;
-            // Always trailing comma — punctuation is uniform regardless of
-            // the project language. Parser strips them.
             out += QStringLiteral("    %1 => %2,\n").arg(gname.leftJustified(name_width), value);
         }
         out += QStringLiteral("  )\n");
     }
 
-    // port map
-    int pc = state->instance_port_count(idx);
     out += QStringLiteral("  port map (\n");
     int name_width = 0;
     for (int p = 0; p < pc; ++p) {
@@ -2133,17 +2192,43 @@ static bool parse_editor_line(const QString &name, const QString &rhs, QString *
     return true;
 }
 
-// Extract (lhs, rhs) from a `<lhs> => <rhs>` line. Returns false if the
-// line is a comment, blank, a section header, or `);`.
+// Extract (lhs, rhs) from a binding line. Recognizes both
+//   VHDL form: `<name> => <value>[,]`
+//   SV form:   `.<name>(<value>)[,]`
+// Returns false if the line is a comment, blank, a section header, `);`, or
+// the SV header line `module_name #(` / `) inst (`.
 static bool extract_binding(const QString &line, QString *lhs, QString *rhs) {
     QString s = line.trimmed();
-    if (s.isEmpty() || s.startsWith(QStringLiteral("--")))
+    if (s.isEmpty())
         return false;
-    if (s.startsWith(QStringLiteral("generic map")) || s.startsWith(QStringLiteral("port map")) ||
-        s == QStringLiteral(")") || s == QStringLiteral(");") ||
-        s.contains(QStringLiteral(":")) && !s.contains(QStringLiteral("=>"))) {
+    if (s.startsWith(QStringLiteral("--")) || s.startsWith(QStringLiteral("//")))
         return false;
+    if (s.startsWith(QStringLiteral("generic map")) || s.startsWith(QStringLiteral("port map")))
+        return false;
+    if (s == QStringLiteral(")") || s == QStringLiteral(");"))
+        return false;
+    // SV header lines like `module_name #(` or `) u_inst (` carry no binding.
+    if (s.endsWith(QStringLiteral("#(")) || s.endsWith(QStringLiteral("(")))
+        return false;
+
+    // SV form `.name(value),`
+    if (s.startsWith(QChar('.'))) {
+        int open = s.indexOf(QChar('('));
+        int close = s.lastIndexOf(QChar(')'));
+        if (open < 2 || close <= open)
+            return false;
+        QString name = s.mid(1, open - 1).trimmed();
+        QString val = s.mid(open + 1, close - open - 1).trimmed();
+        if (name.isEmpty())
+            return false;
+        *lhs = name;
+        *rhs = val;
+        return true;
     }
+
+    // VHDL form `name => value,` — reject `name : type` lines.
+    if (s.contains(QChar(':')) && !s.contains(QStringLiteral("=>")))
+        return false;
     int arrow = s.indexOf(QStringLiteral("=>"));
     if (arrow < 0)
         return false;
@@ -2164,10 +2249,21 @@ static EditorParseResult parse_editor_buffer(const QString &buffer) {
     EditorParseResult r;
     enum Section { None, Generics, Ports };
     Section section = None;
+    // Match SV header lines without language hint:
+    //   `<module> #(`           → starts Generics
+    //   `) <inst> (`            → ends Generics, starts Ports
+    //   `<module> <inst> (`     → no-params header, starts Ports
+    static const QRegularExpression sv_params_open(QStringLiteral("^[A-Za-z_][\\w]*\\s+#\\($"));
+    static const QRegularExpression sv_params_to_ports(
+        QStringLiteral("^\\)\\s+[A-Za-z_][\\w]*\\s+\\($"));
+    static const QRegularExpression sv_ports_only(
+        QStringLiteral("^[A-Za-z_][\\w]*\\s+[A-Za-z_][\\w]*\\s+\\($"));
+
     const QStringList lines = buffer.split(QChar('\n'));
     for (int i = 0; i < lines.size(); ++i) {
         const QString &raw = lines[i];
         QString trimmed = raw.trimmed();
+        // VHDL section markers
         if (trimmed.startsWith(QStringLiteral("generic map"))) {
             section = Generics;
             continue;
@@ -2176,6 +2272,20 @@ static EditorParseResult parse_editor_buffer(const QString &buffer) {
             section = Ports;
             continue;
         }
+        // SV section markers
+        if (sv_params_open.match(trimmed).hasMatch()) {
+            section = Generics;
+            continue;
+        }
+        if (sv_params_to_ports.match(trimmed).hasMatch()) {
+            section = Ports;
+            continue;
+        }
+        if (section == None && sv_ports_only.match(trimmed).hasMatch()) {
+            section = Ports;
+            continue;
+        }
+
         QString lhs, rhs;
         if (!extract_binding(raw, &lhs, &rhs))
             continue;
@@ -2246,14 +2356,24 @@ class MiniEditorHighlighter : public QSyntaxHighlighter {
         QTextCharFormat fmt;
         fmt.setUnderlineColor(QColor(220, 60, 60));
         fmt.setUnderlineStyle(QTextCharFormat::WaveUnderline);
-        int arrow = text.indexOf(QStringLiteral("=>"));
         int start = 0;
+        int len = text.length();
+        int arrow = text.indexOf(QStringLiteral("=>"));
         if (arrow >= 0) {
+            // VHDL form: underline RHS after `=>`.
             start = arrow + 2;
             while (start < text.length() && text[start].isSpace())
                 ++start;
+            len = text.length() - start;
+        } else {
+            // SV form `.name(value)`: underline the value between parens.
+            int open = text.indexOf(QChar('('));
+            int close = text.lastIndexOf(QChar(')'));
+            if (open >= 0 && close > open) {
+                start = open + 1;
+                len = close - start;
+            }
         }
-        int len = text.length() - start;
         if (len > 0)
             setFormat(start, len, fmt);
     }
@@ -2569,7 +2689,14 @@ extern "C" int run_gui(int *argc, char **argv) {
     apply_material_dark_theme(app);
 
     QMainWindow window;
-    window.resize(1400, 900);
+    {
+        QScreen *screen = QGuiApplication::primaryScreen();
+        const QRect avail = screen ? screen->availableGeometry() : QRect(0, 0, 1400, 900);
+        const int w = std::max(1024, static_cast<int>(avail.width() * 0.85));
+        const int h = std::max(720, static_cast<int>(avail.height() * 0.85));
+        window.resize(w, h);
+        window.move(avail.center() - QPoint(w / 2, h / 2));
+    }
 
     auto *state = new AppState(&window);
     const QIcon dirty_icon = make_dirty_icon();

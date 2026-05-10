@@ -1,0 +1,7 @@
+# Workaround for Apple Clang + Qt 6 qyieldcpu.h on arm64 macOS:
+# qyieldcpu.h calls __yield() guarded by __has_builtin(__yield), but Apple
+# Clang treats it as an undeclared library function unless <arm_acle.h>
+# is included. cc-rs reads CXXFLAGS_<target_underscored> for per-target
+# C++ flags and propagates them to every cxx-qt-build cc invocation.
+[env]
+CXXFLAGS_aarch64_apple_darwin = "-include arm_acle.h"

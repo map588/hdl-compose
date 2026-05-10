@@ -18,12 +18,22 @@ use hdl_compose::project::load_project;
 use hdl_compose::types::Language;
 
 const FIXTURE_HDLC: &str = "tests/fixtures/fixture_project.hdlc";
+const FIXTURE_HDLC_SV: &str = "tests/fixtures/fixture_project_sv.hdlc";
 const FIXTURES_DIR: &str = "tests/fixtures";
 
 #[test]
 fn roundtrip_fixture_project() {
-    let (mut schematic, warnings) =
-        load_project(Path::new(FIXTURE_HDLC)).expect("load fixture_project.hdlc");
+    roundtrip(FIXTURE_HDLC);
+}
+
+#[test]
+fn roundtrip_fixture_project_sv() {
+    roundtrip(FIXTURE_HDLC_SV);
+}
+
+fn roundtrip(fixture_path: &str) {
+    let (mut schematic, warnings) = load_project(Path::new(fixture_path))
+        .unwrap_or_else(|e| panic!("load {fixture_path}: {e}"));
 
     // The fixture stores library_paths as absolute paths from the original
     // author's machine. Rewrite each entry to point at the matching file in
