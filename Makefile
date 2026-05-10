@@ -13,7 +13,8 @@ help:
 	@echo "  test     - cargo test"
 	@echo "  fmt      - cargo fmt"
 	@echo "  clippy   - cargo clippy --all-targets -- -D warnings"
-	@echo "  app      - refresh /Applications/hdl-compose.app debug binary"
+	@echo "  app-release - cargo build --release && cp target/release/$(BIN) $(APP_BUNDLE)/Contents/MacOS/$(BIN)"
+	@echo "  app-debug - cargo build && cp target/debug/$(BIN) $(APP_BUNDLE)/Contents/MacOS/$(BIN)"
 	@echo "  clean    - cargo clean"
 	@echo ""
 	@echo "Requires Qt 6 (homebrew: brew install qt). qmake found: $$(command -v qmake6 || command -v qmake)"
@@ -42,6 +43,16 @@ clippy:
 clean:
 	cargo clean
 
+app-release: app
+	cp target/release/$(BIN) $(APP_BUNDLE)/Contents/MacOS/$(BIN)
+	@pkill -x $(BIN) 2>/dev/null || true
+	@echo "refreshed $(APP_BUNDLE)"
+
+app-debug: app
+	cp target/debug/$(BIN) $(APP_BUNDLE)/Contents/MacOS/$(BIN)
+	@pkill -x $(BIN) 2>/dev/null || true
+	@echo "refreshed $(APP_BUNDLE)"
+
 # Refresh /Applications/hdl-compose.app wrapper used for computer-use GUI testing.
 # The .app must already exist (created once manually with Info.plist).
 app: build
@@ -50,6 +61,3 @@ app: build
 		echo "Create the bundle once with Info.plist, then re-run make app."; \
 		exit 1; \
 	fi
-	cp target/debug/$(BIN) $(APP_BUNDLE)/Contents/MacOS/$(BIN)
-	@pkill -x $(BIN) 2>/dev/null || true
-	@echo "refreshed $(APP_BUNDLE)"
