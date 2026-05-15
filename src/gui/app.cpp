@@ -74,6 +74,7 @@
 #include "hdl-compose/src/gui/bridge.cxxqt.h"
 
 #include "canvas_constants.h"
+#include "canvas.h"
 #include "items.h"
 
 namespace {
@@ -179,19 +180,7 @@ int find_instance_index(AppState *state, const QString &name) {
 namespace {
 using namespace hdlc;
 
-QString allocate_instance_name(AppState *state, const QString &module) {
-    int count = state->instance_count();
-    QStringList existing;
-    for (int i = 0; i < count; ++i) {
-        existing << state->instance_name(i);
-    }
-    for (int i = 0;; ++i) {
-        QString candidate = QStringLiteral("%1_%2").arg(module).arg(i);
-        if (!existing.contains(candidate)) {
-            return candidate;
-        }
-    }
-}
+// allocate_instance_name moved to canvas.cpp (its sole caller).
 
 // PortPinItem, BundlePinItem, InstanceItem, TopPortItem, PinSide enum,
 // format_width and find_instance_index helpers all live in items.h. The
@@ -619,54 +608,7 @@ void InstanceItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *opti
                       Qt::AlignLeft | Qt::AlignVCenter, m_module);
 }
 
-// (still inside `namespace hdlc { ... }` opened before PortPinItem out-of-line
-// impls — WireTool, CanvasView and CanvasLayer stay in hdlc so items.h
-// forward-decls of WireTool/CanvasLayer match.)
-
-// --- WireTool ---------------------------------------------------------------
-// WireItem + JunctionDotItem now live in items.h.
-
-class WireTool {
-  public:
-    WireTool(AppState *state, QGraphicsScene *scene) : m_state(state), m_scene(scene) {}
-
-    // Press on a pin: either commits (if click-click mid-flight) or arms+starts drag.
-    void onPinPressed(PortPinItem *pin, const QPointF &scene_pos);
-    // During a held drag, update the provisional wire endpoint.
-    void onPinDragMove(const QPointF &scene_pos);
-    // Release: commit if over a pin, keep armed if movement was tiny, else cancel.
-    void onPinReleased(const QPointF &scene_pos);
-
-    void cancel();
-    void notifyPinDestroyed(PortPinItem *pin) {
-        if (m_armed == pin)
-            m_armed = nullptr;
-    }
-    PortPinItem *armed() const { return m_armed; }
-
-  private:
-    // Compatibility check. Returns empty string if compatible, else reason.
-    QString compatibilityError(PortPinItem *src, PortPinItem *dst) const;
-    // Attempt to commit src→dst; flash-red if incompatible. Returns true on commit.
-    bool tryCommit(PortPinItem *src, PortPinItem *dst);
-    // Input↔input driver-resolution flow for multi-load nets.
-    bool tryCommitMultiLoad(PortPinItem *a, PortPinItem *b);
-    void createProvisional(PortPinItem *from, const QPointF &scene_pos);
-    void clearProvisional();
-
-    AppState *m_state;
-    QGraphicsScene *m_scene;
-    PortPinItem *m_armed = nullptr;
-    QGraphicsPathItem *m_provisional = nullptr;
-    QPointF m_press_pos;
-    // Set by tryCommitMultiLoad on a successful multi-load commit; instructs
-    // onPinReleased to keep m_armed alive so the user can click more pins to
-    // keep extending the same net.
-    bool m_sticky_after_commit = false;
-};
-
-} // anonymous namespace
-namespace hdlc {
+// WireTool, CanvasView, CanvasLayer all live in canvas.h / canvas.cpp.
 
 PortPinItem::~PortPinItem() {
     if (m_wire_tool) {
@@ -891,9 +833,9 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
 }
 
 // TopPortItem moved to items.h.
+// WireTool impls + parse_pin_key moved to canvas.cpp.
 
-// --- WireTool impl ----------------------------------------------------------
-
+#if 0
 QString WireTool::compatibilityError(PortPinItem *src, PortPinItem *dst) const {
     if (src == dst) {
         return QStringLiteral("cannot connect pin to itself");
@@ -1142,11 +1084,12 @@ void WireTool::onPinReleased(const QPointF &scene_pos) {
     // Long drag ended on empty space — cancel.
     cancel();
 }
+#endif
 
 // WireItem::contextMenuEvent moved inline to items.h.
+// CanvasView + CanvasLayer moved to canvas.h / canvas.cpp.
 
-// --- CanvasView --------------------------------------------------------------
-
+#if 0
 class CanvasView : public QGraphicsView {
   public:
     CanvasView(QGraphicsScene *scene, AppState *state, QWidget *parent = nullptr)
@@ -2028,6 +1971,7 @@ class CanvasLayer {
     std::pair<int, int> m_last_col_bounds = {0, 0};
     WireTool m_wire_tool;
 };
+#endif
 
 // --- InstanceItem::itemChange (live wire reroute during drag) ---------------
 

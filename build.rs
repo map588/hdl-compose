@@ -12,6 +12,7 @@ fn main() {
             .file("src/gui/bridge.rs")
             .cc_builder(|cc| {
                 cc.file("src/gui/app.cpp");
+                cc.file("src/gui/canvas.cpp");
             })
             .build();
     }

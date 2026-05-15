@@ -58,6 +58,10 @@ inline QString format_width(int w) {
     return QStringLiteral("[%1:0]").arg(w - 1);
 }
 
+// Find the index of an instance by name in the bridge's instance list.
+// Definition lives in app.cpp inside `namespace hdlc { ... }`.
+int find_instance_index(AppState *state, const QString &name);
+
 // --- JunctionDotItem --------------------------------------------------------
 
 class JunctionDotItem : public QGraphicsEllipseItem {
