@@ -116,6 +116,17 @@ class WireItem : public QGraphicsPathItem {
     QPainterPath shape() const override {
         QPainterPathStroker stroker;
         stroker.setWidth(10.0);
+        // Trim the first and last segments out of the hit shape so the wire
+        // doesn't intercept clicks on the port pin under its endpoints. The
+        // wire still RENDERS edge-to-edge — only its clickable region is
+        // shortened to the trunk/bridge segments between the stubs.
+        if (m_waypoints.size() >= 4) {
+            QPainterPath trimmed;
+            trimmed.moveTo(m_waypoints[1]);
+            for (int i = 2; i < m_waypoints.size() - 1; ++i)
+                trimmed.lineTo(m_waypoints[i]);
+            return stroker.createStroke(trimmed);
+        }
         return stroker.createStroke(path());
     }
 

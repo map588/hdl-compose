@@ -209,7 +209,12 @@ QRectF PortPinItem::boundingRect() const {
     qreal pw = m_parent ? m_parent->width() : kMinInstanceWidth;
     qreal w = pw + 40;
     qreal x = (m_side == PinSide::Left) ? -kPinShapeSize - 4 : 0;
-    return QRectF(x, m_slot * kPinSlotHeight, w, kPinSlotHeight);
+    // The armed-state halo (drawn at the pin tip with radius kPinShapeSize+2)
+    // extends a few pixels above/below the slot rect. Without this Y margin,
+    // those pixels fall outside boundingRect and Qt skips repainting them on
+    // deselection, leaving a stale halo arc visible.
+    constexpr qreal kHaloMarginY = 6.0;
+    return QRectF(x, m_slot * kPinSlotHeight - kHaloMarginY, w, kPinSlotHeight + 2 * kHaloMarginY);
 }
 
 QPainterPath PortPinItem::shape() const {
@@ -1948,6 +1953,11 @@ extern "C" int run_gui(int *argc, char **argv) {
     root_splitter->addWidget(canvas);
     root_splitter->addWidget(editor_panel);
     root_splitter->setSizes({250, 800, 350});
+    // Editor panel can be dragged narrow but not collapsed to zero. Without
+    // this the splitter handle disappears and the user has no way to bring
+    // it back without resizing the window. A toolbar action below also
+    // restores it forcibly.
+    root_splitter->setCollapsible(2, false);
     window.setCentralWidget(root_splitter);
 
     // --- Menu ---
@@ -2029,6 +2039,32 @@ extern "C" int run_gui(int *argc, char **argv) {
     fileToolbar->addSeparator();
     fileToolbar->addAction(saveAct);
     exitAct->setShortcut(QKeySequence::Quit);
+
+    // Force-reopen the editor panel if the user dragged it narrow or it
+    // somehow ended up zero-width. Restores the panel to its default share
+    // of the window.
+    auto *showEditorAct = new QAction(QStringLiteral("Show Editor"), &window);
+    showEditorAct->setToolTip(QStringLiteral("Restore the editor panel to its default width."));
+    showEditorAct->setShortcut(QKeySequence(QStringLiteral("Ctrl+\\")));
+    QObject::connect(showEditorAct, &QAction::triggered, &window, [root_splitter]() {
+        QList<int> sizes = root_splitter->sizes();
+        int total = 0;
+        for (int s : sizes)
+            total += s;
+        if (total <= 0)
+            return;
+        // Give the editor panel ~25% of the splitter, leaving the rest split
+        // 25/75 between sidebar and canvas.
+        int editor_w = static_cast<int>(total * 0.25);
+        if (editor_w < 300)
+            editor_w = (std::min)(300, total - 100);
+        int remaining = total - editor_w;
+        int sidebar_w = static_cast<int>(remaining * 0.25);
+        int canvas_w = remaining - sidebar_w;
+        root_splitter->setSizes({sidebar_w, canvas_w, editor_w});
+    });
+    fileToolbar->addSeparator();
+    fileToolbar->addAction(showEditorAct);
 
     window.statusBar()->showMessage(QStringLiteral("Ready"));
     update_window_title(&window, state);
