@@ -73,26 +73,12 @@
 
 #include "hdl-compose/src/gui/bridge.cxxqt.h"
 
+#include "canvas_constants.h"
+#include "items.h"
+
 namespace {
 
-constexpr char kModuleMimeType[] = "application/x-hdl-compose-module";
-constexpr int kMinInstanceWidth = 200;
-constexpr int kInstanceHeaderHeight = 50;
-constexpr int kPinSlotHeight = 24;
-constexpr int kPinShapeSize = 12;
-constexpr int kMinInstanceBodyHeight = 30;
-constexpr int kPinLabelHPadding = 8; // gap between pin tip and label start
-constexpr int kInstanceCenterPadding = 24; // gap between left and right label columns
-constexpr int kColumnPitch = 320; // X stride between adjacent column centers; gutter = pitch - max(width)
-constexpr int kColumnGutterHalf = 60; // half-width of inter-column wire channel
-constexpr int kWireLaneStep = 12; // X offset between adjacent wires sharing a gutter
-constexpr int kClickThresholdPx = 5;
-constexpr double kZoomMin = 0.2;
-constexpr double kZoomMax = 5.0;
-constexpr double kZoomStep = 1.15;
-constexpr int kTopPortSpacing = 44;
-constexpr int kWireStubMin = 40; // minimum pin-to-first-turn length (>= 4 × kPinShapeSize)
-constexpr int kJunctionDotRadius = 4;
+using namespace hdlc;
 
 void apply_material_dark_theme(QApplication &app) {
     QPalette palette;
@@ -832,9 +818,8 @@ void InstanceItem::layoutPins() {
     setRect(0, 0, m_width, kInstanceHeaderHeight + body);
 }
 
-// --- WireTool + WireItem ----------------------------------------------------
-
-class WireItem;
+// --- WireTool ---------------------------------------------------------------
+// WireItem + JunctionDotItem now live in items.h.
 
 class WireTool {
   public:
@@ -873,147 +858,6 @@ class WireTool {
     // onPinReleased to keep m_armed alive so the user can click more pins to
     // keep extending the same net.
     bool m_sticky_after_commit = false;
-};
-
-class WireItem : public QGraphicsPathItem {
-  public:
-    WireItem(const QString &source_key, const QString &target_key)
-        : m_source_key(source_key), m_target_key(target_key) {
-        setFlag(QGraphicsItem::ItemIsSelectable, true);
-        setAcceptedMouseButtons(Qt::LeftButton | Qt::RightButton);
-        QPen pen(colorForNet(source_key), 1.5);
-        pen.setCosmetic(true);
-        setPen(pen);
-    }
-
-    // Hash the net identity to a deterministic hue. Same net → same color;
-    // different nets land on clearly distinct hues so co-routed wires
-    // (e.g. clk and rst_n bundled toward the same instance) are
-    // distinguishable at a glance.
-    static QColor colorForNet(const QString &key) {
-        // Muted palette: lower saturation + slightly dimmer value so wires
-        // read as background detail rather than competing with module bodies.
-        int hue = static_cast<int>(qHash(key) % 360);
-        return QColor::fromHsv(hue, 110, 200);
-    }
-
-    const QString &sourceKey() const { return m_source_key; }
-    const QString &targetKey() const { return m_target_key; }
-
-    void setRouteIndex(int idx) { m_route_index = idx; }
-
-    // Apply a precomputed manhattan path. Caller (CanvasLayer) plans waypoints
-    // with full knowledge of all modules + gutter lane assignment.
-    void setWaypoints(const QVector<QPointF> &pts) {
-        m_waypoints = pts;
-        QPainterPath p;
-        if (!pts.isEmpty()) {
-            p.moveTo(pts.first());
-            for (int i = 1; i < pts.size(); ++i)
-                p.lineTo(pts[i]);
-        }
-        setPath(p);
-    }
-
-    const QVector<QPointF> &waypoints() const { return m_waypoints; }
-
-    // Wider hit region so cosmetic-pen wires can actually be clicked.
-    QPainterPath shape() const override {
-        QPainterPathStroker stroker;
-        stroker.setWidth(10.0);
-        return stroker.createStroke(path());
-    }
-
-    // Inflate the path bbox so the bus-width slash + label (drawn ~9 px
-    // perpendicular to the segment) stays inside the repaint area. Without
-    // this, dragging a wire leaves stale label artifacts on screen.
-    QRectF boundingRect() const override { return QGraphicsPathItem::boundingRect().adjusted(-16, -16, 16, 16); }
-
-    void setAppState(AppState *s) { m_state = s; }
-    void setWidth(int w) { m_width = w; }
-
-    void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget) override {
-        // Render selected state in a distinct high-contrast color.
-        if (option->state & QStyle::State_Selected) {
-            QPen sel_pen(QColor(66, 180, 244), 2.0);
-            sel_pen.setCosmetic(true);
-            painter->setPen(sel_pen);
-            painter->drawPath(path());
-        } else {
-            QGraphicsPathItem::paint(painter, option, widget);
-        }
-
-        // Bus annotation: short slash + width number on multi-bit wires.
-        // VHDL/Verilog schematic convention — single line with `--/--` cap and
-        // the bit count above. Skipped for scalar (width 1) and unknown (-1).
-        if (m_width <= 1)
-            return;
-        const QPainterPath p = path();
-        if (p.elementCount() < 2)
-            return;
-        // Pick the longest segment so the annotation lands somewhere visible.
-        qreal best_len = 0;
-        QPointF a, b;
-        for (int i = 1; i < p.elementCount(); ++i) {
-            QPointF p0(p.elementAt(i - 1).x, p.elementAt(i - 1).y);
-            QPointF p1(p.elementAt(i).x, p.elementAt(i).y);
-            qreal dx = p1.x() - p0.x(), dy = p1.y() - p0.y();
-            qreal len = std::sqrt(dx * dx + dy * dy);
-            if (len > best_len) {
-                best_len = len;
-                a = p0;
-                b = p1;
-            }
-        }
-        if (best_len < 16.0)
-            return;
-        QPointF mid((a.x() + b.x()) / 2.0, (a.y() + b.y()) / 2.0);
-        // Slash perpendicular to the segment, centered on mid.
-        QPointF dir(b.x() - a.x(), b.y() - a.y());
-        qreal dlen = std::sqrt(dir.x() * dir.x() + dir.y() * dir.y());
-        QPointF perp(-dir.y() / dlen, dir.x() / dlen);
-        constexpr qreal kSlashHalf = 5.0;
-        QPointF s1(mid.x() + perp.x() * kSlashHalf - dir.x() / dlen * kSlashHalf,
-                   mid.y() + perp.y() * kSlashHalf - dir.y() / dlen * kSlashHalf);
-        QPointF s2(mid.x() - perp.x() * kSlashHalf + dir.x() / dlen * kSlashHalf,
-                   mid.y() - perp.y() * kSlashHalf + dir.y() / dlen * kSlashHalf);
-        QPen slash_pen(colorForNet(m_source_key), 1.5);
-        slash_pen.setCosmetic(true);
-        painter->setPen(slash_pen);
-        painter->drawLine(s1, s2);
-        // Width number above the slash on the perp side.
-        painter->setPen(QColor(220, 220, 220));
-        QFont f = painter->font();
-        f.setPointSizeF(9.0);
-        painter->setFont(f);
-        QPointF label_pt(mid.x() + perp.x() * 9.0 - 4.0, mid.y() + perp.y() * 9.0 + 4.0);
-        painter->drawText(label_pt, QString::number(m_width));
-    }
-
-  protected:
-    void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override;
-
-  private:
-    QString m_source_key;
-    QString m_target_key;
-    AppState *m_state = nullptr;
-    int m_width = 1;
-    int m_route_index = -1;
-    QVector<QPointF> m_waypoints;
-};
-
-// Filled circle marking a wire junction (T-tap of same-net wires).
-class JunctionDotItem : public QGraphicsEllipseItem {
-  public:
-    JunctionDotItem(const QPointF &center, const QColor &color)
-        : QGraphicsEllipseItem(center.x() - kJunctionDotRadius, center.y() - kJunctionDotRadius,
-                               2 * kJunctionDotRadius, 2 * kJunctionDotRadius) {
-        setBrush(color);
-        QPen pen(color);
-        pen.setCosmetic(true);
-        setPen(pen);
-        setZValue(2);
-    }
 };
 
 PortPinItem::~PortPinItem() {
@@ -1572,26 +1416,7 @@ void WireTool::onPinReleased(const QPointF &scene_pos) {
     cancel();
 }
 
-void WireItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
-    if (!m_state) {
-        return;
-    }
-    QMenu menu;
-    QAction *renameAct = menu.addAction(QStringLiteral("Rename..."));
-    QAction *chosen = menu.exec(event->screenPos());
-    if (chosen == renameAct) {
-        // Driver key is the net identity; ask for alias.
-        bool ok = false;
-        QString current; // fetched signal name not exposed; leave blank
-        QString text =
-            QInputDialog::getText(nullptr, QStringLiteral("Rename Wire"),
-                                  QStringLiteral("Alias for %1:").arg(m_source_key), QLineEdit::Normal, current, &ok);
-        if (ok) {
-            m_state->set_alias(m_source_key, text.trimmed());
-        }
-    }
-    event->accept();
-}
+// WireItem::contextMenuEvent moved inline to items.h.
 
 // --- CanvasView --------------------------------------------------------------
 
@@ -2085,6 +1910,31 @@ class CanvasLayer {
                 gx_for_idx[idx] = allocateLaneX(idx, gutter_info, gutter_counter);
             qreal dgx = gx_for_idx[g_d];
 
+            // Shift hy so the horizontal bridge doesn't cut through any
+            // non-endpoint module body in the bridge's X range.
+            QSet<QString> endpoint_insts;
+            auto inst_of = [](const QString &k) -> QString {
+                if (k.startsWith(QStringLiteral("top:")))
+                    return QString();
+                int d = k.indexOf(QChar('.'));
+                return (d >= 0) ? k.left(d) : QString();
+            };
+            QString d_inst = inst_of(driver.key);
+            if (!d_inst.isEmpty())
+                endpoint_insts.insert(d_inst);
+            for (const auto &l : loads) {
+                QString li = inst_of(l.key);
+                if (!li.isEmpty())
+                    endpoint_insts.insert(li);
+            }
+            qreal bx_min = gx_for_idx[sorted_gutters.first()];
+            qreal bx_max = gx_for_idx[sorted_gutters.last()];
+            for (auto v : gx_for_idx) {
+                bx_min = std::min(bx_min, v);
+                bx_max = std::max(bx_max, v);
+            }
+            hy = adjustBridgeY(hy, bx_min, bx_max, endpoint_insts);
+
             for (int i = 0; i < loads.size(); ++i) {
                 qreal lgx = gx_for_idx[g_l[i]];
                 QVector<QPointF> wp;
@@ -2141,6 +1991,108 @@ class CanvasLayer {
         }
     }
 
+
+    // Return a bridge Y close to `preferred` such that a horizontal segment
+    // from x=bx_min to x=bx_max at that Y does not cross any instance body.
+    //
+    // Endpoint instances are NOT excluded: for multi-column connections their
+    // bodies sit OUTSIDE the bridge x-range (the bridge runs between the
+    // gutters that bracket them), but for same-column connections both
+    // endpoints occupy the column the bridge spans across — excluding them
+    // would let the bridge cut straight through their bodies.
+    qreal adjustBridgeY(qreal preferred, qreal bx_min, qreal bx_max,
+                        const QSet<QString> &endpoint_insts) const {
+        Q_UNUSED(endpoint_insts);
+        constexpr qreal kMargin = 8.0;
+        QVector<std::pair<qreal, qreal>> blocking; // (top, bottom)
+        for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+            QRectF r = it.value()->sceneBoundingRect();
+            if (r.right() < bx_min || r.left() > bx_max)
+                continue;
+            blocking.push_back({r.top() - kMargin, r.bottom() + kMargin});
+        }
+        auto in_blocked = [&](qreal y) {
+            for (const auto &b : blocking)
+                if (y >= b.first && y <= b.second)
+                    return true;
+            return false;
+        };
+        if (!in_blocked(preferred))
+            return preferred;
+        QVector<qreal> candidates;
+        for (const auto &b : blocking) {
+            candidates.push_back(b.first - 1);
+            candidates.push_back(b.second + 1);
+        }
+        std::sort(candidates.begin(), candidates.end(), [&](qreal a, qreal b) {
+            return std::abs(a - preferred) < std::abs(b - preferred);
+        });
+        for (qreal y : candidates) {
+            if (!in_blocked(y))
+                return y;
+        }
+        return preferred;
+    }
+
+    // Return a Y close to `proposed_y` such that placing `self` at
+    // (snapped_x, y, w, h) does not overlap any other instance. If the
+    // proposed Y is already clear, returns it unchanged. Otherwise searches
+    // above and below for the nearest non-overlapping Y. Margin around each
+    // module keeps wires routable between neighbours.
+    qreal resolveClearY(InstanceItem *self, qreal snapped_x, qreal w, qreal h, qreal proposed_y) const {
+        // Vertical margin is large enough to hold a bridge band + lane stack
+        // between any two same-column modules. Without this, modules can sit
+        // close enough together that wire routing has nowhere to go and the
+        // bridge ends up overlaying a module body.
+        constexpr qreal kMargin = static_cast<qreal>(kMinModuleVerticalGap) / 2.0;
+        QRectF proposed(snapped_x, proposed_y, w, h);
+        QRectF probe = proposed.adjusted(-kMargin, -kMargin, kMargin, kMargin);
+
+        QVector<QRectF> blocking;
+        for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+            if (it.value() == self)
+                continue;
+            QRectF r = it.value()->sceneBoundingRect().adjusted(-kMargin, -kMargin, kMargin, kMargin);
+            if (r.right() < probe.left() || r.left() > probe.right())
+                continue; // x-ranges disjoint, no overlap possible
+            blocking.push_back(r);
+        }
+        if (blocking.isEmpty())
+            return proposed_y;
+
+        auto clear_at = [&](qreal y) {
+            QRectF cand(snapped_x, y, w, h);
+            cand.adjust(-kMargin, -kMargin, kMargin, kMargin);
+            for (const auto &b : blocking) {
+                if (b.intersects(cand))
+                    return false;
+            }
+            return true;
+        };
+
+        if (clear_at(proposed_y))
+            return proposed_y;
+
+        // Search outward in both directions for the nearest gap. Candidate Y
+        // values are top/bottom edges of every blocking rect.
+        QVector<qreal> candidates;
+        for (const auto &b : blocking) {
+            candidates.push_back(b.top() - h);
+            candidates.push_back(b.bottom());
+        }
+        std::sort(candidates.begin(), candidates.end(), [&](qreal a, qreal b) {
+            return std::abs(a - proposed_y) < std::abs(b - proposed_y);
+        });
+        for (qreal y : candidates) {
+            if (clear_at(y))
+                return y;
+        }
+        // Fall back: stack below the lowest blocker.
+        qreal max_bottom = proposed_y;
+        for (const auto &b : blocking)
+            max_bottom = std::max(max_bottom, b.bottom());
+        return max_bottom;
+    }
 
     void clearJunctionDots() {
         for (auto *d : m_junction_dots) {
@@ -2362,7 +2314,10 @@ QVariant InstanceItem::itemChange(GraphicsItemChange change, const QVariant &val
         qreal centered = p.x() + m_width / 2.0;
         int col = static_cast<int>(std::round(centered / kColumnPitch));
         qreal snapped_x = col * kColumnPitch - m_width / 2.0;
-        return QPointF(snapped_x, p.y());
+        qreal y = p.y();
+        if (m_canvas_layer)
+            y = m_canvas_layer->resolveClearY(this, snapped_x, m_width, rect().height(), y);
+        return QPointF(snapped_x, y);
     }
     if (change == ItemPositionHasChanged && m_canvas_layer) {
         m_canvas_layer->onInstanceColumnChanged();
