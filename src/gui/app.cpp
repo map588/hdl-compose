@@ -16,7 +16,9 @@
 #include <QFileInfo>
 #include <QFileSystemWatcher>
 #include <QFont>
+#include <QFontMetrics>
 #include <QFormLayout>
+#include <QGraphicsEllipseItem>
 #include <QGraphicsPathItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
@@ -74,34 +76,77 @@
 namespace {
 
 constexpr char kModuleMimeType[] = "application/x-hdl-compose-module";
-constexpr int kInstanceWidth = 200;
+constexpr int kMinInstanceWidth = 200;
 constexpr int kInstanceHeaderHeight = 50;
 constexpr int kPinSlotHeight = 24;
 constexpr int kPinShapeSize = 12;
 constexpr int kMinInstanceBodyHeight = 30;
+constexpr int kPinLabelHPadding = 8; // gap between pin tip and label start
+constexpr int kInstanceCenterPadding = 24; // gap between left and right label columns
+constexpr int kColumnPitch = 320; // X stride between adjacent column centers; gutter = pitch - max(width)
+constexpr int kColumnGutterHalf = 60; // half-width of inter-column wire channel
+constexpr int kWireLaneStep = 12; // X offset between adjacent wires sharing a gutter
 constexpr int kClickThresholdPx = 5;
 constexpr double kZoomMin = 0.2;
 constexpr double kZoomMax = 5.0;
 constexpr double kZoomStep = 1.15;
-constexpr int kTopPortMargin = 800; // x offset of top-level connectors from origin
 constexpr int kTopPortSpacing = 44;
+constexpr int kWireStubMin = 40; // minimum pin-to-first-turn length (>= 4 × kPinShapeSize)
+constexpr int kJunctionDotRadius = 4;
 
 void apply_material_dark_theme(QApplication &app) {
     QPalette palette;
-    palette.setColor(QPalette::Window, QColor(30, 30, 30));
-    palette.setColor(QPalette::WindowText, QColor(220, 220, 220));
-    palette.setColor(QPalette::Base, QColor(35, 35, 35));
-    palette.setColor(QPalette::AlternateBase, QColor(45, 45, 45));
-    palette.setColor(QPalette::ToolTipBase, QColor(50, 50, 50));
-    palette.setColor(QPalette::ToolTipText, QColor(220, 220, 220));
-    palette.setColor(QPalette::Text, QColor(220, 220, 220));
-    palette.setColor(QPalette::Button, QColor(45, 45, 45));
-    palette.setColor(QPalette::ButtonText, QColor(220, 220, 220));
-    palette.setColor(QPalette::BrightText, QColor(255, 50, 50));
-    palette.setColor(QPalette::Link, QColor(100, 149, 237));
-    palette.setColor(QPalette::Highlight, QColor(66, 133, 244));
-    palette.setColor(QPalette::HighlightedText, QColor(255, 255, 255));
+    palette.setColor(QPalette::Window, QColor(24, 26, 28));
+    palette.setColor(QPalette::WindowText, QColor(220, 222, 226));
+    palette.setColor(QPalette::Base, QColor(30, 32, 35));
+    palette.setColor(QPalette::AlternateBase, QColor(38, 41, 45));
+    palette.setColor(QPalette::ToolTipBase, QColor(46, 49, 53));
+    palette.setColor(QPalette::ToolTipText, QColor(220, 222, 226));
+    palette.setColor(QPalette::Text, QColor(220, 222, 226));
+    palette.setColor(QPalette::Button, QColor(40, 43, 47));
+    palette.setColor(QPalette::ButtonText, QColor(220, 222, 226));
+    palette.setColor(QPalette::BrightText, QColor(240, 95, 80));
+    palette.setColor(QPalette::Link, QColor(120, 168, 240));
+    palette.setColor(QPalette::Highlight, QColor(80, 142, 224));
+    palette.setColor(QPalette::HighlightedText, QColor(245, 247, 250));
     app.setPalette(palette);
+
+    app.setStyleSheet(QStringLiteral(
+        "* { font-family: 'Inter', 'SF Pro Text', 'Segoe UI', sans-serif; }"
+        "QMainWindow { background: #18191c; }"
+        "QToolBar { background: #1c1e22; border: 0; padding: 4px; spacing: 4px; }"
+        "QToolButton { background: transparent; color: #c8cad0; padding: 5px 10px; border-radius: 4px; }"
+        "QToolButton:hover { background: #2a2d32; }"
+        "QToolButton:pressed { background: #353940; }"
+        "QStatusBar { background: #1c1e22; color: #9aa0aa; border-top: 1px solid #2a2d32; }"
+        "QMenuBar { background: #1c1e22; color: #c8cad0; }"
+        "QMenuBar::item:selected { background: #2a2d32; }"
+        "QMenu { background: #1f2125; color: #c8cad0; border: 1px solid #2a2d32; }"
+        "QMenu::item:selected { background: #2a2d32; }"
+        "QListView, QTreeView { background: #1c1e22; alternate-background-color: #1f2125;"
+        " color: #c8cad0; border: 1px solid #2a2d32; selection-background-color: #324b6f;"
+        " selection-color: #f5f7fa; outline: 0; }"
+        "QListView::item, QTreeView::item { padding: 3px 6px; }"
+        "QSplitter::handle { background: #2a2d32; }"
+        "QPlainTextEdit, QTextEdit, QLineEdit { background: #1a1c20; color: #d6d8de;"
+        " border: 1px solid #2a2d32; border-radius: 3px; selection-background-color: #324b6f; }"
+        "QPushButton { background: #2a2d32; color: #d6d8de; border: 1px solid #34373d;"
+        " padding: 4px 12px; border-radius: 4px; }"
+        "QPushButton:hover { background: #34373d; }"
+        "QPushButton:pressed { background: #232529; }"
+        "QPushButton:default { border: 1px solid #4a73a8; }"
+        "QScrollBar:vertical { background: #1c1e22; width: 10px; margin: 0; }"
+        "QScrollBar::handle:vertical { background: #34373d; border-radius: 4px; min-height: 24px; }"
+        "QScrollBar::handle:vertical:hover { background: #44474d; }"
+        "QScrollBar:horizontal { background: #1c1e22; height: 10px; margin: 0; }"
+        "QScrollBar::handle:horizontal { background: #34373d; border-radius: 4px; min-width: 24px; }"
+        "QScrollBar::handle:horizontal:hover { background: #44474d; }"
+        "QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }"
+        "QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }"
+        "QGraphicsView { background: #131416; border: 0; }"
+        "QHeaderView::section { background: #1c1e22; color: #9aa0aa; padding: 4px;"
+        " border: 0; border-right: 1px solid #2a2d32; border-bottom: 1px solid #2a2d32; }"
+    ));
 }
 
 void show_state_error(QWidget *parent, AppState *state, const QString &title) {
@@ -194,32 +239,16 @@ class PortPinItem : public QGraphicsItem {
     }
     bool armedState() const { return m_armed_state; }
 
-    virtual QPointF tipScenePos() const {
-        qreal y = m_slot * kPinSlotHeight + kPinSlotHeight / 2.0;
-        qreal tip_x = (m_side == PinSide::Left) ? 0 : kInstanceWidth;
-        return mapToScene(QPointF(tip_x, y));
-    }
+    virtual QPointF tipScenePos() const;
 
     void flashRed(int ms = 500);
 
-    QRectF boundingRect() const override {
-        // Slot row that extends from pin tip to label region (needed for painting labels).
-        qreal w = kInstanceWidth + 40;
-        qreal x = (m_side == PinSide::Left) ? -kPinShapeSize - 4 : 0;
-        return QRectF(x, m_slot * kPinSlotHeight, w, kPinSlotHeight);
-    }
+    QRectF boundingRect() const override;
 
     // Hit-test on an 18 × 18 px region centered on the pin tip. Big enough to
     // click comfortably; small enough that clicks on the label row still fall
     // through to InstanceItem for drag/select.
-    QPainterPath shape() const override {
-        QPainterPath p;
-        qreal y = m_slot * kPinSlotHeight + kPinSlotHeight / 2.0;
-        qreal tip_x = (m_side == PinSide::Left) ? 0 : kInstanceWidth;
-        qreal half = 9.0;
-        p.addRect(QRectF(tip_x - half, y - half, 2 * half, 2 * half));
-        return p;
-    }
+    QPainterPath shape() const override;
 
     void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override;
 
@@ -254,11 +283,7 @@ class BundlePinItem : public PortPinItem {
         setAcceptedMouseButtons(Qt::LeftButton | Qt::RightButton);
     }
 
-    QRectF boundingRect() const override {
-        qreal w = kInstanceWidth + 40;
-        qreal x = (m_side == PinSide::Left) ? -kPinShapeSize - 8 : 0;
-        return QRectF(x, m_slot * kPinSlotHeight, w, kPinSlotHeight);
-    }
+    QRectF boundingRect() const override;
 
     void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override;
 
@@ -275,7 +300,7 @@ class BundlePinItem : public PortPinItem {
 class InstanceItem : public QGraphicsRectItem {
   public:
     InstanceItem(AppState *state, const QString &name, const QString &module, QGraphicsItem *parent = nullptr)
-        : QGraphicsRectItem(0, 0, kInstanceWidth, kInstanceHeaderHeight + kMinInstanceBodyHeight, parent),
+        : QGraphicsRectItem(0, 0, kMinInstanceWidth, kInstanceHeaderHeight + kMinInstanceBodyHeight, parent),
           m_state(state), m_name(name), m_module(module) {
         setFlags(QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemIsSelectable |
                  QGraphicsItem::ItemSendsGeometryChanges);
@@ -287,6 +312,7 @@ class InstanceItem : public QGraphicsRectItem {
     AppState *state() const { return m_state; }
     void setInstanceName(const QString &n) { m_name = n; }
     void setModuleRef(const QString &m) { m_module = m; }
+    int width() const { return m_width; }
 
     void setWireTool(WireTool *wt) {
         m_wire_tool = wt;
@@ -332,41 +358,64 @@ class InstanceItem : public QGraphicsRectItem {
 
     void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) override {
         QRectF r = rect();
-        QPen pen;
+        painter->setRenderHint(QPainter::Antialiasing);
         int idx = find_instance_index(m_state, m_name);
         bool dirty = (idx >= 0) && m_state->instance_is_dirty(idx);
         bool selected =
             (m_state->selected_instance() == m_name) || (option && (option->state & QStyle::State_Selected));
 
+        // Body — flat dark fill, very subtle bottom panel under the header.
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(36, 39, 44));
+        painter->drawRoundedRect(r, 8, 8);
+
+        // Header band — slightly lighter, drawn as a separate rounded rect
+        // clipped to the top of the body so corner radii match.
+        painter->save();
+        QPainterPath body_path;
+        body_path.addRoundedRect(r, 8, 8);
+        painter->setClipPath(body_path);
+        QRectF header_rect(r.left(), r.top(), r.width(), kInstanceHeaderHeight);
+        painter->setBrush(QColor(46, 50, 56));
+        painter->drawRect(header_rect);
+        // Hairline divider under header
+        painter->setPen(QColor(28, 30, 34));
+        painter->drawLine(QPointF(r.left(), r.top() + kInstanceHeaderHeight),
+                          QPointF(r.right(), r.top() + kInstanceHeaderHeight));
+        painter->restore();
+
+        // Border last so it sits over the fills.
+        QPen pen;
         if (dirty) {
-            pen.setColor(QColor(220, 60, 60));
-            pen.setWidth(selected ? 3 : 2);
+            pen.setColor(QColor(220, 90, 80));
+            pen.setWidthF(selected ? 1.8 : 1.2);
         } else if (selected) {
-            pen.setColor(QColor(66, 133, 244));
-            pen.setWidth(3);
+            pen.setColor(QColor(120, 170, 240));
+            pen.setWidthF(1.8);
         } else {
-            pen.setColor(QColor(180, 180, 180));
-            pen.setWidth(1);
+            pen.setColor(QColor(60, 64, 70));
+            pen.setWidthF(1.0);
         }
+        pen.setCosmetic(true);
         painter->setPen(pen);
-        painter->setBrush(QColor(55, 55, 55));
-        painter->drawRoundedRect(r, 6, 6);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawRoundedRect(r, 8, 8);
 
         QFont name_font = painter->font();
         name_font.setBold(true);
-        name_font.setPointSizeF(name_font.pointSizeF() + 1.0);
+        name_font.setPointSizeF(name_font.pointSizeF() + 0.5);
         painter->setFont(name_font);
-        painter->setPen(QColor(235, 235, 235));
-        painter->drawText(QRectF(r.left() + 10, r.top() + 8, r.width() - 20, 20), Qt::AlignLeft | Qt::AlignVCenter,
-                          m_name);
+        painter->setPen(QColor(232, 234, 238));
+        painter->drawText(QRectF(r.left() + 12, r.top() + 8, r.width() - 24, 20),
+                          Qt::AlignLeft | Qt::AlignVCenter, m_name);
 
         QFont mod_font = painter->font();
         mod_font.setBold(false);
         mod_font.setPointSizeF(mod_font.pointSizeF() - 1.5);
         painter->setFont(mod_font);
-        painter->setPen(QColor(170, 170, 170));
-        painter->drawText(QRectF(r.left() + 10, r.top() + 30, r.width() - 20, 18), Qt::AlignLeft | Qt::AlignVCenter,
-                          QStringLiteral(": %1").arg(m_module));
+        painter->setPen(QColor(150, 154, 162));
+        painter->drawText(QRectF(r.left() + 12, r.top() + 30, r.width() - 24, 16),
+                          Qt::AlignLeft | Qt::AlignVCenter, m_module);
     }
 
   protected:
@@ -415,6 +464,7 @@ class InstanceItem : public QGraphicsRectItem {
     QHash<QString, PortPinItem *> m_port_anchor;
     WireTool *m_wire_tool = nullptr;
     CanvasLayer *m_canvas_layer = nullptr;
+    int m_width = kMinInstanceWidth;
 };
 
 // --- PortPinItem / BundlePinItem impls --------------------------------------
@@ -422,6 +472,37 @@ class InstanceItem : public QGraphicsRectItem {
 PortPinItem::PortPinItem(const QString &name, int direction, int width, PinSide side, InstanceItem *parent)
     : QGraphicsItem(parent), m_name(name), m_direction(direction), m_width(width), m_side(side), m_parent(parent) {
     setAcceptedMouseButtons(Qt::LeftButton);
+}
+
+QPointF PortPinItem::tipScenePos() const {
+    qreal y = m_slot * kPinSlotHeight + kPinSlotHeight / 2.0;
+    qreal pw = m_parent ? m_parent->width() : kMinInstanceWidth;
+    qreal tip_x = (m_side == PinSide::Left) ? 0 : pw;
+    return mapToScene(QPointF(tip_x, y));
+}
+
+QRectF PortPinItem::boundingRect() const {
+    qreal pw = m_parent ? m_parent->width() : kMinInstanceWidth;
+    qreal w = pw + 40;
+    qreal x = (m_side == PinSide::Left) ? -kPinShapeSize - 4 : 0;
+    return QRectF(x, m_slot * kPinSlotHeight, w, kPinSlotHeight);
+}
+
+QPainterPath PortPinItem::shape() const {
+    QPainterPath p;
+    qreal y = m_slot * kPinSlotHeight + kPinSlotHeight / 2.0;
+    qreal pw = m_parent ? m_parent->width() : kMinInstanceWidth;
+    qreal tip_x = (m_side == PinSide::Left) ? 0 : pw;
+    qreal half = 9.0;
+    p.addRect(QRectF(tip_x - half, y - half, 2 * half, 2 * half));
+    return p;
+}
+
+QRectF BundlePinItem::boundingRect() const {
+    qreal pw = m_parent ? m_parent->width() : kMinInstanceWidth;
+    qreal w = pw + 40;
+    qreal x = (m_side == PinSide::Left) ? -kPinShapeSize - 8 : 0;
+    return QRectF(x, m_slot * kPinSlotHeight, w, kPinSlotHeight);
 }
 
 static QString format_width(int w) {
@@ -434,7 +515,8 @@ static QString format_width(int w) {
 void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
     // Tip point at slot center, on the side edge.
     qreal y = m_slot * kPinSlotHeight + kPinSlotHeight / 2.0;
-    qreal tip_x = (m_side == PinSide::Left) ? 0 : kInstanceWidth;
+    qreal pw = m_parent ? m_parent->width() : kMinInstanceWidth;
+    qreal tip_x = (m_side == PinSide::Left) ? 0 : pw;
 
     // Draw shape
     painter->setRenderHint(QPainter::Antialiasing);
@@ -448,16 +530,18 @@ void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWi
 
     QColor pin_color(210, 210, 210);
     if (m_flash) {
-        pin_color = QColor(220, 60, 60);
+        pin_color = QColor(232, 92, 80);
     } else if (m_direction == 0 /*In*/) {
-        pin_color = QColor(140, 200, 140);
+        pin_color = QColor(120, 196, 152);
     } else if (m_direction == 1 /*Out*/) {
-        pin_color = QColor(200, 160, 110);
+        pin_color = QColor(232, 168, 104);
     } else if (m_direction == 2 /*InOut*/) {
-        pin_color = QColor(160, 170, 220);
+        pin_color = QColor(160, 174, 224);
     }
     painter->setBrush(pin_color);
-    painter->setPen(QPen(QColor(30, 30, 30), 1));
+    QPen pin_outline(QColor(20, 22, 26), 1);
+    pin_outline.setCosmetic(true);
+    painter->setPen(pin_outline);
 
     if (m_direction == 2) {
         // Diamond
@@ -498,10 +582,10 @@ void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWi
     painter->setPen(QColor(220, 220, 220));
     QRectF label_rect;
     if (m_side == PinSide::Left) {
-        label_rect = QRectF(tip_x + 4, y - kPinSlotHeight / 2.0, kInstanceWidth - 8, kPinSlotHeight);
+        label_rect = QRectF(tip_x + 4, y - kPinSlotHeight / 2.0, pw - 8, kPinSlotHeight);
         painter->drawText(label_rect, Qt::AlignLeft | Qt::AlignVCenter, label);
     } else {
-        label_rect = QRectF(tip_x - kInstanceWidth + 4, y - kPinSlotHeight / 2.0, kInstanceWidth - 8, kPinSlotHeight);
+        label_rect = QRectF(tip_x - pw + 4, y - kPinSlotHeight / 2.0, pw - 8, kPinSlotHeight);
         painter->drawText(label_rect, Qt::AlignRight | Qt::AlignVCenter, label);
     }
     setToolTip(label);
@@ -510,7 +594,8 @@ void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWi
 void BundlePinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
     painter->setRenderHint(QPainter::Antialiasing);
     qreal y = m_slot * kPinSlotHeight + kPinSlotHeight / 2.0;
-    qreal tip_x = (m_side == PinSide::Left) ? 0 : kInstanceWidth;
+    qreal pw = m_parent ? m_parent->width() : kMinInstanceWidth;
+    qreal tip_x = (m_side == PinSide::Left) ? 0 : pw;
     qreal half = kPinShapeSize;
 
     QString arrow = m_header ? QStringLiteral("▼") : QStringLiteral("▶");
@@ -519,8 +604,10 @@ void BundlePinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, Q
     if (!m_header) {
         // Collapsed: fat rounded rect on the edge.
         QRectF fat(tip_x - half, y - half, 2 * half, 2 * half);
-        painter->setBrush(QColor(120, 150, 200));
-        painter->setPen(QPen(QColor(30, 30, 30), 1.5));
+        painter->setBrush(QColor(132, 162, 212));
+        QPen ppen(QColor(20, 22, 26), 1.0);
+        ppen.setCosmetic(true);
+        painter->setPen(ppen);
         painter->drawRoundedRect(fat, 3, 3);
     } else {
         // Expanded header: thin horizontal bar spanning the side.
@@ -531,7 +618,7 @@ void BundlePinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, Q
             bar = QRectF(tip_x - 6, y - 1, 6, 2);
         }
         painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor(120, 150, 200));
+        painter->setBrush(QColor(132, 162, 212));
         painter->drawRect(bar);
     }
 
@@ -542,11 +629,11 @@ void BundlePinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, Q
     painter->setPen(QColor(m_header ? 180 : 235, m_header ? 200 : 235, m_header ? 220 : 235));
     QRectF label_rect;
     if (m_side == PinSide::Left) {
-        label_rect = QRectF(tip_x + half + 4, y - kPinSlotHeight / 2.0, kInstanceWidth - half - 8, kPinSlotHeight);
+        label_rect = QRectF(tip_x + half + 4, y - kPinSlotHeight / 2.0, pw - half - 8, kPinSlotHeight);
         painter->drawText(label_rect, Qt::AlignLeft | Qt::AlignVCenter, label);
     } else {
         label_rect =
-            QRectF(tip_x - kInstanceWidth + 4, y - kPinSlotHeight / 2.0, kInstanceWidth - half - 8, kPinSlotHeight);
+            QRectF(tip_x - pw + 4, y - kPinSlotHeight / 2.0, pw - half - 8, kPinSlotHeight);
         painter->drawText(label_rect, Qt::AlignRight | Qt::AlignVCenter, label);
     }
 }
@@ -603,16 +690,35 @@ void InstanceItem::layoutPins() {
     // Direction → side. InOut → Left (convention).
     auto side_for = [](int dir) { return (dir == 1) ? PinSide::Right : PinSide::Left; };
 
+    // Bundle side = majority direction of members. Ties → Left (convention).
+    // Two-pass: first count outs vs non-outs per bundle, then place all
+    // members on the chosen side regardless of individual direction.
+    QMap<QString, int> bundle_out_count;
+    QMap<QString, int> bundle_total;
+    for (const auto &e : entries) {
+        if (e.bundle.isEmpty())
+            continue;
+        bundle_total[e.bundle] = bundle_total.value(e.bundle, 0) + 1;
+        if (e.direction == 1)
+            bundle_out_count[e.bundle] = bundle_out_count.value(e.bundle, 0) + 1;
+    }
+    auto bundle_side = [&](const QString &bname) {
+        int outs = bundle_out_count.value(bname, 0);
+        int total = bundle_total.value(bname, 0);
+        return (outs * 2 > total) ? PinSide::Right : PinSide::Left;
+    };
+
     // QMap keeps bundles sorted by name for stable layout.
     QMap<QString, std::vector<int>> left_bundles;
     QMap<QString, std::vector<int>> right_bundles;
     std::vector<int> left_ports, right_ports;
     for (const auto &e : entries) {
-        auto side = side_for(e.direction);
         if (!e.bundle.isEmpty()) {
+            auto side = bundle_side(e.bundle);
             auto &map = (side == PinSide::Left) ? left_bundles : right_bundles;
             map[e.bundle].push_back(e.port_index);
         } else {
+            auto side = side_for(e.direction);
             auto &list = (side == PinSide::Left) ? left_ports : right_ports;
             list.push_back(e.port_index);
         }
@@ -666,7 +772,64 @@ void InstanceItem::layoutPins() {
     int slot_total = (left_slot > right_slot) ? left_slot : right_slot;
     int pin_body = slot_total * kPinSlotHeight + 8;
     int body = (pin_body > kMinInstanceBodyHeight) ? pin_body : kMinInstanceBodyHeight;
-    setRect(0, 0, kInstanceWidth, kInstanceHeaderHeight + body);
+
+    // Width = max label column on each side + gap. Use a slightly-smaller
+    // font than default to mirror PortPinItem::paint sizing; bold for the
+    // header so the title row's reservation doesn't wrap.
+    QFont label_font;
+    label_font.setPointSizeF(label_font.pointSizeF() - 1.0);
+    QFontMetrics fm(label_font);
+    QFont header_font;
+    header_font.setBold(true);
+    header_font.setPointSizeF(header_font.pointSizeF() + 1.0);
+    QFontMetrics hf(header_font);
+
+    auto label_for = [&](const PortEntry &e, bool is_bundle_header, int member_count) {
+        if (is_bundle_header) {
+            return QStringLiteral("▼ %1 (%2)").arg(e.bundle).arg(member_count);
+        }
+        QString s = e.name;
+        if (e.width > 0) {
+            s += QStringLiteral("[%1:0]").arg(e.width - 1);
+        }
+        return s;
+    };
+    auto pin_label_w = [&](const PortEntry &e) {
+        return fm.horizontalAdvance(label_for(e, false, 0));
+    };
+
+    int left_label_w = 0;
+    for (int p : left_ports) {
+        left_label_w = std::max(left_label_w, pin_label_w(entries[p]));
+    }
+    for (auto it = left_bundles.constBegin(); it != left_bundles.constEnd(); ++it) {
+        int hw = fm.horizontalAdvance(QStringLiteral("▼ %1 (%2)").arg(it.key()).arg(static_cast<int>(it.value().size())));
+        left_label_w = std::max(left_label_w, hw);
+        if (bundleExpanded(it.key())) {
+            for (int p : it.value()) {
+                left_label_w = std::max(left_label_w, pin_label_w(entries[p]));
+            }
+        }
+    }
+    int right_label_w = 0;
+    for (int p : right_ports) {
+        right_label_w = std::max(right_label_w, pin_label_w(entries[p]));
+    }
+    for (auto it = right_bundles.constBegin(); it != right_bundles.constEnd(); ++it) {
+        int hw = fm.horizontalAdvance(QStringLiteral("▼ %1 (%2)").arg(it.key()).arg(static_cast<int>(it.value().size())));
+        right_label_w = std::max(right_label_w, hw);
+        if (bundleExpanded(it.key())) {
+            for (int p : it.value()) {
+                right_label_w = std::max(right_label_w, pin_label_w(entries[p]));
+            }
+        }
+    }
+    int header_w = hf.horizontalAdvance(QStringLiteral("%1 : %2").arg(m_name, m_module)) + 24;
+    int needed = left_label_w + right_label_w + kPinShapeSize * 2 + kInstanceCenterPadding + kPinLabelHPadding * 2;
+    needed = std::max(needed, header_w);
+    m_width = std::max(needed, kMinInstanceWidth);
+
+    setRect(0, 0, m_width, kInstanceHeaderHeight + body);
 }
 
 // --- WireTool + WireItem ----------------------------------------------------
@@ -728,8 +891,10 @@ class WireItem : public QGraphicsPathItem {
     // (e.g. clk and rst_n bundled toward the same instance) are
     // distinguishable at a glance.
     static QColor colorForNet(const QString &key) {
+        // Muted palette: lower saturation + slightly dimmer value so wires
+        // read as background detail rather than competing with module bodies.
         int hue = static_cast<int>(qHash(key) % 360);
-        return QColor::fromHsv(hue, 170, 230);
+        return QColor::fromHsv(hue, 110, 200);
     }
 
     const QString &sourceKey() const { return m_source_key; }
@@ -737,146 +902,20 @@ class WireItem : public QGraphicsPathItem {
 
     void setRouteIndex(int idx) { m_route_index = idx; }
 
-    // Orthogonal routing with stubs that leave each pin perpendicular to its
-    // instance edge. The caller passes each endpoint's owning instance bounds
-    // (empty rect = top-port) plus any *other* instance bounds in the scene
-    // so detour paths clear the instance bodies they would otherwise cross.
-    void routeBetween(const QPointF &src, bool src_on_right, const QRectF &src_bounds, const QPointF &dst,
-                      bool dst_on_right, const QRectF &dst_bounds, const QList<QRectF> &obstacles = {}) {
-        constexpr qreal kStub = 20.0;
-        constexpr qreal kDetourPad = 20.0;
-        // Per-wire offsets, fanned out alternating above/below by route
-        // index so no two wires share a horizontal/vertical run. Sequence:
-        // 0, +1, -1, +2, -2, +3, -3, ... × step. Falls back to hash when
-        // route index isn't set (ad-hoc routing during drag-preview).
-        constexpr qreal kStepY = 10.0;
-        constexpr qreal kStepX = 8.0;
-        qreal jitter_y, jitter_x;
-        if (m_route_index >= 0) {
-            int n = m_route_index;
-            int magnitude = (n + 1) / 2;
-            int sign = (n % 2 == 0) ? 1 : -1;
-            // idx 0 → 0; 1 → +1; 2 → -1; 3 → +2; 4 → -2; ...
-            int step_count = (n == 0) ? 0 : sign * magnitude;
-            jitter_y = step_count * kStepY;
-            jitter_x = step_count * kStepX;
-        } else {
-            const QString wire_key = m_source_key + QChar('|') + m_target_key;
-            jitter_y = static_cast<qreal>(static_cast<int>(qHash(wire_key) % 11) - 5) * 15.0;
-            jitter_x = static_cast<qreal>(static_cast<int>(qHash(m_target_key + m_source_key) % 9) - 4) * 12.0;
-        }
-
-        // Same-side wiring (input↔input or output↔output on same side of
-        // their respective instances): stub outward from each pin first, then
-        // detour above or below both instance bodies.
-        if (src_on_right == dst_on_right) {
-            // Spread the outward stub length per-wire so stub x's don't stack.
-            qreal src_stub_len = kStub + std::abs(jitter_x);
-            qreal dst_stub_len = kStub + std::abs(jitter_x);
-            QPointF src_stub(src.x() + (src_on_right ? src_stub_len : -src_stub_len), src.y());
-            QPointF dst_stub(dst.x() + (dst_on_right ? dst_stub_len : -dst_stub_len), dst.y());
-            qreal top = std::min(src.y(), dst.y());
-            qreal bot = std::max(src.y(), dst.y());
-            if (!src_bounds.isNull()) {
-                top = std::min(top, src_bounds.top());
-                bot = std::max(bot, src_bounds.bottom());
-            }
-            if (!dst_bounds.isNull()) {
-                top = std::min(top, dst_bounds.top());
-                bot = std::max(bot, dst_bounds.bottom());
-            }
-            // Push detour above/below any other instance whose horizontal
-            // span overlaps the wire's corridor — keeps the long horizontal
-            // run from clipping bystander modules.
-            qreal corridor_lo = std::min(src_stub.x(), dst_stub.x());
-            qreal corridor_hi = std::max(src_stub.x(), dst_stub.x());
-            for (const QRectF &o : obstacles) {
-                if (o.right() < corridor_lo || o.left() > corridor_hi)
-                    continue;
-                top = std::min(top, o.top());
-                bot = std::max(bot, o.bottom());
-            }
-            qreal via_top = top - kDetourPad;
-            qreal via_bot = bot + kDetourPad;
-            qreal pin_mid = (src.y() + dst.y()) / 2.0;
-            qreal detour_y = std::abs(pin_mid - via_top) <= std::abs(pin_mid - via_bot) ? via_top - std::abs(jitter_y)
-                                                                                        : via_bot + std::abs(jitter_y);
-            QPainterPath p;
-            p.moveTo(src);
-            p.lineTo(src_stub); // outward jut first
-            p.lineTo(src_stub.x(), detour_y);
-            p.lineTo(dst_stub.x(), detour_y);
-            p.lineTo(dst_stub.x(), dst.y());
-            p.lineTo(dst);
-            setPath(p);
-            return;
-        }
-
-        QPointF src_stub(src.x() + (src_on_right ? kStub : -kStub), src.y());
-        QPointF dst_stub(dst.x() + (dst_on_right ? kStub : -kStub), dst.y());
-
+    // Apply a precomputed manhattan path. Caller (CanvasLayer) plans waypoints
+    // with full knowledge of all modules + gutter lane assignment.
+    void setWaypoints(const QVector<QPointF> &pts) {
+        m_waypoints = pts;
         QPainterPath p;
-        p.moveTo(src);
-        p.lineTo(src_stub);
-
-        bool forward =
-            (src_on_right && dst_stub.x() >= src_stub.x()) || (!src_on_right && dst_stub.x() <= src_stub.x());
-
-        if (forward) {
-            qreal mid_x = (src_stub.x() + dst_stub.x()) / 2.0 + jitter_x;
-            // If an obstacle's horizontal span straddles mid_x AND its
-            // vertical extent crosses the wire's y corridor, shift mid_x
-            // past the worst offender.
-            qreal y_lo = std::min(src_stub.y(), dst_stub.y());
-            qreal y_hi = std::max(src_stub.y(), dst_stub.y());
-            for (const QRectF &o : obstacles) {
-                if (o.bottom() < y_lo || o.top() > y_hi)
-                    continue;
-                if (o.left() <= mid_x && o.right() >= mid_x) {
-                    // Push past the closer edge of the obstacle.
-                    qreal push_left = o.left() - kDetourPad;
-                    qreal push_right = o.right() + kDetourPad;
-                    mid_x = std::abs(push_left - mid_x) < std::abs(push_right - mid_x) ? push_left : push_right;
-                }
-            }
-            p.lineTo(mid_x, src_stub.y());
-            p.lineTo(mid_x, dst_stub.y());
-            p.lineTo(dst_stub);
-        } else {
-            // Reverse flow — detour above or below BOTH instance bodies so
-            // the horizontal run can cross the gap without clipping a block.
-            qreal top = src.y();
-            qreal bot = src.y();
-            if (!src_bounds.isNull()) {
-                top = std::min(top, src_bounds.top());
-                bot = std::max(bot, src_bounds.bottom());
-            }
-            if (!dst_bounds.isNull()) {
-                top = std::min(top, dst_bounds.top());
-                bot = std::max(bot, dst_bounds.bottom());
-            }
-            qreal corridor_lo = std::min(src_stub.x(), dst_stub.x()) - kDetourPad;
-            qreal corridor_hi = std::max(src_stub.x(), dst_stub.x()) + kDetourPad;
-            for (const QRectF &o : obstacles) {
-                if (o.right() < corridor_lo || o.left() > corridor_hi)
-                    continue;
-                top = std::min(top, o.top());
-                bot = std::max(bot, o.bottom());
-            }
-            // Pick the shorter detour — over the top or under the bottom.
-            qreal via_top = top - kDetourPad;
-            qreal via_bot = bot + kDetourPad;
-            qreal pin_mid = (src.y() + dst.y()) / 2.0;
-            qreal detour_y = std::abs(pin_mid - via_top) <= std::abs(pin_mid - via_bot) ? via_top - std::abs(jitter_y)
-                                                                                        : via_bot + std::abs(jitter_y);
-            p.lineTo(src_stub.x() + jitter_x, detour_y);
-            p.lineTo(dst_stub.x() - jitter_x, detour_y);
-            p.lineTo(dst_stub);
+        if (!pts.isEmpty()) {
+            p.moveTo(pts.first());
+            for (int i = 1; i < pts.size(); ++i)
+                p.lineTo(pts[i]);
         }
-
-        p.lineTo(dst);
         setPath(p);
     }
+
+    const QVector<QPointF> &waypoints() const { return m_waypoints; }
 
     // Wider hit region so cosmetic-pen wires can actually be clicked.
     QPainterPath shape() const override {
@@ -960,6 +999,21 @@ class WireItem : public QGraphicsPathItem {
     AppState *m_state = nullptr;
     int m_width = 1;
     int m_route_index = -1;
+    QVector<QPointF> m_waypoints;
+};
+
+// Filled circle marking a wire junction (T-tap of same-net wires).
+class JunctionDotItem : public QGraphicsEllipseItem {
+  public:
+    JunctionDotItem(const QPointF &center, const QColor &color)
+        : QGraphicsEllipseItem(center.x() - kJunctionDotRadius, center.y() - kJunctionDotRadius,
+                               2 * kJunctionDotRadius, 2 * kJunctionDotRadius) {
+        setBrush(color);
+        QPen pen(color);
+        pen.setCosmetic(true);
+        setPen(pen);
+        setZValue(2);
+    }
 };
 
 PortPinItem::~PortPinItem() {
@@ -1701,7 +1755,12 @@ class CanvasView : public QGraphicsView {
             return;
         }
         QPointF scene_pos = mapToScene(event->position().toPoint());
-        m_state->set_instance_position(inst_name, scene_pos.x(), scene_pos.y());
+        // Snap drop X to the nearest column center; assume default min width
+        // (real width measured after layoutPins lands the actual instance).
+        qreal centered = scene_pos.x();
+        int col = static_cast<int>(std::round(centered / kColumnPitch));
+        qreal snapped_x = col * kColumnPitch - kMinInstanceWidth / 2.0;
+        m_state->set_instance_position(inst_name, snapped_x, scene_pos.y());
         event->acceptProposedAction();
     }
 
@@ -1731,6 +1790,7 @@ class CanvasLayer {
         m_top_ports.clear();
         m_top_port_by_name.clear();
         m_wires.clear();
+        m_junction_dots.clear();
         int count = m_state->instance_count();
         for (int i = 0; i < count; ++i) {
             QString name = m_state->instance_name(i);
@@ -1752,6 +1812,25 @@ class CanvasLayer {
         }
     }
 
+    // Column index of an instance, derived from its body center X.
+    int instanceColumn(InstanceItem *item) const {
+        qreal cx = item->pos().x() + item->width() / 2.0;
+        return static_cast<int>(std::round(cx / static_cast<qreal>(kColumnPitch)));
+    }
+
+    // Min/max column over current instances. Empty canvas defaults to (0, 0).
+    std::pair<int, int> columnBounds() const {
+        if (m_items.isEmpty())
+            return {0, 0};
+        int lo = INT_MAX, hi = INT_MIN;
+        for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+            int c = instanceColumn(it.value());
+            lo = std::min(lo, c);
+            hi = std::max(hi, c);
+        }
+        return {lo, hi};
+    }
+
     void rebuildTopPorts() {
         for (auto *t : m_top_ports) {
             m_scene->removeItem(t);
@@ -1768,6 +1847,11 @@ class CanvasLayer {
             else
                 outputs.push_back(i);
         }
+        // Top ports always sit one column beyond the outermost instance column,
+        // so modules never share a column with top-level connectors.
+        auto [col_lo, col_hi] = columnBounds();
+        qreal in_x = (col_lo - 1) * static_cast<qreal>(kColumnPitch);
+        qreal out_x = (col_hi + 1) * static_cast<qreal>(kColumnPitch);
         int in_total = static_cast<int>(inputs.size()) * kTopPortSpacing;
         int out_total = static_cast<int>(outputs.size()) * kTopPortSpacing;
         int in_y = -in_total / 2;
@@ -1775,7 +1859,7 @@ class CanvasLayer {
         for (int i : inputs) {
             QString nm = m_state->top_port_name(i);
             auto *tp = new TopPortItem(nm, 0, m_state->top_port_width(i), PinSide::Left);
-            tp->setPos(-kTopPortMargin, in_y);
+            tp->setPos(in_x, in_y);
             tp->setWireTool(&m_wire_tool);
             m_scene->addItem(tp);
             m_top_ports.push_back(tp);
@@ -1785,7 +1869,7 @@ class CanvasLayer {
         for (int i : outputs) {
             QString nm = m_state->top_port_name(i);
             auto *tp = new TopPortItem(nm, 1, m_state->top_port_width(i), PinSide::Right);
-            tp->setPos(kTopPortMargin, out_y);
+            tp->setPos(out_x, out_y);
             tp->setWireTool(&m_wire_tool);
             m_scene->addItem(tp);
             m_top_ports.push_back(tp);
@@ -1794,18 +1878,34 @@ class CanvasLayer {
         }
     }
 
-    // Resolve a wire endpoint key to a scene position, the side it exits, and
-    // the scene bounds of its owning instance (null rect for top-ports).
-    // Keys: "top:<name>"  or  "<inst>.<port>"
-    bool resolveKey(const QString &key, QPointF &out, bool &on_right, QRectF &bounds) const {
+    struct Endpoint {
+        QString key;
+        QPointF pt;
+        bool exits_right = false;
+        int col = 0;
+    };
+
+    static int columnForX(qreal x) {
+        return static_cast<int>(std::round(x / static_cast<qreal>(kColumnPitch)));
+    }
+
+    // Resolve a wire endpoint key to scene position, exit side, and column.
+    // Keys: "top:<name>" or "<inst>.<port>".
+    bool resolveEndpoint(const QString &key, Endpoint &out) const {
+        out.key = key;
         if (key.startsWith(QStringLiteral("top:"))) {
             QString nm = key.mid(4);
+            int bracket = nm.indexOf(QChar('['));
+            if (bracket >= 0)
+                nm.truncate(bracket);
             auto *tp = m_top_port_by_name.value(nm, nullptr);
             if (!tp)
                 return false;
-            out = tp->tipScenePos();
-            on_right = (tp->side() == PinSide::Left);
-            bounds = QRectF();
+            out.pt = tp->tipScenePos();
+            // Top-port input (Left side) emits to the right into the canvas;
+            // top-port output (Right side) receives from the left.
+            out.exits_right = (tp->side() == PinSide::Left);
+            out.col = columnForX(out.pt.x());
             return true;
         }
         int dot = key.indexOf(QChar('.'));
@@ -1813,14 +1913,324 @@ class CanvasLayer {
             return false;
         QString inst = key.left(dot);
         QString port = key.mid(dot + 1);
+        // Strip any slice suffix ("dout[7:4]" -> "dout") so anchor lookup
+        // matches the unsliced port name. Slices encode the same pin geometry.
+        int bracket = port.indexOf(QChar('['));
+        if (bracket >= 0)
+            port.truncate(bracket);
         auto *item = m_items.value(inst, nullptr);
         if (!item)
             return false;
-        out = item->portAnchorScenePos(port);
+        out.pt = item->portAnchorScenePos(port);
         QRectF r = item->sceneBoundingRect();
-        bounds = r;
-        on_right = out.x() >= r.center().x();
+        out.exits_right = out.pt.x() >= r.center().x();
+        out.col = columnForX(r.center().x());
         return true;
+    }
+
+    // Gutter helpers shared by planNet. Gutter between cols c and c+1 has
+    // index 2c+1; a pin exiting right at col c picks first gutter 2c+1, left
+    // picks 2c-1. Gutter center X = (idx+1)/2 * kColumnPitch.
+    static int gutterIndex(int col, bool exits_right) {
+        return exits_right ? (2 * col + 1) : (2 * col - 1);
+    }
+    static qreal gutterCenterX(int idx) {
+        // Gutter between cols c and c+1 has idx = 2c+1 and sits at
+        // (c + 0.5) * pitch = idx / 2 * pitch. Previously this returned
+        // ((idx+1)/2) * pitch which is the NEXT column's center — off by
+        // half a column. Bounded-both routing masked the bug because the
+        // safe-range midpoint overrode this value; one-sided gutters fell
+        // through to natural_x and routed verticals through module bodies.
+        return idx / 2.0 * static_cast<qreal>(kColumnPitch);
+    }
+    static qreal nextLane(int idx, QHash<int, int> &counter) {
+        int n = counter.value(idx, 0);
+        counter[idx] = n + 1;
+        if (n == 0)
+            return 0.0;
+        int sign = (n % 2 == 1) ? 1 : -1;
+        int mag = (n + 1) / 2;
+        return sign * mag * static_cast<qreal>(kWireLaneStep);
+    }
+    static void enforceStub(qreal pin_x, bool exits_right, qreal &gx) {
+        if (exits_right)
+            gx = std::max(gx, pin_x + static_cast<qreal>(kWireStubMin));
+        else
+            gx = std::min(gx, pin_x - static_cast<qreal>(kWireStubMin));
+    }
+
+    // Per-gutter precomputed routing constraints used by planNet to position
+    // lane-offset trunk verticals while still honoring kWireStubMin on every
+    // attached pin. Populated by replanWires before any net is planned.
+    struct GutterInfo {
+        qreal safe_min = -1e18; // gx must be >= this so right-exit stubs are >= kWireStubMin
+        qreal safe_max = 1e18;  // gx must be <= this so left-exit stubs are >= kWireStubMin
+        int nets_using = 0;     // distinct nets that route through this gutter
+    };
+
+    // Resolve a gutter's lane-offset X for the next net to occupy it. Bounded
+    // and balanced inside the safe range: when nets_using > 1 the step
+    // collapses to fit, so up to N lanes always fit without violating stub
+    // minimums. One-sided gutters (only right-exit or only left-exit pins)
+    // are unbounded on the open side and use kWireLaneStep.
+    qreal allocateLaneX(int idx, const QHash<int, GutterInfo> &gutter_info,
+                        QHash<int, int> &gutter_counter) const {
+        const auto it = gutter_info.find(idx);
+        GutterInfo gi = (it != gutter_info.end()) ? *it : GutterInfo{};
+        const qreal natural_x = gutterCenterX(idx);
+        const bool bounded_left = gi.safe_min > -1e17;
+        const bool bounded_right = gi.safe_max < 1e17;
+        int n = gutter_counter.value(idx, 0);
+        gutter_counter[idx] = n + 1;
+
+        if (bounded_left && bounded_right) {
+            // Both sides constrained — center between safe bounds and squeeze
+            // the per-lane step so all using nets fit inside [safe_min, safe_max].
+            const qreal w = gi.safe_max - gi.safe_min;
+            const qreal center = (gi.safe_min + gi.safe_max) / 2.0;
+            int lane_slots = (std::max)(1, gi.nets_using);
+            const qreal step = (std::min)(static_cast<qreal>(kWireLaneStep), w / static_cast<qreal>(lane_slots));
+            qreal off = 0.0;
+            if (n > 0) {
+                int sign = (n % 2 == 1) ? 1 : -1;
+                int mag = (n + 1) / 2;
+                off = sign * mag * step;
+            }
+            qreal gx = center + off;
+            gx = std::max(gx, gi.safe_min);
+            gx = std::min(gx, gi.safe_max);
+            return gx;
+        }
+        if (bounded_right) {
+            // Fan leftward away from the constrained side. Lane n sits
+            // kWireStubMin past the pin (lane 0) then steps further out for
+            // higher indices. Never anchored on the boundary, so distinct
+            // nets never collapse onto a clamped X.
+            return gi.safe_max - static_cast<qreal>(n) * static_cast<qreal>(kWireLaneStep);
+        }
+        if (bounded_left) {
+            // Fan rightward away from the constrained side.
+            return gi.safe_min + static_cast<qreal>(n) * static_cast<qreal>(kWireLaneStep);
+        }
+        // Unbounded (no pins yet on either side — shouldn't happen post-pass-1):
+        // zigzag around the natural gutter center.
+        qreal off = 0.0;
+        if (n > 0) {
+            int sign = (n % 2 == 1) ? 1 : -1;
+            int mag = (n + 1) / 2;
+            off = sign * mag * static_cast<qreal>(kWireLaneStep);
+        }
+        return natural_x + off;
+    }
+
+    // Plan all paths for one net (driver + N loads) as a single tree. Sets
+    // waypoints on each WireItem so a wire's stored path renders the
+    // driver-to-its-load sub-route through the shared trunk. Emits filled
+    // junction dots at interior trunk taps (where ≥ 3 segments meet).
+    //
+    // The horizontal bridge for cross-gutter nets runs at the AVERAGE Y of
+    // all involved pins so the trunk stays in the natural vertical band of
+    // its endpoints — not high above all modules. Bridges from different
+    // nets land at distinct Y values whenever their pin sets differ.
+    void planNet(const QString &src_key, const Endpoint &driver, const QVector<Endpoint> &loads,
+                 const QVector<WireItem *> &wires,
+                 QHash<int, int> &gutter_counter,
+                 const QHash<int, GutterInfo> &gutter_info) {
+        const int g_d = gutterIndex(driver.col, driver.exits_right);
+        QVector<int> g_l(loads.size());
+        QSet<int> unique_g;
+        unique_g.insert(g_d);
+        for (int i = 0; i < loads.size(); ++i) {
+            g_l[i] = gutterIndex(loads[i].col, loads[i].exits_right);
+            unique_g.insert(g_l[i]);
+        }
+        const QColor color = WireItem::colorForNet(src_key);
+        QVector<QPointF> dot_points;
+
+        if (unique_g.size() == 1) {
+            // Single-gutter trunk: vertical run at one gutter X, every pin
+            // (driver + loads) stubs horizontally to it.
+            qreal gx = allocateLaneX(g_d, gutter_info, gutter_counter);
+            for (int i = 0; i < loads.size(); ++i) {
+                QVector<QPointF> wp;
+                wp << driver.pt << QPointF(gx, driver.pt.y()) << QPointF(gx, loads[i].pt.y()) << loads[i].pt;
+                wires[i]->setWaypoints(wp);
+            }
+            if (loads.size() >= 2) {
+                QVector<qreal> ys;
+                ys.push_back(driver.pt.y());
+                for (const auto &l : loads)
+                    ys.push_back(l.pt.y());
+                std::sort(ys.begin(), ys.end());
+                for (int i = 1; i < ys.size() - 1; ++i)
+                    dot_points << QPointF(gx, ys[i]);
+            }
+        } else {
+            // Multi-gutter tree: horizontal bridge at hy connecting one
+            // vertical per unique gutter. Bridge Y = average of all pin Ys,
+            // so the trunk runs through the natural band of the net rather
+            // than far above every module.
+            qreal sum_y = driver.pt.y();
+            int count = 1;
+            for (const auto &l : loads) {
+                sum_y += l.pt.y();
+                ++count;
+            }
+            qreal hy = sum_y / static_cast<qreal>(count);
+            QHash<int, qreal> gx_for_idx;
+            // Sort unique gutters for deterministic allocation order.
+            QVector<int> sorted_gutters(unique_g.begin(), unique_g.end());
+            std::sort(sorted_gutters.begin(), sorted_gutters.end());
+            for (int idx : sorted_gutters)
+                gx_for_idx[idx] = allocateLaneX(idx, gutter_info, gutter_counter);
+            qreal dgx = gx_for_idx[g_d];
+
+            for (int i = 0; i < loads.size(); ++i) {
+                qreal lgx = gx_for_idx[g_l[i]];
+                QVector<QPointF> wp;
+                wp << driver.pt << QPointF(dgx, driver.pt.y()) << QPointF(dgx, hy);
+                if (lgx != dgx)
+                    wp << QPointF(lgx, hy);
+                wp << QPointF(lgx, loads[i].pt.y()) << loads[i].pt;
+                wires[i]->setWaypoints(wp);
+            }
+
+            // Interior trunk taps along the highway. Each unique gutter X
+            // attaches one vertical at hy; trunk continues left+right at
+            // interior taps, giving a T-junction (3 cardinal directions).
+            QVector<qreal> tap_xs;
+            tap_xs.append(gx_for_idx.values());
+            std::sort(tap_xs.begin(), tap_xs.end());
+            tap_xs.erase(std::unique(tap_xs.begin(), tap_xs.end()), tap_xs.end());
+            for (int i = 1; i < tap_xs.size() - 1; ++i)
+                dot_points << QPointF(tap_xs[i], hy);
+
+            // Per-gutter drop junctions: when multiple loads share a gutter
+            // (or a load shares the driver's gutter), the drop column has
+            // its own interior Y taps.
+            QHash<int, QVector<qreal>> ys_at_gutter;
+            ys_at_gutter[g_d].push_back(driver.pt.y());
+            for (int i = 0; i < loads.size(); ++i)
+                ys_at_gutter[g_l[i]].push_back(loads[i].pt.y());
+            for (auto it = ys_at_gutter.constBegin(); it != ys_at_gutter.constEnd(); ++it) {
+                const auto &ys = it.value();
+                if (ys.size() < 2)
+                    continue;
+                QVector<qreal> sorted = ys;
+                sorted.push_back(hy);
+                std::sort(sorted.begin(), sorted.end());
+                qreal gx = gx_for_idx[it.key()];
+                for (int i = 1; i < sorted.size() - 1; ++i) {
+                    qreal y = sorted[i];
+                    if (std::abs(y - hy) < 0.5)
+                        continue; // hy already handled as trunk tap
+                    dot_points << QPointF(gx, y);
+                }
+            }
+        }
+
+        QSet<QPair<int, int>> dedupe;
+        for (const auto &p : dot_points) {
+            auto key = qMakePair(static_cast<int>(std::round(p.x())), static_cast<int>(std::round(p.y())));
+            if (dedupe.contains(key))
+                continue;
+            dedupe.insert(key);
+            auto *dot = new JunctionDotItem(p, color);
+            m_scene->addItem(dot);
+            m_junction_dots.push_back(dot);
+        }
+    }
+
+
+    void clearJunctionDots() {
+        for (auto *d : m_junction_dots) {
+            m_scene->removeItem(d);
+            delete d;
+        }
+        m_junction_dots.clear();
+    }
+
+    // Drop any "[...]" slice suffix off a wire key so different slice variants
+    // of the same physical driver pin collapse into one tree.
+    static QString baseKey(const QString &key) {
+        int b = key.indexOf(QChar('['));
+        return (b >= 0) ? key.left(b) : key;
+    }
+
+    // Replan every wire path by grouping wires under their shared source_key
+    // (one tree per net). Pass 1 resolves every net's endpoints and
+    // accumulates per-gutter stub constraints + occupancy. Pass 2 hands the
+    // computed GutterInfo to planNet so lane offsets scale to actually fit
+    // inside the safe range, instead of collapsing to safe_min/safe_max.
+    void replanWires() {
+        clearJunctionDots();
+
+        // Group by base (slice-stripped) source key: u_a.dout[7:4] and
+        // u_a.dout[3:0] share one trunk because they originate from the same
+        // physical pin.
+        QHash<QString, QVector<WireItem *>> by_src;
+        for (auto *w : m_wires)
+            by_src[baseKey(w->sourceKey())].push_back(w);
+
+        QStringList src_keys = by_src.keys();
+        std::sort(src_keys.begin(), src_keys.end());
+
+        struct NetData {
+            Endpoint driver;
+            QVector<Endpoint> loads;
+            QVector<WireItem *> wires;
+        };
+        QHash<QString, NetData> nets;
+        for (const QString &src_key : src_keys) {
+            Endpoint driver;
+            if (!resolveEndpoint(src_key, driver))
+                continue;
+            NetData d;
+            d.driver = driver;
+            for (auto *w : by_src[src_key]) {
+                Endpoint l;
+                if (!resolveEndpoint(w->targetKey(), l))
+                    continue;
+                d.loads.push_back(l);
+                d.wires.push_back(w);
+            }
+            if (!d.loads.isEmpty())
+                nets[src_key] = std::move(d);
+        }
+
+        // Pass 1: per-gutter constraints across all nets.
+        QHash<int, GutterInfo> gutter_info;
+        for (const QString &src_key : src_keys) {
+            auto it = nets.find(src_key);
+            if (it == nets.end())
+                continue;
+            const NetData &d = it.value();
+            QSet<int> net_gutters;
+            auto tighten = [&](const Endpoint &e) {
+                int idx = gutterIndex(e.col, e.exits_right);
+                net_gutters.insert(idx);
+                GutterInfo &gi = gutter_info[idx];
+                if (e.exits_right)
+                    gi.safe_min = std::max(gi.safe_min, e.pt.x() + static_cast<qreal>(kWireStubMin));
+                else
+                    gi.safe_max = std::min(gi.safe_max, e.pt.x() - static_cast<qreal>(kWireStubMin));
+            };
+            tighten(d.driver);
+            for (const auto &l : d.loads)
+                tighten(l);
+            for (int g : net_gutters)
+                gutter_info[g].nets_using++;
+        }
+
+        // Pass 2: plan each net with lane allocator.
+        QHash<int, int> gutter_counter;
+        for (const QString &src_key : src_keys) {
+            auto it = nets.find(src_key);
+            if (it == nets.end())
+                continue;
+            const NetData &d = it.value();
+            planNet(src_key, d.driver, d.loads, d.wires, gutter_counter, gutter_info);
+        }
     }
 
     void rebuildWires() {
@@ -1829,57 +2239,28 @@ class CanvasLayer {
             delete w;
         }
         m_wires.clear();
+        clearJunctionDots();
+
         int wc = m_state->wire_count();
         for (int i = 0; i < wc; ++i) {
             QString src_key = m_state->wire_source(i);
             QString dst_key = m_state->wire_target(i);
-            QPointF src_pt, dst_pt;
-            bool src_right = false, dst_right = false;
-            QRectF src_b, dst_b;
-            if (!resolveKey(src_key, src_pt, src_right, src_b) || !resolveKey(dst_key, dst_pt, dst_right, dst_b)) {
-                continue;
-            }
             auto *w = new WireItem(src_key, dst_key);
             w->setAppState(m_state);
             w->setWidth(m_state->wire_width(i));
             w->setRouteIndex(static_cast<int>(m_wires.size()));
-            QList<QRectF> obstacles = collectObstacles(src_b, dst_b);
-            w->routeBetween(src_pt, src_right, src_b, dst_pt, dst_right, dst_b, obstacles);
-            w->setZValue(-1); // behind instances
+            w->setZValue(1);
             m_scene->addItem(w);
             m_wires.push_back(w);
         }
+        replanWires();
     }
 
-    // Reroute every wire — even untouched ones — so a moving instance also
-    // shoves bystander wires that happen to cross its new position.
+    // Same tree replanner; called when an instance moves so lane allocation
+    // and trunk geometry follow the new layout.
     void rerouteWiresFor(const QString &inst_name) {
         Q_UNUSED(inst_name);
-        for (auto *w : m_wires) {
-            QPointF src_pt, dst_pt;
-            bool src_right = false, dst_right = false;
-            QRectF src_b, dst_b;
-            if (!resolveKey(w->sourceKey(), src_pt, src_right, src_b) ||
-                !resolveKey(w->targetKey(), dst_pt, dst_right, dst_b)) {
-                continue;
-            }
-            QList<QRectF> obstacles = collectObstacles(src_b, dst_b);
-            w->routeBetween(src_pt, src_right, src_b, dst_pt, dst_right, dst_b, obstacles);
-        }
-    }
-
-    // All instance bodies in the scene, except the wire's own endpoints
-    // (those go through src_bounds/dst_bounds which expand the wire's own
-    // detour envelope unconditionally).
-    QList<QRectF> collectObstacles(const QRectF &src, const QRectF &dst) const {
-        QList<QRectF> out;
-        for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
-            QRectF b = it.value()->sceneBoundingRect();
-            if (b == src || b == dst)
-                continue;
-            out.push_back(b);
-        }
-        return out;
+        replanWires();
     }
 
     void onInstanceAdded(const QString &name) {
@@ -1896,6 +2277,7 @@ class CanvasLayer {
         item->setCanvasLayer(this);
         m_scene->addItem(item);
         m_items.insert(name, item);
+        rebuildTopPorts();
         rebuildWires();
     }
 
@@ -1907,6 +2289,7 @@ class CanvasLayer {
         m_scene->removeItem(it.value());
         delete it.value();
         m_items.erase(it);
+        rebuildTopPorts();
         rebuildWires();
     }
 
@@ -1918,7 +2301,22 @@ class CanvasLayer {
         if (it.value()->pos() != QPointF(x, y)) {
             it.value()->setPos(x, y);
         }
+        // Column bounds may have changed; reflow top ports so the diagram
+        // stays bracketed by them.
+        rebuildTopPorts();
         rerouteWiresFor(name);
+    }
+
+    // Called from InstanceItem::itemChange while the user drags. Reflows top
+    // ports only when the column bounds shift (cheap during drag) and always
+    // reroutes wires.
+    void onInstanceColumnChanged() {
+        auto bounds = columnBounds();
+        if (bounds != m_last_col_bounds) {
+            m_last_col_bounds = bounds;
+            rebuildTopPorts();
+        }
+        rerouteWiresFor(QString());
     }
 
     void onPortMapChanged() {
@@ -1947,14 +2345,27 @@ class CanvasLayer {
     std::vector<TopPortItem *> m_top_ports;
     QHash<QString, TopPortItem *> m_top_port_by_name;
     std::vector<WireItem *> m_wires;
+    std::vector<JunctionDotItem *> m_junction_dots;
+    std::pair<int, int> m_last_col_bounds = {0, 0};
     WireTool m_wire_tool;
 };
 
 // --- InstanceItem::itemChange (live wire reroute during drag) ---------------
 
 QVariant InstanceItem::itemChange(GraphicsItemChange change, const QVariant &value) {
+    // Snap X to nearest column center as the user drags. Y stays continuous.
+    // Position frame: instance origin sits at the top-left; we want the
+    // body's center (origin + width/2) to land on a column center, so the
+    // origin's X must be `col*kColumnPitch - width/2`.
+    if (change == ItemPositionChange) {
+        QPointF p = value.toPointF();
+        qreal centered = p.x() + m_width / 2.0;
+        int col = static_cast<int>(std::round(centered / kColumnPitch));
+        qreal snapped_x = col * kColumnPitch - m_width / 2.0;
+        return QPointF(snapped_x, p.y());
+    }
     if (change == ItemPositionHasChanged && m_canvas_layer) {
-        m_canvas_layer->rerouteWiresFor(m_name);
+        m_canvas_layer->onInstanceColumnChanged();
     }
     return QGraphicsRectItem::itemChange(change, value);
 }
@@ -2119,7 +2530,11 @@ static QString build_instance_buffer(AppState *state, const QString &instance_na
             QString rhs = state->port_map_entry(instance_name, pname);
             if (rhs.isEmpty())
                 rhs = QStringLiteral("open");
-            out += QStringLiteral("  .%1(%2),\n").arg(pname.leftJustified(name_width), rhs);
+            QString lhs = pname;
+            QString slice = state->consumer_slice(instance_name, pname);
+            if (!slice.isEmpty())
+                lhs += slice;
+            out += QStringLiteral("  .%1(%2),\n").arg(lhs.leftJustified(name_width), rhs);
         }
         out += QStringLiteral(");\n");
         return out;
@@ -2156,7 +2571,11 @@ static QString build_instance_buffer(AppState *state, const QString &instance_na
         QString rhs = state->port_map_entry(instance_name, pname);
         if (rhs.isEmpty())
             rhs = QStringLiteral("open");
-        out += QStringLiteral("    %1 => %2,\n").arg(pname.leftJustified(name_width), rhs);
+        QString lhs = pname;
+        QString slice = state->consumer_slice(instance_name, pname);
+        if (!slice.isEmpty())
+            lhs += slice;
+        out += QStringLiteral("    %1 => %2,\n").arg(lhs.leftJustified(name_width), rhs);
     }
     out += QStringLiteral("  );\n");
     return out;
@@ -2307,6 +2726,41 @@ static EditorParseResult parse_editor_buffer(const QString &buffer) {
     return r;
 }
 
+// Pull an optional `[h:l]` or `[i]` suffix off a port name. On success, *port
+// is the bare port name and *has_slice tells the caller whether to call
+// set_consumer_slice or clear_consumer_slice.
+static bool split_consumer_slice(const QString &lhs_in, QString *port, int *high, int *low, bool *has_slice) {
+    int br_open = lhs_in.indexOf(QChar('['));
+    if (br_open < 0) {
+        *port = lhs_in;
+        *has_slice = false;
+        return true;
+    }
+    int br_close = lhs_in.lastIndexOf(QChar(']'));
+    if (br_close <= br_open)
+        return false;
+    *port = lhs_in.left(br_open).trimmed();
+    QString slice = lhs_in.mid(br_open + 1, br_close - br_open - 1).trimmed();
+    int colon = slice.indexOf(QChar(':'));
+    bool ok = false;
+    if (colon < 0) {
+        int v = slice.toInt(&ok);
+        if (!ok)
+            return false;
+        *high = v;
+        *low = v;
+    } else {
+        *high = slice.left(colon).trimmed().toInt(&ok);
+        if (!ok)
+            return false;
+        *low = slice.mid(colon + 1).trimmed().toInt(&ok);
+        if (!ok)
+            return false;
+    }
+    *has_slice = true;
+    return true;
+}
+
 // Commit a buffer back to the model. Returns the list of error messages;
 // empty on success. On any parse error the model is NOT mutated.
 static QStringList commit_editor_buffer(AppState *state, const QString &instance_name, const QString &buffer) {
@@ -2327,7 +2781,19 @@ static QStringList commit_editor_buffer(AppState *state, const QString &instance
         state->set_generic_map_entry(instance_name, p.first, p.second);
     }
     for (const auto &p : parsed.port_commits) {
-        state->set_port_map_entry(instance_name, p.first, p.second);
+        QString port_name;
+        int slice_high = 0, slice_low = 0;
+        bool has_slice = false;
+        if (!split_consumer_slice(p.first, &port_name, &slice_high, &slice_low, &has_slice)) {
+            errors << QStringLiteral("could not parse port slice in '%1'").arg(p.first);
+            continue;
+        }
+        state->set_port_map_entry(instance_name, port_name, p.second);
+        if (has_slice) {
+            state->set_consumer_slice(instance_name, port_name, slice_high, slice_low);
+        } else {
+            state->clear_consumer_slice(instance_name, port_name);
+        }
     }
     if (state->instance_is_dirty(idx)) {
         state->clear_instance_dirty(instance_name);

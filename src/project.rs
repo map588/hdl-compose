@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::Schematic;
 
-const CURRENT_VERSION: u32 = 3;
+const CURRENT_VERSION: u32 = 4;
 const MIN_SUPPORTED_VERSION: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
@@ -222,6 +222,68 @@ mod tests {
             "sclk".to_string(),
             "cs_n".to_string(),
         ]);
+    }
+
+    #[test]
+    fn load_v3_without_consumer_slices_succeeds() {
+        // v3 files predate the consumer_slices field; they must load with the
+        // field defaulted to empty.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("v3.hdlc");
+        std::fs::write(
+            &path,
+            r#"{
+              "version": 3,
+              "top_name": "top",
+              "language": "Vhdl",
+              "top_generics": [],
+              "top_ports": [],
+              "instances": [
+                {
+                  "name": "u_a",
+                  "module_ref": "mod_a",
+                  "generic_map": {},
+                  "port_map": {},
+                  "position": [0.0, 0.0],
+                  "manual_bundles": {}
+                }
+              ],
+              "aliases": {},
+              "library_paths": []
+            }"#,
+        )
+        .unwrap();
+        let (loaded, _warnings) = load_project(&path).unwrap();
+        assert_eq!(loaded.instances.len(), 1);
+        assert!(loaded.instances[0].consumer_slices.is_empty());
+        // Re-saves as v4.
+        save_project(&loaded, &path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("\"version\": 4"));
+    }
+
+    #[test]
+    fn consumer_slice_round_trip() {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.add_instance("u_b", "mod_b").unwrap();
+        s.get_instance_mut("u_b").unwrap().consumer_slices.insert(
+            "din".into(),
+            crate::types::SliceExpr::Range { high: 3, low: 0 },
+        );
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("rt.hdlc");
+        save_project(&s, &path).unwrap();
+        let (loaded, _warnings) = load_project(&path).unwrap();
+        let cs = loaded
+            .get_instance("u_b")
+            .unwrap()
+            .consumer_slices
+            .get("din")
+            .unwrap();
+        assert!(matches!(
+            cs,
+            crate::types::SliceExpr::Range { high: 3, low: 0 }
+        ));
     }
 
     #[test]

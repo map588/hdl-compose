@@ -244,7 +244,14 @@ fn emit_instance(out: &mut String, schematic: &Schematic, inst: &Instance, modul
             Some(Some(net_ref)) => render_rhs_vhdl(schematic, net_ref),
             Some(None) | None => "open".to_string(),
         };
-        writeln!(out, "      {} => {}{}", port.name, rhs, sep).unwrap();
+        let lhs = match inst.consumer_slices.get(&port.name) {
+            Some(SliceExpr::Bit(b)) => format!("{}({})", port.name, b),
+            Some(SliceExpr::Range { high, low }) => {
+                format!("{}({} downto {})", port.name, high, low)
+            }
+            None => port.name.clone(),
+        };
+        writeln!(out, "      {} => {}{}", lhs, rhs, sep).unwrap();
     }
     writeln!(out, "    );").unwrap();
 }
@@ -445,6 +452,77 @@ mod tests {
 
         assert!(output.contains("signal data_bus : std_logic;"));
         assert!(output.contains("din => data_bus"));
+    }
+
+    #[test]
+    fn bilateral_slice_codegen_vhdl() {
+        // inst_a.dout[7:4] => sig => inst_b.din[3:0]
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.add_instance("u_a", "mod_a").unwrap();
+        s.add_instance("u_b", "mod_b").unwrap();
+        // Driver-side slice on RHS (from u_a.dout[7:4]).
+        s.set_port_map_entry(
+            "u_b",
+            "din",
+            Some(NetRef::InstancePortSlice(
+                "u_a".into(),
+                "dout".into(),
+                SliceExpr::Range { high: 7, low: 4 },
+            )),
+        )
+        .unwrap();
+        // Consumer-side slice on LHS (this port's [3:0] receives the driver slice).
+        s.instances
+            .iter_mut()
+            .find(|i| i.name == "u_b")
+            .unwrap()
+            .consumer_slices
+            .insert("din".into(), SliceExpr::Range { high: 3, low: 0 });
+
+        let lib = vec![
+            ModuleDef {
+                name: "mod_a".into(),
+                generics: vec![],
+                ports: vec![PortDef {
+                    name: "dout".into(),
+                    direction: Direction::Out,
+                    port_type: PortType::StdLogicVector(Range {
+                        high: RangeExpr::Literal(7),
+                        low: RangeExpr::Literal(0),
+                        dir: RangeDir::Downto,
+                    }),
+                    bundle: None,
+                }],
+                source_path: "a.vhd".into(),
+                source_hash: 0,
+                dependencies: Vec::new(),
+            },
+            ModuleDef {
+                name: "mod_b".into(),
+                generics: vec![],
+                ports: vec![PortDef {
+                    name: "din".into(),
+                    direction: Direction::In,
+                    port_type: PortType::StdLogicVector(Range {
+                        high: RangeExpr::Literal(7),
+                        low: RangeExpr::Literal(0),
+                        dir: RangeDir::Downto,
+                    }),
+                    bundle: None,
+                }],
+                source_path: "b.vhd".into(),
+                source_hash: 0,
+                dependencies: Vec::new(),
+            },
+        ];
+
+        let diags = s.validate(&lib);
+        let output = generate_vhdl(&s, &lib, &diags).unwrap();
+        // LHS = din(3 downto 0), RHS = u_a_dout(7 downto 4)
+        assert!(
+            output.contains("din(3 downto 0) => u_a_dout(7 downto 4)"),
+            "missing bilateral slice in VHDL output:\n{output}"
+        );
     }
 
     #[test]

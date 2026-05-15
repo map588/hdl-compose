@@ -112,6 +112,29 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn set_consumer_slice(
+            self: Pin<&mut AppState>,
+            instance: &QString,
+            port: &QString,
+            slice_high: i32,
+            slice_low: i32,
+        ) -> bool;
+
+        #[qinvokable]
+        fn clear_consumer_slice(
+            self: Pin<&mut AppState>,
+            instance: &QString,
+            port: &QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn consumer_slice(
+            self: &AppState,
+            instance: &QString,
+            port: &QString,
+        ) -> QString;
+
+        #[qinvokable]
         fn clear_port_map_entry(
             self: Pin<&mut AppState>,
             instance: &QString,
@@ -874,11 +897,22 @@ impl qobject::AppState {
         };
         match result {
             Ok(()) => {
-                self.as_mut().rust_mut().get_mut().dirty = true;
+                {
+                    let r = self.as_mut().rust_mut().get_mut();
+                    r.dirty = true;
+                    if r.selected_instance == old_s {
+                        r.selected_instance = new_s.clone();
+                    }
+                }
                 self.as_mut().set_dirty(true);
+                // Rebuild the wire cache BEFORE the canvas-facing signals fire
+                // — onInstanceRemoved/Added trigger rebuildWires which reads
+                // from the cache. Stale cache = wires referencing the old
+                // name vanish.
+                self.as_mut().rebuild_library_and_validate();
                 self.as_mut().instance_removed(QString::from(&old_s));
                 self.as_mut().instance_added(QString::from(&new_s));
-                self.as_mut().rebuild_library_and_validate();
+                self.as_mut().selection_changed(QString::from(&new_s));
                 true
             }
             Err(e) => {
@@ -1074,6 +1108,90 @@ impl qobject::AppState {
                 self.as_mut().record_error(e.to_string());
                 false
             }
+        }
+    }
+
+    pub fn set_consumer_slice(
+        mut self: Pin<&mut Self>,
+        instance: &QString,
+        port: &QString,
+        slice_high: i32,
+        slice_low: i32,
+    ) -> bool {
+        let inst = instance.to_string();
+        let port_s = port.to_string();
+        let slice = if slice_high == slice_low {
+            SliceExpr::Bit(slice_high)
+        } else {
+            SliceExpr::Range {
+                high: slice_high,
+                low: slice_low,
+            }
+        };
+        self.as_mut().push_snapshot();
+        let updated = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
+            Some(s) => match s.instances.iter_mut().find(|i| i.name == inst) {
+                Some(i) => {
+                    i.consumer_slices.insert(port_s.clone(), slice);
+                    true
+                }
+                None => false,
+            },
+            None => {
+                self.as_mut().record_error("no project loaded");
+                return false;
+            }
+        };
+        if !updated {
+            self.as_mut()
+                .record_error(format!("instance not found: {inst}"));
+            return false;
+        }
+        self.as_mut().rust_mut().get_mut().dirty = true;
+        self.as_mut().set_dirty(true);
+        self.as_mut().rebuild_library_and_validate();
+        self.as_mut()
+            .port_map_changed(QString::from(&inst), QString::from(&port_s));
+        true
+    }
+
+    pub fn clear_consumer_slice(
+        mut self: Pin<&mut Self>,
+        instance: &QString,
+        port: &QString,
+    ) -> bool {
+        let inst = instance.to_string();
+        let port_s = port.to_string();
+        self.as_mut().push_snapshot();
+        let removed = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
+            Some(s) => match s.instances.iter_mut().find(|i| i.name == inst) {
+                Some(i) => i.consumer_slices.remove(&port_s).is_some(),
+                None => false,
+            },
+            None => return false,
+        };
+        if removed {
+            self.as_mut().rust_mut().get_mut().dirty = true;
+            self.as_mut().set_dirty(true);
+            self.as_mut().rebuild_library_and_validate();
+            self.as_mut()
+                .port_map_changed(QString::from(&inst), QString::from(&port_s));
+        }
+        true
+    }
+
+    pub fn consumer_slice(&self, instance: &QString, port: &QString) -> QString {
+        let inst = instance.to_string();
+        let port_s = port.to_string();
+        let Some(s) = self.rust().schematic.as_ref() else {
+            return QString::default();
+        };
+        let Some(i) = s.instances.iter().find(|i| i.name == inst) else {
+            return QString::default();
+        };
+        match i.consumer_slices.get(&port_s) {
+            Some(slice) => QString::from(&slice.to_suffix()),
+            None => QString::default(),
         }
     }
 

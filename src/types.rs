@@ -99,6 +99,13 @@ pub struct Instance {
     /// grouping; absent from v2 `.hdlc` files and deserializes as default.
     #[serde(default)]
     pub manual_bundles: HashMap<String, Vec<String>>,
+    /// Optional slice of THIS instance's own port that's connected to the
+    /// driver. The driver-side slice (if any) is encoded in the
+    /// `port_map` value's `NetRef::*Slice` variant — these two slices are
+    /// independent: a 32-bit `bus[7:0]` consumer slice can ride a 32-bit
+    /// driver, or be sliced again from a wider net. Keyed by port name.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub consumer_slices: HashMap<String, SliceExpr>,
     /// Set when a library re-parse dropped a port_map entry that referenced
     /// a now-missing port. Tells the user "review this instance". Clears on
     /// user acknowledgement or when the missing ports reappear.
@@ -111,7 +118,7 @@ pub struct Instance {
 pub type NetId = NetRef;
 
 impl SliceExpr {
-    fn to_suffix(&self) -> String {
+    pub fn to_suffix(&self) -> String {
         match self {
             SliceExpr::Bit(i) => format!("[{i}]"),
             SliceExpr::Range { high, low } => format!("[{high}:{low}]"),

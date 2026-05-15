@@ -111,6 +111,7 @@ impl Schematic {
             port_map: HashMap::new(),
             position: (0.0, 0.0),
             manual_bundles: HashMap::new(),
+            consumer_slices: HashMap::new(),
             dirty: false,
         });
         Ok(self.instances.last_mut().unwrap())
@@ -207,6 +208,7 @@ impl Schematic {
             }
             for p in &dropped_ports {
                 inst.port_map.remove(p);
+                inst.consumer_slices.remove(p);
             }
             inst.dirty = true;
             newly_dirty.push(inst.name.clone());

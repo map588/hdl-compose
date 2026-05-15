@@ -169,7 +169,12 @@ fn emit_instance(out: &mut String, schematic: &Schematic, inst: &Instance, modul
             Some(Some(net_ref)) => render_rhs_sv(schematic, net_ref),
             Some(None) | None => String::new(), // empty parens for unconnected
         };
-        writeln!(out, "    .{}({}){}", port.name, rhs, sep).unwrap();
+        let lhs = match inst.consumer_slices.get(&port.name) {
+            Some(SliceExpr::Bit(b)) => format!("{}[{}]", port.name, b),
+            Some(SliceExpr::Range { high, low }) => format!("{}[{}:{}]", port.name, high, low),
+            None => port.name.clone(),
+        };
+        writeln!(out, "    .{}({}){}", lhs, rhs, sep).unwrap();
     }
     writeln!(out, "  );").unwrap();
 }
@@ -445,5 +450,76 @@ mod tests {
         let output = generate_sv(&s, &lib, &diags).unwrap();
         assert!(output.contains(".din1(u_a_bus[0])"), "{output}");
         assert!(output.contains(".din2(u_a_bus[7:4])"), "{output}");
+    }
+
+    #[test]
+    fn bilateral_slice_codegen_sv() {
+        let mut s = Schematic::new("top", Language::SystemVerilog);
+        s.add_instance("u_a", "mod_a").unwrap();
+        s.add_instance("u_b", "mod_b").unwrap();
+        s.set_port_map_entry(
+            "u_b",
+            "din",
+            Some(NetRef::InstancePortSlice(
+                "u_a".into(),
+                "dout".into(),
+                SliceExpr::Range { high: 7, low: 4 },
+            )),
+        )
+        .unwrap();
+        s.instances
+            .iter_mut()
+            .find(|i| i.name == "u_b")
+            .unwrap()
+            .consumer_slices
+            .insert("din".into(), SliceExpr::Range { high: 3, low: 0 });
+
+        let lib = vec![
+            ModuleDef {
+                name: "mod_a".into(),
+                generics: vec![],
+                ports: vec![PortDef {
+                    name: "dout".into(),
+                    direction: Direction::Out,
+                    port_type: PortType::StdLogicVector(Range {
+                        high: RangeExpr::Literal(7),
+                        low: RangeExpr::Literal(0),
+                        dir: RangeDir::Downto,
+                    }),
+                    bundle: None,
+                }],
+                source_path: "a.sv".into(),
+                source_hash: 0,
+                dependencies: Vec::new(),
+            },
+            ModuleDef {
+                name: "mod_b".into(),
+                generics: vec![],
+                ports: vec![PortDef {
+                    name: "din".into(),
+                    direction: Direction::In,
+                    port_type: PortType::StdLogicVector(Range {
+                        high: RangeExpr::Literal(7),
+                        low: RangeExpr::Literal(0),
+                        dir: RangeDir::Downto,
+                    }),
+                    bundle: None,
+                }],
+                source_path: "b.sv".into(),
+                source_hash: 0,
+                dependencies: Vec::new(),
+            },
+        ];
+
+        let diags: Vec<crate::schematic::Diagnostic> = s
+            .validate(&lib)
+            .into_iter()
+            .filter(|d| d.is_error())
+            .collect();
+        let output = generate_sv(&s, &lib, &diags).unwrap();
+        assert!(
+            output.contains(".din[3:0](u_a_dout[7:4])"),
+            "missing bilateral slice in SV output:\n{output}"
+        );
     }
 }
