@@ -1,18 +1,24 @@
-// GUI scene item classes that the canvas places into QGraphicsScene.
+// GUI scene item classes placed in the canvas QGraphicsScene.
 //
-// Currently extracted: WireItem (orthogonal wire path + bus annotation) and
-// JunctionDotItem (T-tap dot). Other item classes (PortPinItem, BundlePinItem,
-// InstanceItem, TopPortItem) still live in app.cpp pending further split —
-// they touch WireTool / CanvasLayer / dialogs which haven't moved yet.
+// All graphics-item class declarations live here under namespace hdlc.
+// Method bodies that depend on WireTool, CanvasLayer, or app-level dialog
+// helpers are declared here and defined out-of-line in app.cpp (wrapped in
+// `namespace hdlc { ... }`) until canvas.h/.cpp is extracted.
 
 #pragma once
 
 #include "canvas_constants.h"
 
 #include <QColor>
+#include <QFont>
 #include <QGraphicsEllipseItem>
+#include <QGraphicsItem>
 #include <QGraphicsPathItem>
+#include <QGraphicsRectItem>
+#include <QGraphicsScene>
 #include <QGraphicsSceneContextMenuEvent>
+#include <QGraphicsSceneMouseEvent>
+#include <QHash>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QMenu>
@@ -21,16 +27,39 @@
 #include <QPainterPathStroker>
 #include <QPen>
 #include <QPointF>
+#include <QPolygonF>
+#include <QSet>
 #include <QString>
+#include <QStringLiteral>
+#include <QStyle>
 #include <QStyleOptionGraphicsItem>
+#include <QTimer>
 #include <QVector>
 #include <cmath>
+#include <vector>
 
 #include "hdl-compose/src/gui/bridge.cxxqt.h"
 
 namespace hdlc {
 
-// Filled circle marking a same-net junction (T-tap of two or more wires).
+class WireTool;
+class CanvasLayer;
+
+enum class PinSide { Left, Right };
+
+class InstanceItem;
+class TopPortItem;
+class PortPinItem;
+
+// Width annotation rendered next to multi-bit pins ("[N-1:0]").
+inline QString format_width(int w) {
+    if (w <= 0)
+        return QString();
+    return QStringLiteral("[%1:0]").arg(w - 1);
+}
+
+// --- JunctionDotItem --------------------------------------------------------
+
 class JunctionDotItem : public QGraphicsEllipseItem {
   public:
     JunctionDotItem(const QPointF &center, const QColor &color)
@@ -44,10 +73,8 @@ class JunctionDotItem : public QGraphicsEllipseItem {
     }
 };
 
-// Orthogonal wire path between two pin keys ("inst.port" or "top:port"),
-// rendered with a bus-width slash + bit count for multi-bit nets. The
-// CanvasLayer planner sets the path via setWaypoints; WireItem stores the
-// raw waypoints so junction-dot scanning and selection can introspect.
+// --- WireItem ---------------------------------------------------------------
+
 class WireItem : public QGraphicsPathItem {
   public:
     WireItem(const QString &source_key, const QString &target_key)
@@ -59,8 +86,6 @@ class WireItem : public QGraphicsPathItem {
         setPen(pen);
     }
 
-    // Hash the net identity to a deterministic hue. Muted palette so wires
-    // read as background detail rather than competing with module bodies.
     static QColor colorForNet(const QString &key) {
         int hue = static_cast<int>(qHash(key) % 360);
         return QColor::fromHsv(hue, 110, 200);
@@ -176,6 +201,258 @@ class WireItem : public QGraphicsPathItem {
     int m_width = 1;
     int m_route_index = -1;
     QVector<QPointF> m_waypoints;
+};
+
+// --- PortPinItem ------------------------------------------------------------
+
+class PortPinItem : public QGraphicsItem {
+  public:
+    PortPinItem(const QString &name, int direction, int width, PinSide side, InstanceItem *parent);
+    ~PortPinItem() override;
+
+    void setSlot(int slot_index) {
+        m_slot = slot_index;
+        prepareGeometryChange();
+        update();
+    }
+
+    void setKey(const QString &k) { m_key = k; }
+    QString key() const { return m_key; }
+    int direction() const { return m_direction; }
+    int width() const { return m_width; }
+    QString portName() const { return m_name; }
+    PinSide side() const { return m_side; }
+
+    void setWireTool(WireTool *wt) { m_wire_tool = wt; }
+    void setArmedState(bool armed) {
+        if (m_armed_state != armed) {
+            m_armed_state = armed;
+            update();
+        }
+    }
+    bool armedState() const { return m_armed_state; }
+
+    virtual QPointF tipScenePos() const;
+
+    void flashRed(int ms = 500);
+
+    QRectF boundingRect() const override;
+    QPainterPath shape() const override;
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override;
+
+  protected:
+    void mousePressEvent(QGraphicsSceneMouseEvent *event) override;
+    void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override;
+    void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override;
+    void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override;
+
+    QString m_name;
+    QString m_key;
+    int m_direction;
+    int m_width;
+    PinSide m_side;
+    InstanceItem *m_parent;
+    int m_slot = 0;
+    WireTool *m_wire_tool = nullptr;
+    bool m_flash = false;
+    bool m_armed_state = false;
+};
+
+// --- BundlePinItem ---------------------------------------------------------
+
+class BundlePinItem : public PortPinItem {
+  public:
+    BundlePinItem(const QString &bundle_name, PinSide side, bool header, int member_count, InstanceItem *parent)
+        : PortPinItem(bundle_name, -1, 0, side, parent), m_header(header), m_member_count(member_count) {
+        setAcceptedMouseButtons(Qt::LeftButton | Qt::RightButton);
+    }
+
+    QRectF boundingRect() const override;
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override;
+
+  protected:
+    void mousePressEvent(QGraphicsSceneMouseEvent *event) override;
+
+  private:
+    bool m_header;
+    int m_member_count;
+};
+
+// --- InstanceItem -----------------------------------------------------------
+
+class InstanceItem : public QGraphicsRectItem {
+  public:
+    InstanceItem(AppState *state, const QString &name, const QString &module, QGraphicsItem *parent = nullptr)
+        : QGraphicsRectItem(0, 0, kMinInstanceWidth, kInstanceHeaderHeight + kMinInstanceBodyHeight, parent),
+          m_state(state), m_name(name), m_module(module) {
+        setFlags(QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemIsSelectable |
+                 QGraphicsItem::ItemSendsGeometryChanges);
+        setAcceptedMouseButtons(Qt::LeftButton);
+        layoutPins();
+    }
+
+    QString instanceName() const { return m_name; }
+    AppState *state() const { return m_state; }
+    void setInstanceName(const QString &n) { m_name = n; }
+    void setModuleRef(const QString &m) { m_module = m; }
+    int width() const { return m_width; }
+
+    void setWireTool(WireTool *wt) {
+        m_wire_tool = wt;
+        for (auto *pin : m_pins) {
+            pin->setWireTool(wt);
+        }
+    }
+
+    void setCanvasLayer(CanvasLayer *layer) { m_canvas_layer = layer; }
+
+    QPointF portAnchorScenePos(const QString &port_name) const {
+        auto it = m_port_anchor.find(port_name);
+        if (it == m_port_anchor.end()) {
+            return mapToScene(rect().center());
+        }
+        return it.value()->tipScenePos();
+    }
+
+    void toggleBundleExpanded(const QString &bundle) {
+        if (m_expanded_bundles.contains(bundle)) {
+            m_expanded_bundles.remove(bundle);
+        } else {
+            m_expanded_bundles.insert(bundle);
+        }
+        relayoutPins();
+    }
+
+    bool bundleExpanded(const QString &bundle) const { return m_expanded_bundles.contains(bundle); }
+
+    void relayoutPins() {
+        for (auto *pin : m_pins) {
+            scene()->removeItem(pin);
+            delete pin;
+        }
+        m_pins.clear();
+        layoutPins();
+        update();
+    }
+
+    void layoutPins();
+
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) override;
+
+  protected:
+    void mousePressEvent(QGraphicsSceneMouseEvent *event) override {
+        if (event->button() == Qt::LeftButton) {
+            m_pressScenePos = event->scenePos();
+            m_dragged = false;
+        }
+        QGraphicsRectItem::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override {
+        QGraphicsRectItem::mouseMoveEvent(event);
+        if (!m_dragged) {
+            QPointF delta = event->scenePos() - m_pressScenePos;
+            if (delta.manhattanLength() >= kClickThresholdPx) {
+                m_dragged = true;
+            }
+        }
+    }
+
+    void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override {
+        QGraphicsRectItem::mouseReleaseEvent(event);
+        if (event->button() != Qt::LeftButton) {
+            return;
+        }
+        if (m_dragged) {
+            QPointF p = pos();
+            m_state->set_instance_position(m_name, p.x(), p.y());
+        } else {
+            m_state->set_selected_instance(m_name);
+        }
+        m_dragged = false;
+    }
+
+    QVariant itemChange(GraphicsItemChange change, const QVariant &value) override;
+
+  private:
+    AppState *m_state;
+    QString m_name;
+    QString m_module;
+    QPointF m_pressScenePos;
+    bool m_dragged = false;
+    std::vector<PortPinItem *> m_pins;
+    QSet<QString> m_expanded_bundles;
+    QHash<QString, PortPinItem *> m_port_anchor;
+    WireTool *m_wire_tool = nullptr;
+    CanvasLayer *m_canvas_layer = nullptr;
+    int m_width = kMinInstanceWidth;
+};
+
+// --- TopPortItem ------------------------------------------------------------
+
+class TopPortItem : public PortPinItem {
+  public:
+    TopPortItem(const QString &name, int direction, int width, PinSide side)
+        : PortPinItem(name, direction, width, side, /*parent*/ nullptr) {
+        setKey(QStringLiteral("top:%1").arg(name));
+        setAcceptedMouseButtons(Qt::LeftButton);
+    }
+
+    QPointF tipScenePos() const override { return mapToScene(QPointF(0, 0)); }
+
+    QPainterPath shape() const override {
+        QPainterPath p;
+        qreal half = 9.0;
+        p.addRect(QRectF(-half, -half, 2 * half, 2 * half));
+        return p;
+    }
+
+    void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override { event->accept(); }
+
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override {
+        painter->setRenderHint(QPainter::Antialiasing);
+
+        if (armedState()) {
+            painter->setBrush(Qt::NoBrush);
+            painter->setPen(QPen(QColor(255, 215, 64), 2.5));
+            painter->drawEllipse(QPointF(0, 0), kPinShapeSize + 2, kPinShapeSize + 2);
+        }
+
+        QColor c = (direction() == 0) ? QColor(140, 200, 140) : QColor(200, 160, 110);
+        painter->setBrush(c);
+        painter->setPen(QPen(QColor(30, 30, 30), 1));
+        QPolygonF poly;
+        if (side() == PinSide::Left) {
+            poly << QPointF(-kPinShapeSize, -kPinShapeSize / 2.0) << QPointF(0, 0)
+                 << QPointF(-kPinShapeSize, kPinShapeSize / 2.0);
+        } else {
+            poly << QPointF(0, -kPinShapeSize / 2.0) << QPointF(kPinShapeSize, 0) << QPointF(0, kPinShapeSize / 2.0);
+        }
+        painter->drawPolygon(poly);
+
+        QString label = portName();
+        QString w = format_width(width());
+        if (!w.isEmpty())
+            label += w;
+        QFont f = painter->font();
+        f.setBold(true);
+        painter->setFont(f);
+        painter->setPen(QColor(220, 220, 220));
+        if (side() == PinSide::Left) {
+            painter->drawText(QRectF(-180 - kPinShapeSize - 6, -kPinSlotHeight / 2.0, 180, kPinSlotHeight),
+                              Qt::AlignRight | Qt::AlignVCenter, label);
+        } else {
+            painter->drawText(QRectF(kPinShapeSize + 6, -kPinSlotHeight / 2.0, 180, kPinSlotHeight),
+                              Qt::AlignLeft | Qt::AlignVCenter, label);
+        }
+    }
+
+    QRectF boundingRect() const override {
+        if (side() == PinSide::Left) {
+            return QRectF(-180 - kPinShapeSize - 6, -kPinSlotHeight / 2.0, 180 + kPinShapeSize + 6, kPinSlotHeight);
+        }
+        return QRectF(0, -kPinSlotHeight / 2.0, kPinShapeSize + 6 + 180, kPinSlotHeight);
+    }
 };
 
 } // namespace hdlc

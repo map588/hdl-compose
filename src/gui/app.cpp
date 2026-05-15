@@ -164,6 +164,8 @@ QIcon make_dirty_icon() {
     return QIcon(px);
 }
 
+} // anonymous namespace
+namespace hdlc {
 int find_instance_index(AppState *state, const QString &name) {
     int count = state->instance_count();
     for (int i = 0; i < count; ++i) {
@@ -173,6 +175,9 @@ int find_instance_index(AppState *state, const QString &name) {
     }
     return -1;
 }
+} // namespace hdlc
+namespace {
+using namespace hdlc;
 
 QString allocate_instance_name(AppState *state, const QString &module) {
     int count = state->instance_count();
@@ -188,272 +193,16 @@ QString allocate_instance_name(AppState *state, const QString &module) {
     }
 }
 
-// --- PortPinItem ------------------------------------------------------------
+// PortPinItem, BundlePinItem, InstanceItem, TopPortItem, PinSide enum,
+// format_width and find_instance_index helpers all live in items.h. The
+// `using namespace hdlc;` directive above brings them in by bare name.
+// Out-of-line method definitions for those classes are wrapped in
+// `namespace hdlc { ... }` later in this file.
 
-class InstanceItem;
-class TopPortItem;
-class PortPinItem;
-class WireTool;
-class CanvasLayer;
+// --- PortPinItem / BundlePinItem / InstanceItem out-of-line impls -----------
 
-enum class PinSide { Left, Right };
-
-class PortPinItem : public QGraphicsItem {
-  public:
-    PortPinItem(const QString &name, int direction, int width, PinSide side, InstanceItem *parent);
-    ~PortPinItem() override;
-
-    void setSlot(int slot_index) {
-        m_slot = slot_index;
-        prepareGeometryChange();
-        update();
-    }
-
-    void setKey(const QString &k) { m_key = k; }
-    QString key() const { return m_key; }
-    int direction() const { return m_direction; }
-    int width() const { return m_width; }
-    QString portName() const { return m_name; }
-    PinSide side() const { return m_side; }
-
-    void setWireTool(WireTool *wt) { m_wire_tool = wt; }
-    void setArmedState(bool armed) {
-        if (m_armed_state != armed) {
-            m_armed_state = armed;
-            update();
-        }
-    }
-    bool armedState() const { return m_armed_state; }
-
-    virtual QPointF tipScenePos() const;
-
-    void flashRed(int ms = 500);
-
-    QRectF boundingRect() const override;
-
-    // Hit-test on an 18 × 18 px region centered on the pin tip. Big enough to
-    // click comfortably; small enough that clicks on the label row still fall
-    // through to InstanceItem for drag/select.
-    QPainterPath shape() const override;
-
-    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override;
-
-  protected:
-    void mousePressEvent(QGraphicsSceneMouseEvent *event) override;
-    void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override;
-    void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override;
-    void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override;
-
-    QString m_name;
-    QString m_key;   // "<inst>.<port>"
-    int m_direction; // 0 in, 1 out, 2 inout
-    int m_width;     // 0 scalar; N vector
-    PinSide m_side;
-    InstanceItem *m_parent;
-    int m_slot = 0;
-    WireTool *m_wire_tool = nullptr;
-    bool m_flash = false;
-    bool m_armed_state = false;
-};
-
-// --- BundlePinItem ---------------------------------------------------------
-
-// BundlePinItem has two visual modes, chosen at layout time by parent InstanceItem:
-//   - collapsed: fat shape representing the whole bundle; click expands.
-//   - header:    arrow + name above the member pin list; click collapses.
-// Member pin list is rendered as separate PortPinItems by the parent.
-class BundlePinItem : public PortPinItem {
-  public:
-    BundlePinItem(const QString &bundle_name, PinSide side, bool header, int member_count, InstanceItem *parent)
-        : PortPinItem(bundle_name, -1, 0, side, parent), m_header(header), m_member_count(member_count) {
-        setAcceptedMouseButtons(Qt::LeftButton | Qt::RightButton);
-    }
-
-    QRectF boundingRect() const override;
-
-    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override;
-
-  protected:
-    void mousePressEvent(QGraphicsSceneMouseEvent *event) override;
-
-  private:
-    bool m_header;
-    int m_member_count;
-};
-
-// --- InstanceItem -----------------------------------------------------------
-
-class InstanceItem : public QGraphicsRectItem {
-  public:
-    InstanceItem(AppState *state, const QString &name, const QString &module, QGraphicsItem *parent = nullptr)
-        : QGraphicsRectItem(0, 0, kMinInstanceWidth, kInstanceHeaderHeight + kMinInstanceBodyHeight, parent),
-          m_state(state), m_name(name), m_module(module) {
-        setFlags(QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemIsSelectable |
-                 QGraphicsItem::ItemSendsGeometryChanges);
-        setAcceptedMouseButtons(Qt::LeftButton);
-        layoutPins();
-    }
-
-    QString instanceName() const { return m_name; }
-    AppState *state() const { return m_state; }
-    void setInstanceName(const QString &n) { m_name = n; }
-    void setModuleRef(const QString &m) { m_module = m; }
-    int width() const { return m_width; }
-
-    void setWireTool(WireTool *wt) {
-        m_wire_tool = wt;
-        for (auto *pin : m_pins) {
-            pin->setWireTool(wt);
-        }
-    }
-
-    void setCanvasLayer(CanvasLayer *layer) { m_canvas_layer = layer; }
-
-    // Scene position of the anchor where a wire should attach for a given port name.
-    // Falls back to the instance center if the port is not found.
-    QPointF portAnchorScenePos(const QString &port_name) const {
-        auto it = m_port_anchor.find(port_name);
-        if (it == m_port_anchor.end()) {
-            return mapToScene(rect().center());
-        }
-        return it.value()->tipScenePos();
-    }
-
-    void toggleBundleExpanded(const QString &bundle) {
-        if (m_expanded_bundles.contains(bundle)) {
-            m_expanded_bundles.remove(bundle);
-        } else {
-            m_expanded_bundles.insert(bundle);
-        }
-        relayoutPins();
-    }
-
-    bool bundleExpanded(const QString &bundle) const { return m_expanded_bundles.contains(bundle); }
-
-    void relayoutPins() {
-        for (auto *pin : m_pins) {
-            scene()->removeItem(pin);
-            delete pin;
-        }
-        m_pins.clear();
-        layoutPins();
-        update();
-    }
-
-    void layoutPins();
-
-    void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) override {
-        QRectF r = rect();
-        painter->setRenderHint(QPainter::Antialiasing);
-        int idx = find_instance_index(m_state, m_name);
-        bool dirty = (idx >= 0) && m_state->instance_is_dirty(idx);
-        bool selected =
-            (m_state->selected_instance() == m_name) || (option && (option->state & QStyle::State_Selected));
-
-        // Body — flat dark fill, very subtle bottom panel under the header.
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor(36, 39, 44));
-        painter->drawRoundedRect(r, 8, 8);
-
-        // Header band — slightly lighter, drawn as a separate rounded rect
-        // clipped to the top of the body so corner radii match.
-        painter->save();
-        QPainterPath body_path;
-        body_path.addRoundedRect(r, 8, 8);
-        painter->setClipPath(body_path);
-        QRectF header_rect(r.left(), r.top(), r.width(), kInstanceHeaderHeight);
-        painter->setBrush(QColor(46, 50, 56));
-        painter->drawRect(header_rect);
-        // Hairline divider under header
-        painter->setPen(QColor(28, 30, 34));
-        painter->drawLine(QPointF(r.left(), r.top() + kInstanceHeaderHeight),
-                          QPointF(r.right(), r.top() + kInstanceHeaderHeight));
-        painter->restore();
-
-        // Border last so it sits over the fills.
-        QPen pen;
-        if (dirty) {
-            pen.setColor(QColor(220, 90, 80));
-            pen.setWidthF(selected ? 1.8 : 1.2);
-        } else if (selected) {
-            pen.setColor(QColor(120, 170, 240));
-            pen.setWidthF(1.8);
-        } else {
-            pen.setColor(QColor(60, 64, 70));
-            pen.setWidthF(1.0);
-        }
-        pen.setCosmetic(true);
-        painter->setPen(pen);
-        painter->setBrush(Qt::NoBrush);
-        painter->drawRoundedRect(r, 8, 8);
-
-        QFont name_font = painter->font();
-        name_font.setBold(true);
-        name_font.setPointSizeF(name_font.pointSizeF() + 0.5);
-        painter->setFont(name_font);
-        painter->setPen(QColor(232, 234, 238));
-        painter->drawText(QRectF(r.left() + 12, r.top() + 8, r.width() - 24, 20),
-                          Qt::AlignLeft | Qt::AlignVCenter, m_name);
-
-        QFont mod_font = painter->font();
-        mod_font.setBold(false);
-        mod_font.setPointSizeF(mod_font.pointSizeF() - 1.5);
-        painter->setFont(mod_font);
-        painter->setPen(QColor(150, 154, 162));
-        painter->drawText(QRectF(r.left() + 12, r.top() + 30, r.width() - 24, 16),
-                          Qt::AlignLeft | Qt::AlignVCenter, m_module);
-    }
-
-  protected:
-    void mousePressEvent(QGraphicsSceneMouseEvent *event) override {
-        if (event->button() == Qt::LeftButton) {
-            m_pressScenePos = event->scenePos();
-            m_dragged = false;
-        }
-        QGraphicsRectItem::mousePressEvent(event);
-    }
-
-    void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override {
-        QGraphicsRectItem::mouseMoveEvent(event);
-        if (!m_dragged) {
-            QPointF delta = event->scenePos() - m_pressScenePos;
-            if (delta.manhattanLength() >= kClickThresholdPx) {
-                m_dragged = true;
-            }
-        }
-    }
-
-    void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override {
-        QGraphicsRectItem::mouseReleaseEvent(event);
-        if (event->button() != Qt::LeftButton) {
-            return;
-        }
-        if (m_dragged) {
-            QPointF p = pos();
-            m_state->set_instance_position(m_name, p.x(), p.y());
-        } else {
-            m_state->set_selected_instance(m_name);
-        }
-        m_dragged = false;
-    }
-
-    QVariant itemChange(GraphicsItemChange change, const QVariant &value) override;
-
-  private:
-    AppState *m_state;
-    QString m_name;
-    QString m_module;
-    QPointF m_pressScenePos;
-    bool m_dragged = false;
-    std::vector<PortPinItem *> m_pins;
-    QSet<QString> m_expanded_bundles;
-    QHash<QString, PortPinItem *> m_port_anchor;
-    WireTool *m_wire_tool = nullptr;
-    CanvasLayer *m_canvas_layer = nullptr;
-    int m_width = kMinInstanceWidth;
-};
-
-// --- PortPinItem / BundlePinItem impls --------------------------------------
+} // anonymous namespace
+namespace hdlc {
 
 PortPinItem::PortPinItem(const QString &name, int direction, int width, PinSide side, InstanceItem *parent)
     : QGraphicsItem(parent), m_name(name), m_direction(direction), m_width(width), m_side(side), m_parent(parent) {
@@ -491,12 +240,7 @@ QRectF BundlePinItem::boundingRect() const {
     return QRectF(x, m_slot * kPinSlotHeight, w, kPinSlotHeight);
 }
 
-static QString format_width(int w) {
-    if (w <= 0) {
-        return QString();
-    }
-    return QStringLiteral("[%1:0]").arg(w - 1);
-}
+// format_width moved inline to items.h.
 
 void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
     // Tip point at slot center, on the side edge.
@@ -818,6 +562,67 @@ void InstanceItem::layoutPins() {
     setRect(0, 0, m_width, kInstanceHeaderHeight + body);
 }
 
+void InstanceItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) {
+    QRectF r = rect();
+    painter->setRenderHint(QPainter::Antialiasing);
+    int idx = find_instance_index(m_state, m_name);
+    bool dirty = (idx >= 0) && m_state->instance_is_dirty(idx);
+    bool selected =
+        (m_state->selected_instance() == m_name) || (option && (option->state & QStyle::State_Selected));
+
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(QColor(36, 39, 44));
+    painter->drawRoundedRect(r, 8, 8);
+
+    painter->save();
+    QPainterPath body_path;
+    body_path.addRoundedRect(r, 8, 8);
+    painter->setClipPath(body_path);
+    QRectF header_rect(r.left(), r.top(), r.width(), kInstanceHeaderHeight);
+    painter->setBrush(QColor(46, 50, 56));
+    painter->drawRect(header_rect);
+    painter->setPen(QColor(28, 30, 34));
+    painter->drawLine(QPointF(r.left(), r.top() + kInstanceHeaderHeight),
+                      QPointF(r.right(), r.top() + kInstanceHeaderHeight));
+    painter->restore();
+
+    QPen pen;
+    if (dirty) {
+        pen.setColor(QColor(220, 90, 80));
+        pen.setWidthF(selected ? 1.8 : 1.2);
+    } else if (selected) {
+        pen.setColor(QColor(120, 170, 240));
+        pen.setWidthF(1.8);
+    } else {
+        pen.setColor(QColor(60, 64, 70));
+        pen.setWidthF(1.0);
+    }
+    pen.setCosmetic(true);
+    painter->setPen(pen);
+    painter->setBrush(Qt::NoBrush);
+    painter->drawRoundedRect(r, 8, 8);
+
+    QFont name_font = painter->font();
+    name_font.setBold(true);
+    name_font.setPointSizeF(name_font.pointSizeF() + 0.5);
+    painter->setFont(name_font);
+    painter->setPen(QColor(232, 234, 238));
+    painter->drawText(QRectF(r.left() + 12, r.top() + 8, r.width() - 24, 20),
+                      Qt::AlignLeft | Qt::AlignVCenter, m_name);
+
+    QFont mod_font = painter->font();
+    mod_font.setBold(false);
+    mod_font.setPointSizeF(mod_font.pointSizeF() - 1.5);
+    painter->setFont(mod_font);
+    painter->setPen(QColor(150, 154, 162));
+    painter->drawText(QRectF(r.left() + 12, r.top() + 30, r.width() - 24, 16),
+                      Qt::AlignLeft | Qt::AlignVCenter, m_module);
+}
+
+// (still inside `namespace hdlc { ... }` opened before PortPinItem out-of-line
+// impls — WireTool, CanvasView and CanvasLayer stay in hdlc so items.h
+// forward-decls of WireTool/CanvasLayer match.)
+
 // --- WireTool ---------------------------------------------------------------
 // WireItem + JunctionDotItem now live in items.h.
 
@@ -859,6 +664,9 @@ class WireTool {
     // keep extending the same net.
     bool m_sticky_after_commit = false;
 };
+
+} // anonymous namespace
+namespace hdlc {
 
 PortPinItem::~PortPinItem() {
     if (m_wire_tool) {
@@ -1082,88 +890,7 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     event->accept();
 }
 
-// --- TopPortItem ------------------------------------------------------------
-
-// Top-level port on the scene boundary. Inherits PortPinItem so it participates
-// in WireTool dragging/clicking exactly like an instance pin.
-class TopPortItem : public PortPinItem {
-  public:
-    TopPortItem(const QString &name, int direction, int width, PinSide side)
-        : PortPinItem(name, direction, width, side, /*parent*/ nullptr) {
-        setKey(QStringLiteral("top:%1").arg(name));
-        setAcceptedMouseButtons(Qt::LeftButton);
-    }
-
-    QPointF tipScenePos() const override { return mapToScene(QPointF(0, 0)); }
-
-    // Tight hit region around the chevron tip (18 × 18 px, matching PortPinItem).
-    QPainterPath shape() const override {
-        QPainterPath p;
-        qreal half = 9.0;
-        p.addRect(QRectF(-half, -half, 2 * half, 2 * half));
-        return p;
-    }
-
-    // Right-click on a top-port: no menu yet (rename alias can land later).
-    void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override { event->accept(); }
-
-    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override {
-        painter->setRenderHint(QPainter::Antialiasing);
-
-        // Armed-state halo around the chevron tip.
-        if (armedState()) {
-            painter->setBrush(Qt::NoBrush);
-            painter->setPen(QPen(QColor(255, 215, 64), 2.5));
-            painter->drawEllipse(QPointF(0, 0), kPinShapeSize + 2, kPinShapeSize + 2);
-        }
-
-        QColor c = (direction() == 0) ? QColor(140, 200, 140) : QColor(200, 160, 110);
-        painter->setBrush(c);
-        painter->setPen(QPen(QColor(30, 30, 30), 1));
-        // Top-level chevrons always point right. Wire connects at (0,0) which
-        // is the canvas-edge anchor. Base of the triangle sits "outside" the
-        // canvas (to the left for inputs, to the right past the tip for
-        // outputs) so the chevron flows naturally into the wire.
-        QPolygonF poly;
-        if (side() == PinSide::Left) {
-            // Input: tip at (0,0) (where wire starts), base to the left.
-            poly << QPointF(-kPinShapeSize, -kPinShapeSize / 2.0) << QPointF(0, 0)
-                 << QPointF(-kPinShapeSize, kPinShapeSize / 2.0);
-        } else {
-            // Output: base at (0,0) (where wire ends), tip extends right.
-            poly << QPointF(0, -kPinShapeSize / 2.0) << QPointF(kPinShapeSize, 0) << QPointF(0, kPinShapeSize / 2.0);
-        }
-        painter->drawPolygon(poly);
-
-        QString label = portName();
-        QString w = format_width(width());
-        if (!w.isEmpty())
-            label += w;
-        QFont f = painter->font();
-        f.setBold(true);
-        painter->setFont(f);
-        painter->setPen(QColor(220, 220, 220));
-        // Label sits OUTSIDE the canvas — left of inputs, right of outputs —
-        // so it never overlaps the wire that runs from the chevron into the
-        // design.
-        if (side() == PinSide::Left) {
-            painter->drawText(QRectF(-180 - kPinShapeSize - 6, -kPinSlotHeight / 2.0, 180, kPinSlotHeight),
-                              Qt::AlignRight | Qt::AlignVCenter, label);
-        } else {
-            painter->drawText(QRectF(kPinShapeSize + 6, -kPinSlotHeight / 2.0, 180, kPinSlotHeight),
-                              Qt::AlignLeft | Qt::AlignVCenter, label);
-        }
-    }
-
-    QRectF boundingRect() const override {
-        // Match the painter's rectangle (label extends 180px outward from the
-        // chevron base, plus the chevron itself out to ±kPinShapeSize).
-        if (side() == PinSide::Left) {
-            return QRectF(-180 - kPinShapeSize - 6, -kPinSlotHeight / 2.0, 180 + kPinShapeSize + 6, kPinSlotHeight);
-        }
-        return QRectF(0, -kPinSlotHeight / 2.0, kPinShapeSize + 6 + 180, kPinSlotHeight);
-    }
-};
+// TopPortItem moved to items.h.
 
 // --- WireTool impl ----------------------------------------------------------
 
@@ -2305,10 +2032,6 @@ class CanvasLayer {
 // --- InstanceItem::itemChange (live wire reroute during drag) ---------------
 
 QVariant InstanceItem::itemChange(GraphicsItemChange change, const QVariant &value) {
-    // Snap X to nearest column center as the user drags. Y stays continuous.
-    // Position frame: instance origin sits at the top-left; we want the
-    // body's center (origin + width/2) to land on a column center, so the
-    // origin's X must be `col*kColumnPitch - width/2`.
     if (change == ItemPositionChange) {
         QPointF p = value.toPointF();
         qreal centered = p.x() + m_width / 2.0;
@@ -2324,6 +2047,10 @@ QVariant InstanceItem::itemChange(GraphicsItemChange change, const QVariant &val
     }
     return QGraphicsRectItem::itemChange(change, value);
 }
+
+} // namespace hdlc
+namespace {
+using namespace hdlc;
 
 // --- Library view (drag source) ---------------------------------------------
 
