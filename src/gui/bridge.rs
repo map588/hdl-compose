@@ -405,7 +405,7 @@ pub mod qobject {
 }
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::SystemTime;
 
@@ -699,7 +699,7 @@ impl qobject::AppState {
         self.as_mut().rust_mut().get_mut().wires = wires;
     }
 
-    fn save_to(mut self: Pin<&mut Self>, path: &PathBuf) -> bool {
+    fn save_to(mut self: Pin<&mut Self>, path: &Path) -> bool {
         let schematic = match self.as_ref().rust().schematic.clone() {
             Some(s) => s,
             None => {
@@ -1554,7 +1554,7 @@ impl qobject::AppState {
     ) -> QString {
         self.manual_bundle_at(instance_index, bundle_index)
             .and_then(|(_, ports)| ports.get(port_index as usize))
-            .map(|p| QString::from(p))
+            .map(QString::from)
             .unwrap_or_default()
     }
 
@@ -1586,10 +1586,7 @@ impl qobject::AppState {
                 .iter()
                 .filter_map(|p| {
                     // Only consider unconnected ports.
-                    match inst.port_map.get(&p.name) {
-                        Some(Some(_)) => return None,
-                        _ => {}
-                    }
+                    if let Some(Some(_)) = inst.port_map.get(&p.name) { return None }
                     // Look for a top-port with same name and compatible dir/type.
                     let tp = s.top_ports.iter().find(|tp| {
                         tp.name == p.name
@@ -1831,7 +1828,7 @@ impl qobject::AppState {
         self.instance_module_def(instance_index)
             .and_then(|m| m.generics.get(generic_index as usize))
             .and_then(|g| g.default_value.as_ref())
-            .map(|v| QString::from(v))
+            .map(QString::from)
             .unwrap_or_default()
     }
 
@@ -1846,7 +1843,7 @@ impl qobject::AppState {
         };
         inst.generic_map
             .get(&gen_s)
-            .map(|v| QString::from(v))
+            .map(QString::from)
             .unwrap_or_default()
     }
 
@@ -1967,7 +1964,7 @@ impl qobject::AppState {
     pub fn instance_port_bundle(&self, instance_index: i32, port_index: i32) -> QString {
         self.instance_port_at(instance_index, port_index)
             .and_then(|p| p.bundle.as_ref())
-            .map(|b| QString::from(b))
+            .map(QString::from)
             .unwrap_or_default()
     }
 
@@ -1980,7 +1977,7 @@ impl qobject::AppState {
     pub fn instance_dependency_name(&self, instance_index: i32, dep_index: i32) -> QString {
         self.instance_module_def(instance_index)
             .and_then(|m| m.dependencies.get(dep_index as usize))
-            .map(|n| QString::from(n))
+            .map(QString::from)
             .unwrap_or_default()
     }
 

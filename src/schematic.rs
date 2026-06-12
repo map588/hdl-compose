@@ -486,8 +486,8 @@ impl Schematic {
                             .with_instance(&inst.name)
                             .with_port(port_name),
                         );
-                    } else if let Some(inst_port) = module_ports.get(port_name.as_str()) {
-                        if let Some(top_port) =
+                    } else if let Some(inst_port) = module_ports.get(port_name.as_str())
+                        && let Some(top_port) =
                             self.top_ports.iter().find(|p| p.name == *top_name)
                         {
                             driver_port_def = Some(top_port);
@@ -497,7 +497,6 @@ impl Schematic {
                                 );
                             }
                         }
-                    }
                 } else if let Some((ref_inst, ref_port)) = &inst_ref_opt {
                     if !instance_names.contains(ref_inst.as_str()) {
                         diags.push(

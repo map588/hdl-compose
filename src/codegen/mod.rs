@@ -268,12 +268,10 @@ pub fn collect_internal_nets(
     // Find all instance-output nets referenced in any port map (normalize slices to base drivers).
     let mut referenced_nets: HashSet<NetRef> = HashSet::new();
     for inst in &schematic.instances {
-        for net_ref_opt in inst.port_map.values() {
-            if let Some(net_ref) = net_ref_opt {
-                let base = net_ref.base();
-                if matches!(base, NetRef::InstancePort(_, _)) {
-                    referenced_nets.insert(base);
-                }
+        for net_ref in inst.port_map.values().flatten() {
+            let base = net_ref.base();
+            if matches!(base, NetRef::InstancePort(_, _)) {
+                referenced_nets.insert(base);
             }
         }
     }

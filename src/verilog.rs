@@ -589,9 +589,9 @@ endmodule
         // sv-parser may error on truly empty file, but that's OK
         let result = parse_verilog_str("", "v");
         // Either empty vec or error is acceptable for empty file
-        match result {
-            Ok(modules) => assert!(modules.is_empty()),
-            Err(_) => {} // parse error on empty file is acceptable
+        // A parse error on an empty file is also acceptable.
+        if let Ok(modules) = result {
+            assert!(modules.is_empty());
         }
     }
 
