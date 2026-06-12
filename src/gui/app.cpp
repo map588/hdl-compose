@@ -168,13 +168,9 @@ QIcon make_dirty_icon() {
 } // anonymous namespace
 namespace hdlc {
 int find_instance_index(AppState *state, const QString &name) {
-    int count = state->instance_count();
-    for (int i = 0; i < count; ++i) {
-        if (state->instance_name(i) == name) {
-            return i;
-        }
-    }
-    return -1;
+    // Lookup happens Rust-side: one FFI call instead of N QString
+    // conversions across the boundary.
+    return state->instance_index(name);
 }
 } // namespace hdlc
 namespace {
@@ -580,8 +576,7 @@ void InstanceItem::layoutPins() {
 void InstanceItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) {
     QRectF r = rect();
     painter->setRenderHint(QPainter::Antialiasing);
-    int idx = find_instance_index(m_state, m_name);
-    bool dirty = (idx >= 0) && m_state->instance_is_dirty(idx);
+    bool dirty = m_state->instance_is_dirty_name(m_name);
     bool selected =
         (m_state->selected_instance() == m_name) || (option && (option->state & QStyle::State_Selected));
 

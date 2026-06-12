@@ -69,6 +69,15 @@ pub mod qobject {
         #[qinvokable]
         fn instance_is_dirty(self: &AppState, index: i32) -> bool;
 
+        /// Index of an instance by name, -1 if absent. One FFI call instead
+        /// of an instance_name(i) loop from C++.
+        #[qinvokable]
+        fn instance_index(self: &AppState, name: &QString) -> i32;
+
+        /// Dirty flag by name — paint-path helper (called every frame).
+        #[qinvokable]
+        fn instance_is_dirty_name(self: &AppState, name: &QString) -> bool;
+
         #[qinvokable]
         fn instance_source_path(self: &AppState, index: i32) -> QString;
 
@@ -1065,6 +1074,26 @@ impl qobject::AppState {
     pub fn instance_is_dirty(&self, index: i32) -> bool {
         let Some(s) = self.rust().schematic.as_ref() else { return false };
         s.instances.get(index as usize).map(|i| i.dirty).unwrap_or(false)
+    }
+
+    pub fn instance_index(&self, name: &QString) -> i32 {
+        let n = name.to_string();
+        self.rust()
+            .schematic
+            .as_ref()
+            .and_then(|s| s.instances.iter().position(|i| i.name == n))
+            .map(|i| i as i32)
+            .unwrap_or(-1)
+    }
+
+    pub fn instance_is_dirty_name(&self, name: &QString) -> bool {
+        let n = name.to_string();
+        self.rust()
+            .schematic
+            .as_ref()
+            .and_then(|s| s.instances.iter().find(|i| i.name == n))
+            .map(|i| i.dirty)
+            .unwrap_or(false)
     }
 
     pub fn set_instance_position(
