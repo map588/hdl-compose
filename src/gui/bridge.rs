@@ -92,6 +92,15 @@ pub mod qobject {
         #[qinvokable]
         fn selected_instance(self: &AppState) -> QString;
 
+        /// Group multiple mutations into one undo step, one validation pass,
+        /// and one port_map_changed_bulk signal. Nestable; only the
+        /// outermost pair snapshots and signals.
+        #[qinvokable]
+        fn begin_batch(self: Pin<&mut AppState>);
+
+        #[qinvokable]
+        fn end_batch(self: Pin<&mut AppState>);
+
         #[qinvokable]
         fn set_port_map_entry(
             self: Pin<&mut AppState>,
@@ -395,8 +404,10 @@ pub mod qobject {
     }
 }
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::time::SystemTime;
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
@@ -430,6 +441,66 @@ pub struct AppStateRust {
     // Capped at UNDO_STACK_LIMIT entries.
     undo_stack: Vec<String>,
     redo_stack: Vec<String>,
+    // Parsed-module cache keyed by source path, invalidated when the file's
+    // mtime changes. Without it every mutation re-parses the whole library
+    // from disk (rebuild_library_and_validate runs per mutation).
+    parse_cache: HashMap<PathBuf, ParseCacheEntry>,
+    // Mutation batching: depth > 0 while inside begin_batch/end_batch.
+    // Batched mutators skip per-entry snapshot/validate/signal; end_batch
+    // does each once.
+    batch_depth: u32,
+    batch_changed: bool,
+}
+
+struct ParseCacheEntry {
+    mtime: SystemTime,
+    modules: Vec<ModuleDef>,
+    error: Option<String>,
+}
+
+// Resolve library modules through the parse cache. Entries re-parse only
+// when the file's mtime moved; vanished paths fall out of the cache.
+fn resolve_library_cached(
+    cache: &mut HashMap<PathBuf, ParseCacheEntry>,
+    paths: &[PathBuf],
+) -> (Vec<ModuleDef>, Vec<(PathBuf, String)>) {
+    cache.retain(|k, _| paths.contains(k));
+    let mut modules = Vec::new();
+    let mut errors = Vec::new();
+    for path in paths {
+        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        if let (Some(mt), Some(entry)) = (mtime, cache.get(path))
+            && entry.mtime == mt
+        {
+            modules.extend(entry.modules.iter().cloned());
+            if let Some(e) = &entry.error {
+                errors.push((path.clone(), e.clone()));
+            }
+            continue;
+        }
+        match crate::parse_file(path) {
+            Ok(defs) => {
+                if let Some(mt) = mtime {
+                    cache.insert(
+                        path.clone(),
+                        ParseCacheEntry { mtime: mt, modules: defs.clone(), error: None },
+                    );
+                }
+                modules.extend(defs);
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                if let Some(mt) = mtime {
+                    cache.insert(
+                        path.clone(),
+                        ParseCacheEntry { mtime: mt, modules: Vec::new(), error: Some(msg.clone()) },
+                    );
+                }
+                errors.push((path.clone(), msg));
+            }
+        }
+    }
+    (modules, errors)
 }
 
 const UNDO_STACK_LIMIT: usize = 100;
@@ -437,6 +508,67 @@ const UNDO_STACK_LIMIT: usize = 100;
 impl qobject::AppState {
     fn record_error(mut self: Pin<&mut Self>, msg: impl Into<String>) {
         self.as_mut().rust_mut().get_mut().last_error = msg.into();
+    }
+
+    /// Snapshot for undo unless inside a batch (begin_batch already took one).
+    fn snapshot_for_mutation(mut self: Pin<&mut Self>) {
+        if self.as_ref().rust().batch_depth == 0 {
+            self.as_mut().push_snapshot();
+        }
+    }
+
+    /// Post-mutation bookkeeping. Inside a batch just mark changed —
+    /// end_batch validates and signals once. Outside, validate + signal now:
+    /// `Some((inst, port))` emits port_map_changed, `None` emits
+    /// port_map_changed_bulk.
+    fn finish_mutation(mut self: Pin<&mut Self>, entry: Option<(&str, &str)>) {
+        {
+            let m = self.as_mut().rust_mut().get_mut();
+            m.dirty = true;
+            if m.batch_depth > 0 {
+                m.batch_changed = true;
+                return;
+            }
+        }
+        self.as_mut().set_dirty(true);
+        // Refresh wire cache BEFORE firing the signal — canvas reads the
+        // cache in its port_map_changed handler.
+        self.as_mut().rebuild_library_and_validate();
+        match entry {
+            Some((inst, port)) => {
+                self.as_mut()
+                    .port_map_changed(QString::from(inst), QString::from(port));
+            }
+            None => self.as_mut().port_map_changed_bulk(),
+        }
+    }
+
+    pub fn begin_batch(mut self: Pin<&mut Self>) {
+        if self.as_ref().rust().batch_depth == 0 {
+            self.as_mut().push_snapshot();
+        }
+        self.as_mut().rust_mut().get_mut().batch_depth += 1;
+    }
+
+    pub fn end_batch(mut self: Pin<&mut Self>) {
+        let changed = {
+            let m = self.as_mut().rust_mut().get_mut();
+            if m.batch_depth == 0 {
+                return;
+            }
+            m.batch_depth -= 1;
+            if m.batch_depth > 0 {
+                return;
+            }
+            let c = m.batch_changed;
+            m.batch_changed = false;
+            c
+        };
+        if changed {
+            self.as_mut().set_dirty(true);
+            self.as_mut().rebuild_library_and_validate();
+            self.as_mut().port_map_changed_bulk();
+        }
     }
 
     fn instance_module_ports(&self, instance_index: i32) -> Option<&[PortDef]> {
@@ -477,19 +609,24 @@ impl qobject::AppState {
     }
 
     fn rebuild_library_and_validate(mut self: Pin<&mut Self>) {
-        let Some((library, diagnostics)) = self.as_ref().rust().schematic.as_ref().map(|s| {
-            let (library, lib_errors) = s.resolve_modules();
-            let mut diagnostics = s.validate(&library);
-            for (path, err) in lib_errors {
-                diagnostics.push(Diagnostic::error(format!(
-                    "library: {}: {err}",
-                    path.display()
-                )));
-            }
-            (library, diagnostics)
-        }) else {
-            return;
+        let paths: Vec<PathBuf> = match self.as_ref().rust().schematic.as_ref() {
+            Some(s) => s.library_paths.clone(),
+            None => return,
         };
+        let (library, lib_errors) = {
+            let cache = &mut self.as_mut().rust_mut().get_mut().parse_cache;
+            resolve_library_cached(cache, &paths)
+        };
+        let mut diagnostics = match self.as_ref().rust().schematic.as_ref() {
+            Some(s) => s.validate(&library),
+            None => return,
+        };
+        for (path, err) in lib_errors {
+            diagnostics.push(Diagnostic::error(format!(
+                "library: {}: {err}",
+                path.display()
+            )));
+        }
         // Surface the most recent library error to the status bar.
         if let Some(d) = diagnostics
             .iter()
@@ -1032,7 +1169,7 @@ impl qobject::AppState {
         let inst = instance.to_string();
         let port_s = port.to_string();
         let parsed = parse_net_rhs(&rhs.to_string());
-        self.as_mut().push_snapshot();
+        self.as_mut().snapshot_for_mutation();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s.set_port_map_entry(&inst, port_s.clone(), parsed).map(|_| ()),
             None => {
@@ -1042,13 +1179,7 @@ impl qobject::AppState {
         };
         match result {
             Ok(()) => {
-                self.as_mut().rust_mut().get_mut().dirty = true;
-                self.as_mut().set_dirty(true);
-                // Refresh wire cache BEFORE firing the signal — canvas reads
-                // the cache in its port_map_changed handler.
-                self.as_mut().rebuild_library_and_validate();
-                self.as_mut()
-                    .port_map_changed(QString::from(&inst), QString::from(&port_s));
+                self.as_mut().finish_mutation(Some((&inst, &port_s)));
                 true
             }
             Err(e) => {
@@ -1085,7 +1216,7 @@ impl qobject::AppState {
         } else {
             NetRef::InstancePortSlice(di, dp.clone(), slice)
         };
-        self.as_mut().push_snapshot();
+        self.as_mut().snapshot_for_mutation();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s
                 .set_port_map_entry(&inst, port_s.clone(), Some(net_ref))
@@ -1097,11 +1228,7 @@ impl qobject::AppState {
         };
         match result {
             Ok(()) => {
-                self.as_mut().rust_mut().get_mut().dirty = true;
-                self.as_mut().set_dirty(true);
-                self.as_mut().rebuild_library_and_validate();
-                self.as_mut()
-                    .port_map_changed(QString::from(&inst), QString::from(&port_s));
+                self.as_mut().finish_mutation(Some((&inst, &port_s)));
                 true
             }
             Err(e) => {
@@ -1128,7 +1255,7 @@ impl qobject::AppState {
                 low: slice_low,
             }
         };
-        self.as_mut().push_snapshot();
+        self.as_mut().snapshot_for_mutation();
         let updated = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => match s.instances.iter_mut().find(|i| i.name == inst) {
                 Some(i) => {
@@ -1147,11 +1274,7 @@ impl qobject::AppState {
                 .record_error(format!("instance not found: {inst}"));
             return false;
         }
-        self.as_mut().rust_mut().get_mut().dirty = true;
-        self.as_mut().set_dirty(true);
-        self.as_mut().rebuild_library_and_validate();
-        self.as_mut()
-            .port_map_changed(QString::from(&inst), QString::from(&port_s));
+        self.as_mut().finish_mutation(Some((&inst, &port_s)));
         true
     }
 
@@ -1162,7 +1285,7 @@ impl qobject::AppState {
     ) -> bool {
         let inst = instance.to_string();
         let port_s = port.to_string();
-        self.as_mut().push_snapshot();
+        self.as_mut().snapshot_for_mutation();
         let removed = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => match s.instances.iter_mut().find(|i| i.name == inst) {
                 Some(i) => i.consumer_slices.remove(&port_s).is_some(),
@@ -1171,11 +1294,7 @@ impl qobject::AppState {
             None => return false,
         };
         if removed {
-            self.as_mut().rust_mut().get_mut().dirty = true;
-            self.as_mut().set_dirty(true);
-            self.as_mut().rebuild_library_and_validate();
-            self.as_mut()
-                .port_map_changed(QString::from(&inst), QString::from(&port_s));
+            self.as_mut().finish_mutation(Some((&inst, &port_s)));
         }
         true
     }
@@ -1523,6 +1642,9 @@ impl qobject::AppState {
             return false;
         }
         self.as_mut().push_snapshot();
+        // Explicit refresh must bypass the mtime check (e.g. sub-second
+        // saves, or tools that preserve mtime), so drop the parse cache.
+        self.as_mut().rust_mut().get_mut().parse_cache.clear();
 
         // Snapshot the current library + re-parse to get the new library.
         // Compare: for each instance whose module's ports changed, drop the
@@ -1761,7 +1883,7 @@ impl qobject::AppState {
     ) -> bool {
         let inst = instance.to_string();
         let port_s = port.to_string();
-        self.as_mut().push_snapshot();
+        self.as_mut().snapshot_for_mutation();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s.set_port_map_entry(&inst, port_s.clone(), None).map(|_| ()),
             None => {
@@ -1771,13 +1893,7 @@ impl qobject::AppState {
         };
         match result {
             Ok(()) => {
-                self.as_mut().rust_mut().get_mut().dirty = true;
-                self.as_mut().set_dirty(true);
-                // Refresh the wire cache BEFORE firing the signal — the canvas's
-                // port_map_changed handler reads from that cache.
-                self.as_mut().rebuild_library_and_validate();
-                self.as_mut()
-                    .port_map_changed(QString::from(&inst), QString::from(&port_s));
+                self.as_mut().finish_mutation(Some((&inst, &port_s)));
                 true
             }
             Err(e) => {
@@ -1796,7 +1912,7 @@ impl qobject::AppState {
         let inst = instance.to_string();
         let gen_s = generic.to_string();
         let expr_s = expr.to_string();
-        self.as_mut().push_snapshot();
+        self.as_mut().snapshot_for_mutation();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s.set_generic_map_entry(&inst, gen_s, expr_s).map(|_| ()),
             None => {
@@ -1806,13 +1922,9 @@ impl qobject::AppState {
         };
         match result {
             Ok(()) => {
-                self.as_mut().rust_mut().get_mut().dirty = true;
-                self.as_mut().set_dirty(true);
-                self.as_mut().rebuild_library_and_validate();
                 // Generic override can change port widths — canvas needs to
-                // re-layout pins + width badges. port_map_changed_bulk is the
-                // "refresh everything" signal the canvas listens to.
-                self.as_mut().port_map_changed_bulk();
+                // re-layout pins + width badges, so emit the bulk signal.
+                self.as_mut().finish_mutation(None);
                 true
             }
             Err(e) => {

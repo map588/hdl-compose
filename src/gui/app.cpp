@@ -1298,6 +1298,11 @@ static QStringList commit_editor_buffer(AppState *state, const QString &instance
     if (!errors.isEmpty())
         return errors;
 
+    // Batch: one undo step, one validation pass, one bulk signal for the
+    // whole buffer instead of one per binding line.
+    const bool any = !parsed.generic_commits.isEmpty() || !parsed.port_commits.isEmpty();
+    if (any)
+        state->begin_batch();
     for (const auto &p : parsed.generic_commits) {
         state->set_generic_map_entry(instance_name, p.first, p.second);
     }
@@ -1316,6 +1321,8 @@ static QStringList commit_editor_buffer(AppState *state, const QString &instance
             state->clear_consumer_slice(instance_name, port_name);
         }
     }
+    if (any)
+        state->end_batch();
     if (state->instance_is_dirty(idx)) {
         state->clear_instance_dirty(instance_name);
     }

@@ -146,11 +146,17 @@ class CanvasView : public QGraphicsView {
                 }
             }
             bool did_something = false;
+            // Batch multi-wire deletes: one undo step + one rebuild.
+            const bool batch = wires_to_clear.size() > 1;
+            if (batch)
+                m_state->begin_batch();
             for (const auto &p : wires_to_clear) {
                 if (m_state->clear_port_map_entry(p.first, p.second)) {
                     did_something = true;
                 }
             }
+            if (batch)
+                m_state->end_batch();
             for (const QString &name : instances_to_remove) {
                 if (m_state->remove_instance(name)) {
                     did_something = true;
