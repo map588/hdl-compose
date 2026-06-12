@@ -101,6 +101,14 @@ pub mod qobject {
         #[qinvokable]
         fn selected_instance(self: &AppState) -> QString;
 
+        /// Try to wire two pins identified by their canvas keys
+        /// ("inst.port" / "top:name"). All compatibility rules, driver/load
+        /// resolution, and multi-load semantics live Rust-side; the canvas
+        /// only reports the outcome (flash + tooltip on error, stay armed
+        /// on sticky).
+        #[qinvokable]
+        fn connect_pins(self: Pin<&mut AppState>, a: &QString, b: &QString) -> FfiConnectResult;
+
         /// Group multiple mutations into one undo step, one validation pass,
         /// and one port_map_changed_bulk signal. Nestable; only the
         /// outermost pair snapshots and signals.
@@ -459,6 +467,15 @@ pub mod qobject {
         stub_min: f64,
     }
 
+    /// Outcome of connect_pins. `error` is empty for silent refusals
+    /// (e.g. unparseable key) — the canvas flashes only when it has text.
+    struct FfiConnectResult {
+        committed: bool,
+        /// Multi-load self-net created: WireTool stays armed for fan-out.
+        sticky: bool,
+        error: String,
+    }
+
     extern "Rust" {
         fn plan_routes_ffi(
             nets: Vec<FfiNet>,
@@ -638,6 +655,24 @@ fn resolve_clear_y_ffi(
 
 fn conv_rect(r: &qobject::FfiRect) -> routing::Rect {
     routing::Rect { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
+}
+
+// --- connect_pins helpers ----------------------------------------------------
+
+struct PinInfo {
+    is_top: bool,
+    instance: String,
+    port: String,
+    direction: i32,
+    width: i32,
+}
+
+fn refuse(error: &str) -> qobject::FfiConnectResult {
+    qobject::FfiConnectResult { committed: false, sticky: false, error: error.to_string() }
+}
+
+fn done(committed: bool, sticky: bool) -> qobject::FfiConnectResult {
+    qobject::FfiConnectResult { committed, sticky: committed && sticky, error: String::new() }
 }
 
 const UNDO_STACK_LIMIT: usize = 100;
@@ -1340,6 +1375,165 @@ impl qobject::AppState {
     }
 
     // === Port map, slices, aliases ===
+
+    /// Resolve a canvas pin key to the facts connect_pins needs.
+    /// Direction codes 0=in 1=out 2=inout; widths follow the
+    /// instance_port_width / top_port_width conventions (0 scalar, N
+    /// vector, -1 unresolved).
+    fn pin_info(&self, key: &str) -> Option<PinInfo> {
+        let r = self.rust();
+        let s = r.schematic.as_ref()?;
+        if let Some(name) = key.strip_prefix("top:") {
+            let p = s.top_ports.iter().find(|p| p.name == name)?;
+            return Some(PinInfo {
+                is_top: true,
+                instance: String::new(),
+                port: name.to_string(),
+                direction: direction_code(&p.direction),
+                width: port_type_width(&p.port_type),
+            });
+        }
+        let (inst_name, port_name) = key.split_once('.')?;
+        let inst = s.instances.iter().find(|i| i.name == inst_name)?;
+        let module = r.library.iter().find(|m| m.name == inst.module_ref)?;
+        let p = module.ports.iter().find(|p| p.name == port_name)?;
+        Some(PinInfo {
+            is_top: false,
+            instance: inst_name.to_string(),
+            port: port_name.to_string(),
+            direction: direction_code(&p.direction),
+            width: resolve_port_width(&p.port_type, &module.generics, &inst.generic_map),
+        })
+    }
+
+    pub fn connect_pins(
+        mut self: Pin<&mut Self>,
+        a: &QString,
+        b: &QString,
+    ) -> qobject::FfiConnectResult {
+        let a_key = a.to_string();
+        let b_key = b.to_string();
+        if a_key == b_key {
+            return refuse("cannot connect pin to itself");
+        }
+        if a_key.is_empty() || b_key.is_empty() {
+            return refuse("cannot wire a bundle header; expand it and wire a member port");
+        }
+        let Some(pa) = self.pin_info(&a_key) else {
+            return refuse("");
+        };
+        let Some(pb) = self.pin_info(&b_key) else {
+            return refuse("");
+        };
+
+        // Compatibility: one driver per net; scalar/vector and widths match.
+        if !pa.is_top && !pb.is_top && pa.direction == 1 && pb.direction == 1 {
+            return refuse("output-to-output: only one driver per net allowed");
+        }
+        let norm = |w: i32| if w == 1 { 0 } else { w };
+        let (sw, dw) = (norm(pa.width), norm(pb.width));
+        if sw == 0 && dw == -1 {
+            return refuse("type mismatch: scalar cannot drive vector");
+        }
+        if sw == -1 && dw == 0 {
+            return refuse("type mismatch: vector cannot drive scalar");
+        }
+        if sw >= 0 && dw >= 0 && sw != dw {
+            let label = |w: i32| if w == 0 { "scalar".to_string() } else { w.to_string() };
+            return refuse(&format!("width mismatch: {} vs {}", label(sw), label(dw)));
+        }
+
+        if pa.is_top && pb.is_top {
+            return refuse("cannot wire two top-level ports");
+        }
+        if pa.is_top || pb.is_top {
+            let (top, pin) = if pa.is_top { (&pa, &pb) } else { (&pb, &pa) };
+            let committed = self.as_mut().set_port_map_entry(
+                &QString::from(&pin.instance),
+                &QString::from(&pin.port),
+                &QString::from(&top.port),
+            );
+            return done(committed, false);
+        }
+
+        if pa.direction == 0 && pb.direction == 0 {
+            return self.connect_multi_load(&pa, &pb);
+        }
+
+        let can_drive = |d: i32| d == 1 || d == 2;
+        let (driver, load) = if can_drive(pa.direction) { (&pa, &pb) } else { (&pb, &pa) };
+        // A 1-bit vector driving a scalar gets an implicit [0] slice.
+        if driver.width == 1 && load.width == 0 && !driver.is_top {
+            let committed = self.as_mut().set_port_map_entry_slice(
+                &QString::from(&load.instance),
+                &QString::from(&load.port),
+                &QString::from(&driver.instance),
+                &QString::from(&driver.port),
+                0,
+                0,
+            );
+            return done(committed, false);
+        }
+        let rhs = if driver.is_top {
+            driver.port.clone()
+        } else {
+            format!("{}.{}", driver.instance, driver.port)
+        };
+        let committed = self.as_mut().set_port_map_entry(
+            &QString::from(&load.instance),
+            &QString::from(&load.port),
+            &QString::from(&rhs),
+        );
+        done(committed, false)
+    }
+
+    /// Input-to-input wiring: join two undriven (or differently-driven)
+    /// loads onto one net. If exactly one side is already driven, extend
+    /// that net. Creating a fresh self-named net returns sticky=true so the
+    /// wire tool stays armed for further fan-out.
+    fn connect_multi_load(
+        mut self: Pin<&mut Self>,
+        a: &PinInfo,
+        b: &PinInfo,
+    ) -> qobject::FfiConnectResult {
+        let a_rhs = self
+            .port_map_entry(&QString::from(&a.instance), &QString::from(&a.port))
+            .to_string();
+        let b_rhs = self
+            .port_map_entry(&QString::from(&b.instance), &QString::from(&b.port))
+            .to_string();
+        let a_driven = !a_rhs.is_empty();
+        let b_driven = !b_rhs.is_empty();
+
+        if a_driven != b_driven {
+            let (rhs, target) = if a_driven { (a_rhs, b) } else { (b_rhs, a) };
+            let committed = self.as_mut().set_port_map_entry(
+                &QString::from(&target.instance),
+                &QString::from(&target.port),
+                &QString::from(&rhs),
+            );
+            return done(committed, false);
+        }
+        if a_driven && b_driven && a_rhs == b_rhs {
+            return done(true, false); // already on the same net
+        }
+        // Root a fresh net at `a`'s own key and hang both pins on it.
+        // One batch = one undo step for the pair.
+        let rhs = format!("{}.{}", a.instance, a.port);
+        self.as_mut().begin_batch();
+        let ok_a = self.as_mut().set_port_map_entry(
+            &QString::from(&a.instance),
+            &QString::from(&a.port),
+            &QString::from(&rhs),
+        );
+        let ok_b = self.as_mut().set_port_map_entry(
+            &QString::from(&b.instance),
+            &QString::from(&b.port),
+            &QString::from(&rhs),
+        );
+        self.as_mut().end_batch();
+        done(ok_a && ok_b, ok_a && ok_b)
+    }
 
     pub fn set_port_map_entry(
         mut self: Pin<&mut Self>,

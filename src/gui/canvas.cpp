@@ -33,15 +33,6 @@ QString allocate_instance_name(AppState *state, const QString &module) {
     }
 }
 
-bool parse_pin_key(PortPinItem *pin, QString *inst, QString *port) {
-    NetKey k = NetKey::parse(pin->key());
-    if (!k.valid || k.is_top)
-        return false;
-    *inst = k.instance;
-    *port = k.port;
-    return true;
-}
-
 } // namespace
 
 // --- WireItem hover (needs full CanvasLayer type) ----------------------------
@@ -58,39 +49,20 @@ void WireItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *) {
 
 // --- WireTool ---------------------------------------------------------------
 
-QString WireTool::compatibilityError(PortPinItem *src, PortPinItem *dst) const {
-    if (src == dst) {
-        return QStringLiteral("cannot connect pin to itself");
+bool WireTool::tryCommit(PortPinItem *src, PortPinItem *dst) {
+    // All wiring semantics (compatibility, driver/load resolution,
+    // multi-load nets) live Rust-side — see AppState::connect_pins.
+    FfiConnectResult r = m_state->connect_pins(src->key(), dst->key());
+    if (!r.committed) {
+        if (!r.error.empty()) {
+            dst->flashRed();
+            QToolTip::showText(QCursor::pos(),
+                               QString::fromUtf8(r.error.data(), static_cast<int>(r.error.size())));
+        }
+        return false;
     }
-    // Bundle headers have no key/direction. Without this guard the driver
-    // fallback below picked the bundle as driver with an empty RHS, which
-    // silently cleared the other pin's connection.
-    if (src->key().isEmpty() || dst->key().isEmpty()) {
-        return QStringLiteral("cannot wire a bundle header; expand it and wire a member port");
-    }
-    bool src_top = NetKey::parse(src->key()).is_top;
-    bool dst_top = NetKey::parse(dst->key()).is_top;
-    if (!src_top && !dst_top && src->direction() == 1 && dst->direction() == 1) {
-        return QStringLiteral("output-to-output: only one driver per net allowed");
-    }
-    int sw = src->width();
-    int dw = dst->width();
-    if (sw == 1)
-        sw = 0;
-    if (dw == 1)
-        dw = 0;
-    if (sw == 0 && dw == -1) {
-        return QStringLiteral("type mismatch: scalar cannot drive vector");
-    }
-    if (sw == -1 && dw == 0) {
-        return QStringLiteral("type mismatch: vector cannot drive scalar");
-    }
-    if (sw >= 0 && dw >= 0 && sw != dw) {
-        return QStringLiteral("width mismatch: %1 vs %2")
-            .arg(sw == 0 ? QStringLiteral("scalar") : QString::number(sw))
-            .arg(dw == 0 ? QStringLiteral("scalar") : QString::number(dw));
-    }
-    return QString();
+    m_sticky_after_commit = r.sticky;
+    return true;
 }
 
 void WireTool::cancel() {
@@ -125,79 +97,6 @@ void WireTool::createProvisional(PortPinItem *from, const QPointF &scene_pos) {
     p.lineTo(scene_pos);
     m_provisional->setPath(p);
     m_scene->addItem(m_provisional);
-}
-
-bool WireTool::tryCommit(PortPinItem *src, PortPinItem *dst) {
-    QString err = compatibilityError(src, dst);
-    if (!err.isEmpty()) {
-        dst->flashRed();
-        QToolTip::showText(QCursor::pos(), err);
-        return false;
-    }
-    NetKey src_k = NetKey::parse(src->key());
-    NetKey dst_k = NetKey::parse(dst->key());
-
-    if (src_k.is_top && dst_k.is_top) {
-        QToolTip::showText(QCursor::pos(), QStringLiteral("cannot wire two top-level ports"));
-        return false;
-    }
-
-    if (src_k.is_top || dst_k.is_top) {
-        const NetKey &top = src_k.is_top ? src_k : dst_k;
-        const NetKey &inst_pin = src_k.is_top ? dst_k : src_k;
-        if (!inst_pin.valid)
-            return false;
-        m_state->set_port_map_entry(inst_pin.instance, inst_pin.port, top.port);
-        return true;
-    }
-
-    if (src->direction() == 0 && dst->direction() == 0) {
-        return tryCommitMultiLoad(src, dst);
-    }
-    auto can_drive = [](int dir) { return dir == 1 || dir == 2; };
-    PortPinItem *driver = can_drive(src->direction()) ? src : dst;
-    const NetKey &load_k = (driver == src) ? dst_k : src_k;
-    const NetKey &driver_k = (driver == src) ? src_k : dst_k;
-    PortPinItem *load = (driver == src) ? dst : src;
-    if (!load_k.valid)
-        return false;
-    if (driver->width() == 1 && load->width() == 0 && driver_k.valid && !driver_k.is_top) {
-        m_state->set_port_map_entry_slice(load_k.instance, load_k.port, driver_k.instance,
-                                          driver_k.port, 0, 0);
-        return true;
-    }
-    QString driver_rhs =
-        driver_k.is_top ? driver_k.port : NetKey::forPin(driver_k.instance, driver_k.port);
-    m_state->set_port_map_entry(load_k.instance, load_k.port, driver_rhs);
-    return true;
-}
-
-bool WireTool::tryCommitMultiLoad(PortPinItem *a, PortPinItem *b) {
-    QString a_inst, a_port, b_inst, b_port;
-    if (!parse_pin_key(a, &a_inst, &a_port))
-        return false;
-    if (!parse_pin_key(b, &b_inst, &b_port))
-        return false;
-
-    QString a_rhs = m_state->port_map_entry(a_inst, a_port);
-    QString b_rhs = m_state->port_map_entry(b_inst, b_port);
-    bool a_driven = !a_rhs.isEmpty();
-    bool b_driven = !b_rhs.isEmpty();
-
-    if (a_driven != b_driven) {
-        const QString &rhs = a_driven ? a_rhs : b_rhs;
-        const QString &target_inst = a_driven ? b_inst : a_inst;
-        const QString &target_port = a_driven ? b_port : a_port;
-        return m_state->set_port_map_entry(target_inst, target_port, rhs);
-    }
-    if (a_driven && b_driven && a_rhs == b_rhs) {
-        return true;
-    }
-    QString rhs = NetKey::forPin(a_inst, a_port);
-    m_state->set_port_map_entry(a_inst, a_port, rhs);
-    m_state->set_port_map_entry(b_inst, b_port, rhs);
-    m_sticky_after_commit = true;
-    return true;
 }
 
 void WireTool::onPinPressed(PortPinItem *pin, const QPointF &scene_pos) {

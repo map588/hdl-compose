@@ -64,9 +64,7 @@ class WireTool {
     void updateProvisional(const QPointF &scene_pos) { onPinDragMove(scene_pos); }
 
   private:
-    QString compatibilityError(PortPinItem *src, PortPinItem *dst) const;
     bool tryCommit(PortPinItem *src, PortPinItem *dst);
-    bool tryCommitMultiLoad(PortPinItem *a, PortPinItem *b);
     void createProvisional(PortPinItem *from, const QPointF &scene_pos);
     void clearProvisional();
 
