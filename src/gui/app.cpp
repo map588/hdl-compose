@@ -77,7 +77,6 @@
 
 #include "canvas_constants.h"
 #include "canvas.h"
-#include "editor_buffer.h"
 #include "items.h"
 
 namespace {
@@ -539,6 +538,53 @@ class FocusOutFilter : public QObject {
     std::function<void()> m_cb;
 };
 
+// Underlines the RHS of port-map lines that fail validation. The set of
+// bad line indices is recomputed (Rust-side) on every idle parse.
+class MiniEditorHighlighter : public QSyntaxHighlighter {
+  public:
+    explicit MiniEditorHighlighter(QTextDocument *doc) : QSyntaxHighlighter(doc) {}
+
+    void setErrorLines(const QSet<int> &lines) {
+        if (lines == m_error_lines)
+            return;
+        m_error_lines = lines;
+        rehighlight();
+    }
+
+  protected:
+    void highlightBlock(const QString &text) override {
+        int blk = currentBlock().blockNumber();
+        if (!m_error_lines.contains(blk))
+            return;
+        QTextCharFormat fmt;
+        fmt.setUnderlineColor(QColor(220, 60, 60));
+        fmt.setUnderlineStyle(QTextCharFormat::WaveUnderline);
+        int start = 0;
+        int len = text.length();
+        int arrow = text.indexOf(QStringLiteral("=>"));
+        if (arrow >= 0) {
+            // VHDL form: underline RHS after `=>`.
+            start = arrow + 2;
+            while (start < text.length() && text[start].isSpace())
+                ++start;
+            len = text.length() - start;
+        } else {
+            // SV form `.name(value)`: underline the value between parens.
+            int open = text.indexOf(QChar('('));
+            int close = text.lastIndexOf(QChar(')'));
+            if (open >= 0 && close > open) {
+                start = open + 1;
+                len = close - start;
+            }
+        }
+        if (len > 0)
+            setFormat(start, len, fmt);
+    }
+
+  private:
+    QSet<int> m_error_lines;
+};
+
 // Main application window: owns the AppState model, the three-pane layout
 // (sidebar / canvas / mini editor), menus, toolbar, and all signal wiring.
 // Mini-editor state lives in members (was heap-allocated lambda captures
@@ -913,7 +959,7 @@ class MainWindow : public QMainWindow {
             m_editor->clear();
             m_editor->hide();
         } else {
-            m_editor->setPlainText(build_instance_buffer(m_state, m_editor_inst));
+            m_editor->setPlainText(m_state->instance_buffer(m_editor_inst));
             m_editor->show();
         }
         m_editor_suppressing = false;
@@ -940,12 +986,13 @@ class MainWindow : public QMainWindow {
         }
         if (m_editor_inst.isEmpty())
             return;
-        QStringList errs = commit_editor_buffer(m_state, m_editor_inst, m_editor->toPlainText());
-        if (!errs.isEmpty()) {
+        FfiEditorIssues issues = m_state->commit_instance_buffer(m_editor_inst, m_editor->toPlainText());
+        if (!issues.messages.empty()) {
             // Refuse silently: squiggles + status bar already told the user.
             // Editor stays as-is; user fixes and retries.
-            statusBar()->showMessage(
-                QStringLiteral("Mini editor: %1 parse error(s) — fix to commit").arg(errs.size()), 4000);
+            statusBar()->showMessage(QStringLiteral("Mini editor: %1 parse error(s) — fix to commit")
+                                         .arg(static_cast<int>(issues.messages.size())),
+                                     4000);
             return;
         }
         // Don't re-render: that would jump the cursor and clobber the user's
@@ -963,16 +1010,16 @@ class MainWindow : public QMainWindow {
             m_completer->popup()->hide();
             return;
         }
-        EditorParseResult parsed = parse_editor_buffer(m_editor->toPlainText());
+        FfiEditorIssues issues = m_state->check_instance_buffer(m_editor->toPlainText());
         QSet<int> err_lines;
-        for (const auto &e : parsed.errors)
-            err_lines.insert(e.first);
+        for (int line : issues.lines)
+            err_lines.insert(line);
         m_highlighter->setErrorLines(err_lines);
-        if (parsed.errors.isEmpty()) {
+        if (issues.lines.empty()) {
             statusBar()->clearMessage();
         } else {
-            statusBar()->showMessage(
-                QStringLiteral("Mini editor: %1 parse error(s)").arg(parsed.errors.size()));
+            statusBar()->showMessage(QStringLiteral("Mini editor: %1 parse error(s)")
+                                         .arg(static_cast<int>(issues.lines.size())));
         }
 
         // Completer popup based on cursor context.
@@ -980,21 +1027,26 @@ class MainWindow : public QMainWindow {
         QString line = cur.block().text();
         int pos_in_block = cur.positionInBlock();
         QString before = line.left(pos_in_block);
-        CompletionContext ctx = detect_completion_context(before);
+        const std::string before_utf8 = before.toStdString();
+        FfiCompletionContext ctx = completion_context_ffi(before_utf8);
 
-        if (ctx.kind == CompletionContext::None) {
+        if (ctx.kind == 0) {
             m_completer->popup()->hide();
             return;
         }
 
+        auto to_qstring = [](const rust::String &r) {
+            return QString::fromUtf8(r.data(), static_cast<int>(r.size()));
+        };
+        rust::Vec<rust::String> cands =
+            (ctx.kind == 2) ? m_state->editor_port_candidates(to_qstring(ctx.instance))
+                            : m_state->editor_rhs_candidates(m_editor_inst);
         QStringList items;
-        if (ctx.kind == CompletionContext::DotPort) {
-            items = instance_port_candidates(m_state, ctx.instance);
-        } else {
-            items = rhs_candidates(m_state, m_editor_inst);
-        }
+        items.reserve(static_cast<int>(cands.size()));
+        for (const rust::String &c : cands)
+            items << to_qstring(c);
         m_completer_model->setStringList(items);
-        m_completer->setCompletionPrefix(ctx.prefix);
+        m_completer->setCompletionPrefix(to_qstring(ctx.prefix));
         if (m_completer->completionCount() == 0) {
             m_completer->popup()->hide();
             return;

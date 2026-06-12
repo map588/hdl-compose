@@ -1,4 +1,5 @@
 pub mod bridge;
+pub mod editor;
 
 use std::ffi::CString;
 

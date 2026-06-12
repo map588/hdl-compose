@@ -101,6 +101,32 @@ pub mod qobject {
         #[qinvokable]
         fn selected_instance(self: &AppState) -> QString;
 
+        /// Mini-editor: render the instance's bindings buffer.
+        #[qinvokable]
+        fn instance_buffer(self: &AppState, instance: &QString) -> QString;
+
+        /// Mini-editor: parse-check a buffer (no mutation) — squiggle lines.
+        #[qinvokable]
+        fn check_instance_buffer(self: &AppState, buffer: &QString) -> FfiEditorIssues;
+
+        /// Mini-editor: parse + apply a buffer as one batch. On any parse
+        /// error nothing is applied and the issues come back.
+        #[qinvokable]
+        fn commit_instance_buffer(
+            self: Pin<&mut AppState>,
+            instance: &QString,
+            buffer: &QString,
+        ) -> FfiEditorIssues;
+
+        /// All RHS completion candidates: top ports + "inst.port" pairs,
+        /// excluding the instance being edited.
+        #[qinvokable]
+        fn editor_rhs_candidates(self: &AppState, editing_instance: &QString) -> Vec<String>;
+
+        /// One instance's port names, for dot-completion.
+        #[qinvokable]
+        fn editor_port_candidates(self: &AppState, instance: &QString) -> Vec<String>;
+
         /// Try to wire two pins identified by their canvas keys
         /// ("inst.port" / "top:name"). All compatibility rules, driver/load
         /// resolution, and multi-load semantics live Rust-side; the canvas
@@ -476,6 +502,20 @@ pub mod qobject {
         error: String,
     }
 
+    /// Parse problems in a mini-editor buffer: 0-based line indices (for
+    /// the squiggle highlighter) with parallel messages.
+    struct FfiEditorIssues {
+        lines: Vec<i32>,
+        messages: Vec<String>,
+    }
+
+    /// Completion context at the cursor. kind: 0 none, 1 RHS, 2 dot-port.
+    struct FfiCompletionContext {
+        kind: i32,
+        prefix: String,
+        instance: String,
+    }
+
     extern "Rust" {
         fn plan_routes_ffi(
             nets: Vec<FfiNet>,
@@ -491,6 +531,9 @@ pub mod qobject {
             margin: f64,
             obstacles: Vec<FfiRect>,
         ) -> f64;
+
+        /// Mini-editor grammar (pure; see src/gui/editor.rs).
+        fn completion_context_ffi(line_before_cursor: &str) -> FfiCompletionContext;
     }
 }
 
@@ -503,6 +546,7 @@ use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
 
 use crate::codegen;
+use crate::gui::editor;
 use crate::project;
 use crate::routing;
 use crate::schematic::Diagnostic;
@@ -673,6 +717,20 @@ fn refuse(error: &str) -> qobject::FfiConnectResult {
 
 fn done(committed: bool, sticky: bool) -> qobject::FfiConnectResult {
     qobject::FfiConnectResult { committed, sticky: committed && sticky, error: String::new() }
+}
+
+// --- Mini-editor FFI helpers -------------------------------------------------
+
+fn editor_issues(errors: &[(usize, String)]) -> qobject::FfiEditorIssues {
+    qobject::FfiEditorIssues {
+        lines: errors.iter().map(|(l, _)| *l as i32).collect(),
+        messages: errors.iter().map(|(_, m)| m.clone()).collect(),
+    }
+}
+
+fn completion_context_ffi(line_before_cursor: &str) -> qobject::FfiCompletionContext {
+    let ctx = editor::completion_context(line_before_cursor);
+    qobject::FfiCompletionContext { kind: ctx.kind, prefix: ctx.prefix, instance: ctx.instance }
 }
 
 const UNDO_STACK_LIMIT: usize = 100;
@@ -1372,6 +1430,106 @@ impl qobject::AppState {
                 false
             }
         }
+    }
+
+    // === Mini-editor buffer (grammar in src/gui/editor.rs) ===
+
+    pub fn instance_buffer(&self, instance: &QString) -> QString {
+        let r = self.rust();
+        let Some(s) = r.schematic.as_ref() else {
+            return QString::default();
+        };
+        QString::from(&editor::render_instance_buffer(s, &r.library, &instance.to_string()))
+    }
+
+    pub fn check_instance_buffer(&self, buffer: &QString) -> qobject::FfiEditorIssues {
+        editor_issues(&editor::parse_instance_buffer(&buffer.to_string()).errors)
+    }
+
+    pub fn commit_instance_buffer(
+        mut self: Pin<&mut Self>,
+        instance: &QString,
+        buffer: &QString,
+    ) -> qobject::FfiEditorIssues {
+        let parsed = editor::parse_instance_buffer(&buffer.to_string());
+        if !parsed.errors.is_empty() {
+            // Refuse without mutating; squiggles + status bar tell the user.
+            return editor_issues(&parsed.errors);
+        }
+        if instance.to_string().is_empty() || self.instance_index(instance) < 0 {
+            return editor_issues(&[]);
+        }
+        let mut late_errors: Vec<(usize, String)> = Vec::new();
+        let any = !parsed.generic_commits.is_empty() || !parsed.port_commits.is_empty();
+        if any {
+            self.as_mut().begin_batch();
+        }
+        for (g, v) in &parsed.generic_commits {
+            self.as_mut()
+                .set_generic_map_entry(instance, &QString::from(g), &QString::from(v));
+        }
+        for (lhs, rhs) in &parsed.port_commits {
+            let Some((port, slice)) = editor::split_consumer_slice(lhs) else {
+                late_errors.push((0, format!("could not parse port slice in '{lhs}'")));
+                continue;
+            };
+            let port_q = QString::from(&port);
+            self.as_mut()
+                .set_port_map_entry(instance, &port_q, &QString::from(rhs));
+            match slice {
+                Some((high, low)) => {
+                    self.as_mut().set_consumer_slice(instance, &port_q, high, low);
+                }
+                None => {
+                    self.as_mut().clear_consumer_slice(instance, &port_q);
+                }
+            }
+        }
+        if any {
+            self.as_mut().end_batch();
+        }
+        if self.instance_is_dirty_name(instance) {
+            self.as_mut().clear_instance_dirty(instance);
+        }
+        editor_issues(&late_errors)
+    }
+
+    pub fn editor_rhs_candidates(&self, editing_instance: &QString) -> Vec<String> {
+        let editing = editing_instance.to_string();
+        let r = self.rust();
+        let Some(s) = r.schematic.as_ref() else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = s.top_ports.iter().map(|p| p.name.clone()).collect();
+        for inst in &s.instances {
+            if inst.name == editing {
+                continue;
+            }
+            if let Some(module) = r.library.iter().find(|m| m.name == inst.module_ref) {
+                for p in &module.ports {
+                    out.push(format!("{}.{}", inst.name, p.name));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    pub fn editor_port_candidates(&self, instance: &QString) -> Vec<String> {
+        let inst_name = instance.to_string();
+        let r = self.rust();
+        let Some(s) = r.schematic.as_ref() else {
+            return Vec::new();
+        };
+        let Some(inst) = s.instances.iter().find(|i| i.name == inst_name) else {
+            return Vec::new();
+        };
+        let Some(module) = r.library.iter().find(|m| m.name == inst.module_ref) else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = module.ports.iter().map(|p| p.name.clone()).collect();
+        out.sort();
+        out
     }
 
     // === Port map, slices, aliases ===
