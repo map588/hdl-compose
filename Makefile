@@ -1,4 +1,4 @@
-.PHONY: build release run gui check test fmt clippy clean app help
+.PHONY: build release run gui check test fmt clippy clean app app-release app-debug app-bundle-check help
 
 BIN := hdl-compose
 APP_BUNDLE := /Applications/hdl-compose.app
@@ -43,19 +43,21 @@ clippy:
 clean:
 	cargo clean
 
-app-release: app
+app-release: release app-bundle-check
 	cp target/release/$(BIN) $(APP_BUNDLE)/Contents/MacOS/$(BIN)
 	@pkill -x $(BIN) 2>/dev/null || true
 	@echo "refreshed $(APP_BUNDLE)"
 
-app-debug: app
+app-debug: build app-bundle-check
 	cp target/debug/$(BIN) $(APP_BUNDLE)/Contents/MacOS/$(BIN)
 	@pkill -x $(BIN) 2>/dev/null || true
 	@echo "refreshed $(APP_BUNDLE)"
 
 # Refresh /Applications/hdl-compose.app wrapper used for computer-use GUI testing.
 # The .app must already exist (created once manually with Info.plist).
-app: build
+app: app-debug
+
+app-bundle-check:
 	@if [ ! -d "$(APP_BUNDLE)" ]; then \
 		echo "error: $(APP_BUNDLE) does not exist."; \
 		echo "Create the bundle once with Info.plist, then re-run make app."; \

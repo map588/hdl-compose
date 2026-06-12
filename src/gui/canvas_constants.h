@@ -20,6 +20,9 @@ inline constexpr int kInstanceCenterPadding = 24;
 // --- Column / wire grid ---
 inline constexpr int kColumnPitch = 480;
 inline constexpr int kColumnGutterHalf = 60;
+// Cap instance width below the column pitch so a module body can never
+// invade the wire gutters on either side of its column.
+inline constexpr int kMaxInstanceWidth = kColumnPitch - 2 * kColumnGutterHalf;
 inline constexpr int kWireLaneStep = 12;
 inline constexpr int kMinModuleVerticalGap = 60;
 inline constexpr int kWireStubMin = 40;

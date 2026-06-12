@@ -36,6 +36,7 @@
 #include <QVBoxLayout>
 #include <QVector>
 #include <QWheelEvent>
+#include <algorithm>
 #include <climits>
 #include <cmath>
 #include <utility>
@@ -59,6 +60,8 @@ class WireTool {
             m_armed = nullptr;
     }
     PortPinItem *armed() const { return m_armed; }
+    QGraphicsItem *provisionalItem() const { return m_provisional; }
+    void updateProvisional(const QPointF &scene_pos) { onPinDragMove(scene_pos); }
 
   private:
     QString compatibilityError(PortPinItem *src, PortPinItem *dst) const;
@@ -91,6 +94,21 @@ class CanvasView : public QGraphicsView {
     }
 
     void setWireTool(WireTool *wt) { m_wire_tool = wt; }
+    void setCanvasLayer(CanvasLayer *layer) { m_canvas_layer = layer; }
+
+    void zoomToFit() {
+        if (!scene())
+            return;
+        QRectF r = scene()->itemsBoundingRect();
+        if (r.isEmpty())
+            return;
+        fitInView(r.adjusted(-80, -80, 80, 80), Qt::KeepAspectRatio);
+        qreal s = transform().m11();
+        qreal clamped = std::clamp(s, kZoomMin, kZoomMax);
+        if (clamped != s)
+            scale(clamped / s, clamped / s);
+        m_zoom = clamped;
+    }
 
   protected:
     void keyPressEvent(QKeyEvent *event) override {
@@ -99,6 +117,15 @@ class CanvasView : public QGraphicsView {
                 m_wire_tool->cancel();
             if (scene())
                 scene()->clearSelection();
+            // Keep AppState in sync — otherwise the editor panel keeps
+            // showing the deselected instance.
+            m_state->set_selected_instance(QString());
+            event->accept();
+            return;
+        }
+        if ((event->key() == Qt::Key_F && event->modifiers() == Qt::NoModifier) ||
+            (event->key() == Qt::Key_0 && (event->modifiers() & Qt::ControlModifier))) {
+            zoomToFit();
             event->accept();
             return;
         }
@@ -129,12 +156,6 @@ class CanvasView : public QGraphicsView {
                     did_something = true;
                 }
             }
-            if (!did_something) {
-                QString sel = m_state->selected_instance();
-                if (!sel.isEmpty() && m_state->remove_instance(sel)) {
-                    did_something = true;
-                }
-            }
             if (did_something) {
                 event->accept();
                 return;
@@ -153,13 +174,13 @@ class CanvasView : public QGraphicsView {
                 return;
             }
             double factor = std::pow(kZoomStep, delta / 120.0);
-            double new_scale = m_zoom * factor;
-            if (new_scale < kZoomMin || new_scale > kZoomMax) {
+            double new_scale = std::clamp(m_zoom * factor, kZoomMin, kZoomMax);
+            if (new_scale == m_zoom) {
                 event->accept();
                 return;
             }
+            scale(new_scale / m_zoom, new_scale / m_zoom);
             m_zoom = new_scale;
-            scale(factor, factor);
             event->accept();
         } else {
             QGraphicsView::wheelEvent(event);
@@ -174,9 +195,16 @@ class CanvasView : public QGraphicsView {
             event->accept();
             return;
         }
-        bool empty_click = event->button() == Qt::LeftButton && itemAt(event->pos()) == nullptr;
+        QGraphicsItem *hit = itemAt(event->pos());
+        // The provisional wire follows the cursor in click-click wiring mode;
+        // it must not count as a "real" item under the click.
+        if (m_wire_tool && hit == m_wire_tool->provisionalItem())
+            hit = nullptr;
+        bool empty_click = event->button() == Qt::LeftButton && hit == nullptr;
         QGraphicsView::mousePressEvent(event);
         if (empty_click) {
+            if (m_wire_tool && m_wire_tool->armed())
+                m_wire_tool->cancel();
             m_state->set_selected_instance(QString());
         }
     }
@@ -191,6 +219,10 @@ class CanvasView : public QGraphicsView {
             return;
         }
         QGraphicsView::mouseMoveEvent(event);
+        // Click-click wiring: keep the provisional line tracking the cursor
+        // between the arming click and the closing click.
+        if (m_wire_tool && m_wire_tool->armed())
+            m_wire_tool->updateProvisional(mapToScene(event->position().toPoint()));
     }
 
     void mouseReleaseEvent(QMouseEvent *event) override {
@@ -217,12 +249,27 @@ class CanvasView : public QGraphicsView {
 
     void dropEvent(QDropEvent *event) override;
 
+    void drawBackground(QPainter *painter, const QRectF &rect) override {
+        QGraphicsView::drawBackground(painter, rect);
+        // Faint guides at column centers so the snap target is visible.
+        QPen pen(QColor(255, 255, 255, 10));
+        pen.setCosmetic(true);
+        painter->setPen(pen);
+        int c0 = static_cast<int>(std::floor(rect.left() / kColumnPitch));
+        int c1 = static_cast<int>(std::ceil(rect.right() / kColumnPitch));
+        for (int c = c0; c <= c1; ++c) {
+            qreal x = c * static_cast<qreal>(kColumnPitch);
+            painter->drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()));
+        }
+    }
+
   private:
     AppState *m_state;
     QPoint m_panAnchor;
     bool m_panning = false;
     double m_zoom = 1.0;
     WireTool *m_wire_tool = nullptr;
+    CanvasLayer *m_canvas_layer = nullptr;
 };
 
 // --- CanvasLayer ------------------------------------------------------------
@@ -248,11 +295,14 @@ class CanvasLayer {
             double x = m_state->instance_pos_x(i);
             double y = m_state->instance_pos_y(i);
             auto *item = new InstanceItem(m_state, name, module);
-            item->setPos(x, y);
+            // Wire tool + canvas layer before setPos so the snap/clear-Y
+            // logic in itemChange applies to positions loaded from disk —
+            // legacy projects may have saved overlapping modules.
             item->setWireTool(&m_wire_tool);
             item->setCanvasLayer(this);
             m_scene->addItem(item);
             m_items.insert(name, item);
+            item->setPos(x, y);
         }
         rebuildTopPorts();
         rebuildWires();
@@ -407,6 +457,14 @@ class CanvasLayer {
         gutter_counter[idx] = n + 1;
 
         if (bounded_left && bounded_right) {
+            if (gi.safe_min > gi.safe_max) {
+                // Over-constrained gutter: pins on both sides demand more
+                // room than exists (shouldn't happen now that instance width
+                // is capped below the column pitch, but guard anyway). Split
+                // the violation instead of collapsing every lane onto one
+                // bound, which routed wires back through a module body.
+                return (gi.safe_min + gi.safe_max) / 2.0;
+            }
             const qreal w = gi.safe_max - gi.safe_min;
             const qreal center = (gi.safe_min + gi.safe_max) / 2.0;
             int lane_slots = (std::max)(1, gi.nets_using);
@@ -651,6 +709,28 @@ class CanvasLayer {
         return (b >= 0) ? key.left(b) : key;
     }
 
+    // Net hover-highlight: light up every wire of the hovered net so fan-out
+    // is traceable. Empty key clears.
+    void setHoveredNet(const QString &base) {
+        if (m_hovered_net == base)
+            return;
+        m_hovered_net = base;
+        for (auto *w : m_wires)
+            w->setNetHover(!base.isEmpty() && baseKey(w->sourceKey()) == base);
+    }
+
+    // Keep the scene rect covering everything placed so far (plus working
+    // margin) — the old fixed ±2000 rect made wide designs unreachable by
+    // scrolling. Never shrinks below the default workspace.
+    void updateSceneRect() {
+        QRectF base(-2000, -2000, 4000, 4000);
+        QRectF items = m_scene->itemsBoundingRect();
+        if (!items.isNull())
+            base = base.united(items.adjusted(-600, -600, 600, 600));
+        if (m_scene->sceneRect() != base)
+            m_scene->setSceneRect(base);
+    }
+
     void replanWires() {
         clearJunctionDots();
 
@@ -715,6 +795,7 @@ class CanvasLayer {
             const NetData &d = it.value();
             planNet(src_key, d.driver, d.loads, d.wires, gutter_counter, gutter_info);
         }
+        updateSceneRect();
     }
 
     void rebuildWires() {
@@ -724,6 +805,7 @@ class CanvasLayer {
         }
         m_wires.clear();
         clearJunctionDots();
+        m_hovered_net.clear();
 
         int wc = m_state->wire_count();
         for (int i = 0; i < wc; ++i) {
@@ -731,6 +813,7 @@ class CanvasLayer {
             QString dst_key = m_state->wire_target(i);
             auto *w = new WireItem(src_key, dst_key);
             w->setAppState(m_state);
+            w->setCanvasLayer(this);
             w->setWidth(m_state->wire_width(i));
             w->setRouteIndex(static_cast<int>(m_wires.size()));
             w->setZValue(1);
@@ -753,11 +836,11 @@ class CanvasLayer {
         double x = m_state->instance_pos_x(idx);
         double y = m_state->instance_pos_y(idx);
         auto *item = new InstanceItem(m_state, name, module);
-        item->setPos(x, y);
         item->setWireTool(&m_wire_tool);
         item->setCanvasLayer(this);
         m_scene->addItem(item);
         m_items.insert(name, item);
+        item->setPos(x, y);
         rebuildTopPorts();
         rebuildWires();
     }
@@ -818,6 +901,7 @@ class CanvasLayer {
     std::vector<WireItem *> m_wires;
     std::vector<JunctionDotItem *> m_junction_dots;
     std::pair<int, int> m_last_col_bounds = {0, 0};
+    QString m_hovered_net;
     WireTool m_wire_tool;
 };
 

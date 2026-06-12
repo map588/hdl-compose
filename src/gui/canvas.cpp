@@ -45,11 +45,29 @@ bool parse_pin_key(PortPinItem *pin, QString *inst, QString *port) {
 
 } // namespace
 
+// --- WireItem hover (needs full CanvasLayer type) ----------------------------
+
+void WireItem::hoverEnterEvent(QGraphicsSceneHoverEvent *) {
+    if (m_layer)
+        m_layer->setHoveredNet(CanvasLayer::baseKey(m_source_key));
+}
+
+void WireItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *) {
+    if (m_layer)
+        m_layer->setHoveredNet(QString());
+}
+
 // --- WireTool ---------------------------------------------------------------
 
 QString WireTool::compatibilityError(PortPinItem *src, PortPinItem *dst) const {
     if (src == dst) {
         return QStringLiteral("cannot connect pin to itself");
+    }
+    // Bundle headers have no key/direction. Without this guard the driver
+    // fallback below picked the bundle as driver with an empty RHS, which
+    // silently cleared the other pin's connection.
+    if (src->key().isEmpty() || dst->key().isEmpty()) {
+        return QStringLiteral("cannot wire a bundle header; expand it and wire a member port");
     }
     bool src_top = src->key().startsWith(QStringLiteral("top:"));
     bool dst_top = dst->key().startsWith(QStringLiteral("top:"));
@@ -101,6 +119,8 @@ void WireTool::createProvisional(PortPinItem *from, const QPointF &scene_pos) {
     pen.setStyle(Qt::DashLine);
     m_provisional->setPen(pen);
     m_provisional->setZValue(1000);
+    // The line ends at the cursor; it must never swallow the closing click.
+    m_provisional->setAcceptedMouseButtons(Qt::NoButton);
     QPainterPath p;
     p.moveTo(from->tipScenePos());
     p.lineTo(scene_pos);
@@ -230,7 +250,9 @@ void WireTool::onPinReleased(const QPointF &scene_pos) {
     PortPinItem *target = nullptr;
     for (QGraphicsItem *it : m_scene->items(scene_pos)) {
         if (auto *pin = dynamic_cast<PortPinItem *>(it)) {
-            if (pin != m_armed) {
+            // Skip bundle headers (empty key) — releasing over one must not
+            // commit a wire against it.
+            if (pin != m_armed && !pin->key().isEmpty()) {
                 target = pin;
                 break;
             }
@@ -247,7 +269,8 @@ void WireTool::onPinReleased(const QPointF &scene_pos) {
         return;
     }
     if ((scene_pos - m_press_pos).manhattanLength() < kClickThresholdPx) {
-        clearProvisional();
+        // Click-mode arm: keep the provisional line; CanvasView mouse moves
+        // track it to the cursor until the closing click or cancel.
         return;
     }
     cancel();
@@ -266,10 +289,19 @@ void CanvasView::dropEvent(QDropEvent *event) {
         return;
     }
     QPointF scene_pos = mapToScene(event->position().toPoint());
-    qreal centered = scene_pos.x();
-    int col = static_cast<int>(std::round(centered / kColumnPitch));
-    qreal snapped_x = col * kColumnPitch - kMinInstanceWidth / 2.0;
-    m_state->set_instance_position(inst_name, snapped_x, scene_pos.y());
+    int col = static_cast<int>(std::round(scene_pos.x() / kColumnPitch));
+    qreal w = kMinInstanceWidth;
+    qreal y = scene_pos.y();
+    InstanceItem *item = m_canvas_layer ? m_canvas_layer->itemFor(inst_name) : nullptr;
+    if (item)
+        w = item->width();
+    qreal snapped_x = col * kColumnPitch - w / 2.0;
+    // Resolve overlap here so the MODEL gets the corrected position — the
+    // itemChange hook only corrects the visual item, and an uncorrected
+    // model position reloads as overlapping modules after save.
+    if (item && m_canvas_layer)
+        y = m_canvas_layer->resolveClearY(item, snapped_x, w, item->rect().height(), y);
+    m_state->set_instance_position(inst_name, snapped_x, y);
     event->acceptProposedAction();
 }
 

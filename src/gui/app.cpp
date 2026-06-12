@@ -196,6 +196,11 @@ namespace hdlc {
 PortPinItem::PortPinItem(const QString &name, int direction, int width, PinSide side, InstanceItem *parent)
     : QGraphicsItem(parent), m_name(name), m_direction(direction), m_width(width), m_side(side), m_parent(parent) {
     setAcceptedMouseButtons(Qt::LeftButton);
+    QString tip = m_name;
+    QString w = format_width(m_width);
+    if (!w.isEmpty())
+        tip += w;
+    setToolTip(tip);
 }
 
 QPointF PortPinItem::tipScenePos() const {
@@ -304,6 +309,10 @@ void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWi
     }
     painter->setFont(f);
     painter->setPen(QColor(220, 220, 220));
+    // Elide to this side's budget so left and right labels can't overlap in
+    // a width-capped module. Tooltip (set in ctor) still shows the full name.
+    int budget = m_parent ? m_parent->labelBudget(m_side) : static_cast<int>(pw) - 8;
+    label = painter->fontMetrics().elidedText(label, Qt::ElideMiddle, budget);
     QRectF label_rect;
     if (m_side == PinSide::Left) {
         label_rect = QRectF(tip_x + 4, y - kPinSlotHeight / 2.0, pw - 8, kPinSlotHeight);
@@ -312,7 +321,6 @@ void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWi
         label_rect = QRectF(tip_x - pw + 4, y - kPinSlotHeight / 2.0, pw - 8, kPinSlotHeight);
         painter->drawText(label_rect, Qt::AlignRight | Qt::AlignVCenter, label);
     }
-    setToolTip(label);
 }
 
 void BundlePinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
@@ -351,6 +359,8 @@ void BundlePinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, Q
     f.setPointSizeF(f.pointSizeF() - 1.0);
     painter->setFont(f);
     painter->setPen(QColor(m_header ? 180 : 235, m_header ? 200 : 235, m_header ? 220 : 235));
+    if (m_parent)
+        label = painter->fontMetrics().elidedText(label, Qt::ElideMiddle, m_parent->labelBudget(m_side));
     QRectF label_rect;
     if (m_side == PinSide::Left) {
         label_rect = QRectF(tip_x + half + 4, y - kPinSlotHeight / 2.0, pw - half - 8, kPinSlotHeight);
@@ -551,7 +561,18 @@ void InstanceItem::layoutPins() {
     int header_w = hf.horizontalAdvance(QStringLiteral("%1 : %2").arg(m_name, m_module)) + 24;
     int needed = left_label_w + right_label_w + kPinShapeSize * 2 + kInstanceCenterPadding + kPinLabelHPadding * 2;
     needed = std::max(needed, header_w);
-    m_width = std::max(needed, kMinInstanceWidth);
+    // Cap below the column pitch — a wider body invades the wire gutters and
+    // over-constrains lane allocation. Labels elide to per-side budgets.
+    m_width = std::min(std::max(needed, kMinInstanceWidth), kMaxInstanceWidth);
+
+    int avail = m_width - kPinShapeSize * 2 - kInstanceCenterPadding - kPinLabelHPadding * 2;
+    if (left_label_w + right_label_w <= avail) {
+        m_left_label_budget = avail - right_label_w;
+        m_right_label_budget = avail - left_label_w;
+    } else {
+        m_left_label_budget = (left_label_w * avail) / (left_label_w + right_label_w);
+        m_right_label_budget = avail - m_left_label_budget;
+    }
 
     setRect(0, 0, m_width, kInstanceHeaderHeight + body);
 }
@@ -602,7 +623,8 @@ void InstanceItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *opti
     painter->setFont(name_font);
     painter->setPen(QColor(232, 234, 238));
     painter->drawText(QRectF(r.left() + 12, r.top() + 8, r.width() - 24, 20),
-                      Qt::AlignLeft | Qt::AlignVCenter, m_name);
+                      Qt::AlignLeft | Qt::AlignVCenter,
+                      painter->fontMetrics().elidedText(m_name, Qt::ElideRight, static_cast<int>(r.width()) - 24));
 
     QFont mod_font = painter->font();
     mod_font.setBold(false);
@@ -610,7 +632,8 @@ void InstanceItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *opti
     painter->setFont(mod_font);
     painter->setPen(QColor(150, 154, 162));
     painter->drawText(QRectF(r.left() + 12, r.top() + 30, r.width() - 24, 16),
-                      Qt::AlignLeft | Qt::AlignVCenter, m_module);
+                      Qt::AlignLeft | Qt::AlignVCenter,
+                      painter->fontMetrics().elidedText(m_module, Qt::ElideRight, static_cast<int>(r.width()) - 24));
 }
 
 // WireTool, CanvasView, CanvasLayer all live in canvas.h / canvas.cpp.
@@ -1701,6 +1724,7 @@ extern "C" int run_gui(int *argc, char **argv) {
     canvas->setMinimumWidth(600);
     CanvasLayer canvas_layer(scene, state);
     canvas->setWireTool(canvas_layer.wireTool());
+    canvas->setCanvasLayer(&canvas_layer);
 
     // --- Mini editor ---
     // Wrap editor in a panel with a toggle button row above it. Toggle flips

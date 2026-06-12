@@ -17,6 +17,7 @@
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGraphicsSceneContextMenuEvent>
+#include <QGraphicsSceneHoverEvent>
 #include <QGraphicsSceneMouseEvent>
 #include <QHash>
 #include <QInputDialog>
@@ -85,13 +86,21 @@ class WireItem : public QGraphicsPathItem {
         : m_source_key(source_key), m_target_key(target_key) {
         setFlag(QGraphicsItem::ItemIsSelectable, true);
         setAcceptedMouseButtons(Qt::LeftButton | Qt::RightButton);
+        setAcceptHoverEvents(true);
         QPen pen(colorForNet(source_key), 1.5);
         pen.setCosmetic(true);
         setPen(pen);
     }
 
     static QColor colorForNet(const QString &key) {
-        int hue = static_cast<int>(qHash(key) % 360);
+        // FNV-1a instead of qHash: qHash is seeded per-process, which made
+        // net colors change on every app launch.
+        quint32 h = 2166136261u;
+        for (QChar c : key) {
+            h ^= c.unicode();
+            h *= 16777619u;
+        }
+        int hue = static_cast<int>(h % 360);
         return QColor::fromHsv(hue, 110, 200);
     }
 
@@ -136,6 +145,21 @@ class WireItem : public QGraphicsPathItem {
 
     void setAppState(AppState *s) { m_state = s; }
     void setWidth(int w) { m_width = w; }
+    void setCanvasLayer(CanvasLayer *layer) { m_layer = layer; }
+
+    // Net hover: brighter, thicker pen on every wire of the hovered net so
+    // fan-out is traceable. Driven by CanvasLayer::setHoveredNet.
+    void setNetHover(bool hover) {
+        if (m_net_hover == hover)
+            return;
+        m_net_hover = hover;
+        QColor c = colorForNet(m_source_key);
+        if (hover)
+            c = QColor::fromHsv(c.hue(), 160, 255);
+        QPen p(c, hover ? 2.5 : 1.5);
+        p.setCosmetic(true);
+        setPen(p);
+    }
 
     void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget) override {
         if (option->state & QStyle::State_Selected) {
@@ -152,17 +176,33 @@ class WireItem : public QGraphicsPathItem {
         const QPainterPath p = path();
         if (p.elementCount() < 2)
             return;
+        // Prefer the driver stub (first segment) for the width marker: each
+        // pin has its own Y, so markers can't stack the way they did on the
+        // longest segment — usually a gutter lane 12 px from its neighbours.
         qreal best_len = 0;
         QPointF a, b;
-        for (int i = 1; i < p.elementCount(); ++i) {
-            QPointF p0(p.elementAt(i - 1).x, p.elementAt(i - 1).y);
-            QPointF p1(p.elementAt(i).x, p.elementAt(i).y);
+        {
+            QPointF p0(p.elementAt(0).x, p.elementAt(0).y);
+            QPointF p1(p.elementAt(1).x, p.elementAt(1).y);
             qreal dx = p1.x() - p0.x(), dy = p1.y() - p0.y();
             qreal len = std::sqrt(dx * dx + dy * dy);
-            if (len > best_len) {
+            if (len >= 24.0) {
                 best_len = len;
                 a = p0;
                 b = p1;
+            }
+        }
+        if (best_len == 0) {
+            for (int i = 1; i < p.elementCount(); ++i) {
+                QPointF p0(p.elementAt(i - 1).x, p.elementAt(i - 1).y);
+                QPointF p1(p.elementAt(i).x, p.elementAt(i).y);
+                qreal dx = p1.x() - p0.x(), dy = p1.y() - p0.y();
+                qreal len = std::sqrt(dx * dx + dy * dy);
+                if (len > best_len) {
+                    best_len = len;
+                    a = p0;
+                    b = p1;
+                }
             }
         }
         if (best_len < 16.0)
@@ -176,7 +216,7 @@ class WireItem : public QGraphicsPathItem {
                    mid.y() + perp.y() * kSlashHalf - dir.y() / dlen * kSlashHalf);
         QPointF s2(mid.x() - perp.x() * kSlashHalf + dir.x() / dlen * kSlashHalf,
                    mid.y() - perp.y() * kSlashHalf + dir.y() / dlen * kSlashHalf);
-        QPen slash_pen(colorForNet(m_source_key), 1.5);
+        QPen slash_pen(pen().color(), pen().widthF());
         slash_pen.setCosmetic(true);
         painter->setPen(slash_pen);
         painter->drawLine(s1, s2);
@@ -189,6 +229,10 @@ class WireItem : public QGraphicsPathItem {
     }
 
   protected:
+    // Defined in canvas.cpp — they need the full CanvasLayer type.
+    void hoverEnterEvent(QGraphicsSceneHoverEvent *event) override;
+    void hoverLeaveEvent(QGraphicsSceneHoverEvent *event) override;
+
     void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override {
         if (!m_state)
             return;
@@ -213,8 +257,10 @@ class WireItem : public QGraphicsPathItem {
     QString m_source_key;
     QString m_target_key;
     AppState *m_state = nullptr;
+    CanvasLayer *m_layer = nullptr;
     int m_width = 1;
     int m_route_index = -1;
+    bool m_net_hover = false;
     QVector<QPointF> m_waypoints;
 };
 
@@ -340,6 +386,13 @@ class InstanceItem : public QGraphicsRectItem {
 
     bool bundleExpanded(const QString &bundle) const { return m_expanded_bundles.contains(bundle); }
 
+    // Max pixel width a pin label may occupy on the given side before
+    // eliding. Computed in layoutPins; prevents left/right labels from
+    // overlapping now that instance width is capped at kMaxInstanceWidth.
+    int labelBudget(PinSide side) const {
+        return (side == PinSide::Left) ? m_left_label_budget : m_right_label_budget;
+    }
+
     void relayoutPins() {
         for (auto *pin : m_pins) {
             scene()->removeItem(pin);
@@ -401,6 +454,8 @@ class InstanceItem : public QGraphicsRectItem {
     WireTool *m_wire_tool = nullptr;
     CanvasLayer *m_canvas_layer = nullptr;
     int m_width = kMinInstanceWidth;
+    int m_left_label_budget = kMinInstanceWidth;
+    int m_right_label_budget = kMinInstanceWidth;
 };
 
 // --- TopPortItem ------------------------------------------------------------
@@ -453,6 +508,7 @@ class TopPortItem : public PortPinItem {
         f.setBold(true);
         painter->setFont(f);
         painter->setPen(QColor(220, 220, 220));
+        label = painter->fontMetrics().elidedText(label, Qt::ElideMiddle, 180);
         if (side() == PinSide::Left) {
             painter->drawText(QRectF(-180 - kPinShapeSize - 6, -kPinSlotHeight / 2.0, 180, kPinSlotHeight),
                               Qt::AlignRight | Qt::AlignVCenter, label);
