@@ -600,11 +600,11 @@ class MainWindow : public QMainWindow {
         // Canvas.
         auto *scene = new QGraphicsScene(m_root_splitter);
         scene->setSceneRect(-2000, -2000, 4000, 4000);
-        m_canvas = new CanvasView(scene, m_state, m_root_splitter);
-        m_canvas->setMinimumWidth(600);
+        auto *canvas = new CanvasView(scene, m_state, m_root_splitter);
+        canvas->setMinimumWidth(600);
         m_canvas_layer = std::make_unique<CanvasLayer>(scene, m_state);
-        m_canvas->setWireTool(m_canvas_layer->wireTool());
-        m_canvas->setCanvasLayer(m_canvas_layer.get());
+        canvas->setWireTool(m_canvas_layer->wireTool());
+        canvas->setCanvasLayer(m_canvas_layer.get());
 
         // Mini editor panel: toggle row above the buffer. Toggle flips
         // between per-instance editing (default) and top-level entity
@@ -636,7 +636,7 @@ class MainWindow : public QMainWindow {
         }
 
         m_root_splitter->addWidget(sidebar_splitter);
-        m_root_splitter->addWidget(m_canvas);
+        m_root_splitter->addWidget(canvas);
         m_root_splitter->addWidget(editor_panel);
         m_root_splitter->setSizes({250, 800, 350});
         // Editor panel can be dragged narrow but not collapsed to zero —
@@ -1044,7 +1044,7 @@ class MainWindow : public QMainWindow {
             QSignalBlocker b(m_editor_top_level_btn);
             m_editor_top_level_btn->setChecked(false);
         }
-        m_canvas_layer->highlight(name);
+        m_canvas_layer->refreshSelectionHighlight();
         m_editor_inst = name;
         repopulateEditor();
         // Sync sidebar tree row.
@@ -1328,7 +1328,6 @@ class MainWindow : public QMainWindow {
     QStandardItemModel *m_tree_model = nullptr;
     QTreeView *m_tree_view = nullptr;
     QStringListModel *m_library_model = nullptr;
-    CanvasView *m_canvas = nullptr;
     std::unique_ptr<CanvasLayer> m_canvas_layer;
     QPushButton *m_editor_top_level_btn = nullptr;
     QPlainTextEdit *m_editor = nullptr;

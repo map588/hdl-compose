@@ -149,8 +149,6 @@ class WireItem : public QGraphicsPathItem {
     const QString &sourceKey() const { return m_source_key; }
     const QString &targetKey() const { return m_target_key; }
 
-    void setRouteIndex(int idx) { m_route_index = idx; }
-
     void setWaypoints(const QVector<QPointF> &pts) {
         m_waypoints = pts;
         QPainterPath p;
@@ -301,7 +299,6 @@ class WireItem : public QGraphicsPathItem {
     AppState *m_state = nullptr;
     CanvasLayer *m_layer = nullptr;
     int m_width = 1;
-    int m_route_index = -1;
     bool m_net_hover = false;
     QVector<QPointF> m_waypoints;
 };

@@ -133,7 +133,6 @@ fn cmd_migrate(projects: &[PathBuf]) -> ExitCode {
                     error!("{}: save failed: {e}", path.display());
                     failed += 1;
                 } else {
-                    info!("migrated {}", path.display());
                     println!("migrated {}", path.display());
                 }
             }

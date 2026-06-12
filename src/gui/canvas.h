@@ -313,7 +313,7 @@ class CanvasLayer {
         rebuildWires();
         QString sel = m_state->selected_instance();
         if (!sel.isEmpty()) {
-            highlight(sel);
+            refreshSelectionHighlight();
         }
     }
 
@@ -420,22 +420,6 @@ class CanvasLayer {
     static qreal gutterCenterX(int idx) {
         return idx / 2.0 * static_cast<qreal>(kColumnPitch);
     }
-    static qreal nextLane(int idx, QHash<int, int> &counter) {
-        int n = counter.value(idx, 0);
-        counter[idx] = n + 1;
-        if (n == 0)
-            return 0.0;
-        int sign = (n % 2 == 1) ? 1 : -1;
-        int mag = (n + 1) / 2;
-        return sign * mag * static_cast<qreal>(kWireLaneStep);
-    }
-    static void enforceStub(qreal pin_x, bool exits_right, qreal &gx) {
-        if (exits_right)
-            gx = std::max(gx, pin_x + static_cast<qreal>(kWireStubMin));
-        else
-            gx = std::min(gx, pin_x - static_cast<qreal>(kWireStubMin));
-    }
-
     struct GutterInfo {
         qreal safe_min = -1e18;
         qreal safe_max = 1e18;
@@ -537,23 +521,13 @@ class CanvasLayer {
                 gx_for_idx[idx] = allocateLaneX(idx, gutter_info, gutter_counter);
             qreal dgx = gx_for_idx[g_d];
 
-            QSet<QString> endpoint_insts;
-            auto inst_of = [](const QString &k) { return NetKey::parse(k).instance; };
-            QString d_inst = inst_of(driver.key);
-            if (!d_inst.isEmpty())
-                endpoint_insts.insert(d_inst);
-            for (const auto &l : loads) {
-                QString li = inst_of(l.key);
-                if (!li.isEmpty())
-                    endpoint_insts.insert(li);
-            }
             qreal bx_min = gx_for_idx[sorted_gutters.first()];
             qreal bx_max = gx_for_idx[sorted_gutters.last()];
             for (auto v : gx_for_idx) {
                 bx_min = std::min(bx_min, v);
                 bx_max = std::max(bx_max, v);
             }
-            hy = adjustBridgeY(hy, bx_min, bx_max, endpoint_insts);
+            hy = adjustBridgeY(hy, bx_min, bx_max);
 
             for (int i = 0; i < loads.size(); ++i) {
                 qreal lgx = gx_for_idx[g_l[i]];
@@ -605,9 +579,7 @@ class CanvasLayer {
         }
     }
 
-    qreal adjustBridgeY(qreal preferred, qreal bx_min, qreal bx_max,
-                        const QSet<QString> &endpoint_insts) const {
-        Q_UNUSED(endpoint_insts);
+    qreal adjustBridgeY(qreal preferred, qreal bx_min, qreal bx_max) const {
         constexpr qreal kMargin = 8.0;
         QVector<std::pair<qreal, qreal>> blocking;
         for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
@@ -816,16 +788,10 @@ class CanvasLayer {
             w->setAppState(m_state);
             w->setCanvasLayer(this);
             w->setWidth(m_state->wire_width(i));
-            w->setRouteIndex(static_cast<int>(m_wires.size()));
             w->setZValue(1);
             m_scene->addItem(w);
             m_wires.push_back(w);
         }
-        replanWires();
-    }
-
-    void rerouteWiresFor(const QString &inst_name) {
-        Q_UNUSED(inst_name);
         replanWires();
     }
 
@@ -865,7 +831,7 @@ class CanvasLayer {
             it.value()->setPos(x, y);
         }
         rebuildTopPorts();
-        rerouteWiresFor(name);
+        replanWires();
     }
 
     void onInstanceColumnChanged() {
@@ -874,7 +840,7 @@ class CanvasLayer {
             m_last_col_bounds = bounds;
             rebuildTopPorts();
         }
-        rerouteWiresFor(QString());
+        replanWires();
     }
 
     // Per-entry change: only the named instance's pins can be affected
@@ -895,11 +861,12 @@ class CanvasLayer {
         rebuildWires();
     }
 
-    void highlight(const QString &name) {
+    // Repaint every instance so selection borders track AppState's
+    // selected_instance (InstanceItem::paint reads it directly).
+    void refreshSelectionHighlight() {
         for (auto it = m_items.begin(); it != m_items.end(); ++it) {
             it.value()->update();
         }
-        Q_UNUSED(name);
     }
 
     InstanceItem *itemFor(const QString &name) const { return m_items.value(name, nullptr); }

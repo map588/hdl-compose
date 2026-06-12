@@ -367,16 +367,10 @@ pub mod qobject {
         fn current_project_path(self: &AppState) -> QString;
 
         #[qinvokable]
-        fn validation_count(self: &AppState) -> i32;
-
-        #[qinvokable]
         fn validation_error_count(self: &AppState) -> i32;
 
         #[qinvokable]
         fn validation_warning_count(self: &AppState) -> i32;
-
-        #[qinvokable]
-        fn validation_message(self: &AppState, index: i32) -> QString;
 
         #[qsignal]
         fn project_loaded(self: Pin<&mut AppState>);
@@ -1700,18 +1694,21 @@ impl qobject::AppState {
 
         // Snapshot the current library + re-parse to get the new library.
         // Compare: for each instance whose module's ports changed, drop the
-        // stale port_map entries and mark the instance dirty.
+        // stale port_map entries and mark the instance dirty. Parsing goes
+        // through the (just-cleared) cache so the rebuild below reuses it
+        // instead of parsing the whole library a second time.
         let old_library: Vec<ModuleDef> = self.as_ref().rust().library.clone();
-        let new_library: Vec<ModuleDef> = self
+        let paths: Vec<PathBuf> = self
             .as_ref()
             .rust()
             .schematic
             .as_ref()
-            .map(|s| {
-                let (lib, _errors) = s.resolve_modules();
-                lib
-            })
+            .map(|s| s.library_paths.clone())
             .unwrap_or_default();
+        let new_library: Vec<ModuleDef> = {
+            let cache = &mut self.as_mut().rust_mut().get_mut().parse_cache;
+            resolve_library_cached(cache, &paths).0
+        };
 
         let newly_dirty = {
             let s = self
@@ -2212,10 +2209,6 @@ impl qobject::AppState {
     }
 
     // --- Validation ---
-    pub fn validation_count(&self) -> i32 {
-        self.rust().diagnostics.len() as i32
-    }
-
     pub fn validation_error_count(&self) -> i32 {
         self.rust()
             .diagnostics
@@ -2230,14 +2223,6 @@ impl qobject::AppState {
             .iter()
             .filter(|d| !d.is_error())
             .count() as i32
-    }
-
-    pub fn validation_message(&self, index: i32) -> QString {
-        self.rust()
-            .diagnostics
-            .get(index as usize)
-            .map(|d| QString::from(&d.to_string()))
-            .unwrap_or_default()
     }
 }
 
