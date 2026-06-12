@@ -21,7 +21,7 @@ Requires Rust 2024 edition, Qt 6.
 brew install qt           # macOS, provides qmake6
 make build                # cargo build (debug)
 make run                  # launch GUI
-make test                 # 71 lib + 8 integration tests
+make test                 # full test suite (lib + integration + roundtrips)
 make help                 # all targets
 ```
 
@@ -36,15 +36,19 @@ hdl-compose new <name> -l vhdl|sv        # create empty .hdlc project
 hdl-compose validate <project.hdlc>      # report diagnostics
 hdl-compose codegen <project.hdlc> [-o out.vhd]
 hdl-compose inspect <project.hdlc>       # summary + library status
+hdl-compose migrate <a.hdlc> [b.hdlc ..] # rewrite older projects at the current version
 ```
 
 ## GUI in 30 seconds
 
 - **Left sidebar:** project tree (instances) + library pane (parsed modules).
   Drag from library to canvas to add an instance.
-- **Canvas:** instances as boxes, top-level ports on the edges, wires between
-  them. Click a port → click another port to connect. Drag instances; wires
-  reroute around obstacles.
+- **Canvas:** instances as boxes, top-level ports on the edges, wires routed
+  through the gutters between columns. Click a port → click another port to
+  connect (or drag pin-to-pin). Drag instances; wires reroute live. Hover a
+  wire to light up its whole net. `F` / `Ctrl+0` zoom-to-fit, `Ctrl`+wheel
+  zoom, middle-drag pan, `Esc` cancels, `Delete` removes the selection,
+  `Ctrl+\` restores the editor panel.
 - **Right pane mini-editor:** per-instance VHDL-shaped `port map` /
   `generic map`. Edits commit on Ctrl+Return or focus-out. Tab-complete on RHS.
   Toggle "Top Level" to edit the top entity's port + generic list directly.
@@ -91,12 +95,14 @@ Component declarations stay symbolic — child parameterization survives.
 
 ## Project file (`.hdlc`)
 
-JSON via serde. Schema version 3. `ModuleDef` is never persisted — always
-re-derived from source on load (re-parse detection stays honest).
+JSON via serde. Schema version 4 (adds per-port `consumer_slices`; v2–v3
+load with defaults, `hdl-compose migrate` rewrites them in place).
+`ModuleDef` is never persisted — always re-derived from source on load
+(re-parse detection stays honest).
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "top_name": "my_top",
   "language": "Vhdl",
   "top_generics": [...],

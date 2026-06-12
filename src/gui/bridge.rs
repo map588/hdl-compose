@@ -580,6 +580,8 @@ impl qobject::AppState {
         }
     }
 
+    // === Read helpers: index-based lookups into schematic + library ===
+
     fn instance_module_ports(&self, instance_index: i32) -> Option<&[PortDef]> {
         let r = self.rust();
         let s = r.schematic.as_ref()?;
@@ -616,6 +618,8 @@ impl qobject::AppState {
         self.as_mut().set_project_name(name);
         self.as_mut().set_dirty(dirty);
     }
+
+    // === Library resolution, validation, wire cache ===
 
     fn rebuild_library_and_validate(mut self: Pin<&mut Self>) {
         let paths: Vec<PathBuf> = match self.as_ref().rust().schematic.as_ref() {
@@ -731,6 +735,8 @@ impl qobject::AppState {
             }
         }
     }
+
+    // === Project lifecycle: new / open / save / generate ===
 
     // --- File ops ---
     pub fn open_project(mut self: Pin<&mut Self>, path: &QString) -> bool {
@@ -855,6 +861,8 @@ impl qobject::AppState {
             None => -1,
         }
     }
+
+    // === Top-level entity buffer (mini editor, top-level mode) ===
 
     pub fn top_level_buffer(&self) -> QString {
         let Some(schematic) = self.rust().schematic.as_ref() else {
@@ -999,6 +1007,8 @@ impl qobject::AppState {
             .map(|i| QString::from(&i.module_ref))
             .unwrap_or_default()
     }
+
+    // === Instances: add / remove / rename / position / selection ===
 
     // --- Instance mutation ---
     pub fn add_instance(mut self: Pin<&mut Self>, name: &QString, module: &QString) -> bool {
@@ -1200,6 +1210,8 @@ impl qobject::AppState {
             }
         }
     }
+
+    // === Port map, slices, aliases ===
 
     pub fn set_port_map_entry(
         mut self: Pin<&mut Self>,
@@ -1675,6 +1687,8 @@ impl qobject::AppState {
         count
     }
 
+    // === Library paths, reload, dirty flags ===
+
     pub fn reload_library(mut self: Pin<&mut Self>) -> bool {
         if self.as_ref().rust().schematic.is_none() {
             return false;
@@ -1745,6 +1759,8 @@ impl qobject::AppState {
         }
         was_dirty
     }
+
+    // === Undo / redo (snapshot-based; see ARCHITECTURE.md) ===
 
     /// Snapshot the current schematic for undo. Called as the first line
     /// of every model-mutating invokable. No-op when no project is loaded.
@@ -1843,6 +1859,8 @@ impl qobject::AppState {
         self.as_mut().project_loaded();
         true
     }
+
+    // === Generics + manual bundles ===
 
     pub fn module_generic_count(&self, instance_index: i32) -> i32 {
         self.instance_module_def(instance_index)
@@ -1971,6 +1989,8 @@ impl qobject::AppState {
             }
         }
     }
+
+    // === Port / top-port / wire metadata served to the canvas ===
 
     // --- Port metadata ---
     pub fn instance_port_count(&self, instance_index: i32) -> i32 {

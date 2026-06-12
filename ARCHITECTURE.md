@@ -66,6 +66,7 @@ pub struct Instance {
     dirty: bool,             // module source changed incompatibly
     position: (f32, f32),
     manual_bundles: HashMap<String, Vec<String>>,
+    consumer_slices: HashMap<String, SliceExpr>, // slice of OWN port at the load end
 }
 
 pub enum NetRef {
@@ -99,11 +100,21 @@ Sidebar is navigation + library only, not a wiring surface.
 `QGraphicsScene` rendering. Instances as boxes with pins. Wires as orthogonal
 paths. Top-level ports as chevrons on the canvas edges.
 
-- Drag any instance to reposition; all wires reroute live, going around any
-  instance whose body falls in the wire's corridor. Push-and-shove is greedy
-  per-wire (no global solver).
+- Instances snap to a column grid (`kColumnPitch`); instance width is capped
+  below the pitch so a module body can never invade the wire gutters beside
+  its column. Vertical overlap between modules is resolved at drag, drop,
+  and load time by one placement authority (`CanvasLayer::placeInstance`).
+- Channel routing: wires run through the gutters between columns. Each net
+  routes as driver stub → gutter lane → (per-net horizontal bridge if
+  endpoints span columns) → load stubs, with junction dots at fan-out taps.
+  Lanes fan out per gutter; the bridge Y shifts off any module body in its
+  x-range. Routing replans on every change — it's global, not incremental.
+- Drag any instance to reposition; all wires reroute live.
 - Click a port → click another port to create a connection (commits the
-  equivalent text edit under the hood).
+  equivalent text edit under the hood); drag pin-to-pin also works. A
+  provisional line tracks the cursor between clicks. Hovering a wire
+  highlights every wire of that net. Net colors are a stable hash of the
+  driver key, so they survive restarts.
 - All pin chevrons point right (signal flow L→R always). Top-input chevron
   base sits outside the canvas; top-output chevron tip extends past the
   anchor. Top-port labels render OUTSIDE the canvas — left of inputs, right
@@ -188,6 +199,14 @@ of that module:
 No string-matching auto-migration. Silent rewiring on a port change is a
 correctness hazard, not a convenience.
 
+### Library parse cache
+
+Every mutation re-validates the schematic against the library. Parsed
+`ModuleDef`s are cached per source path, keyed by file mtime, so validation
+doesn't re-read the library from disk on every wire edit. Explicit
+**Refresh Library** clears the cache (covers sub-second saves and tools that
+preserve mtime); the file watcher path goes through the same reload.
+
 ## Code generation
 
 Deterministic, readable, no tool-added metadata. One file per schematic.
@@ -228,12 +247,13 @@ shapes. The mini editor stays VHDL-shaped regardless — punctuation
 
 ## Project file format
 
-JSON via serde, extension `.hdlc`. Schema version 3. `ModuleDef` data is
-never persisted — always re-derived from source on load.
+JSON via serde, extension `.hdlc`. Schema version 4 (v3 + per-port
+`consumer_slices`). `ModuleDef` data is never persisted — always re-derived
+from source on load.
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "top_name": "my_top",
   "language": "Vhdl",
   "top_generics": [],
@@ -244,10 +264,11 @@ never persisted — always re-derived from source on load.
 }
 ```
 
-Loader supports v2 (no `manual_bundles`) and v3. Older versions rejected.
-Loader also runs `cleanup_stale_refs` to drop port_map / alias entries
-pointing at instances that no longer exist (defensive against pre-fix
-saves).
+Loader supports v2 (no `manual_bundles`), v3 (no `consumer_slices`), and v4;
+older fields fill via serde defaults. Versions outside that window are
+rejected. `hdl-compose migrate <files>` rewrites projects in place at the
+current version (idempotent). Loader also runs `cleanup_stale_refs` to drop
+port_map / alias entries pointing at instances that no longer exist.
 
 ## Stack
 
@@ -265,8 +286,14 @@ saves).
 
 Snapshot-based, cap 100 entries per stack. Every mutator pushes a JSON-serialized
 schematic snapshot to the undo stack before mutating; the redo stack clears
-on any new edit. Cmd+Z / Cmd+Shift+Z. `set_instance_position` is intentionally
-skipped (drag noise would saturate the stack on every release).
+on any new edit. Cmd+Z / Cmd+Shift+Z. Instance moves snapshot once per
+completed drag (never per drag tick), so they're undoable without saturating
+the stack.
+
+**Batching:** `begin_batch` / `end_batch` group multiple mutations into one
+undo step, one validation pass, and one `port_map_changed_bulk` signal.
+Used by the mini-editor commit (N binding lines), multi-wire Delete, and
+drop (add + initial position). Nestable; only the outermost pair acts.
 
 ## Out of scope for v1
 
@@ -301,11 +328,26 @@ src/
     vhdl.rs            — VHDL emitter
     sv.rs              — SystemVerilog emitter
   gui/
-    bridge.rs          — cxx-qt AppState + invokables (Rust↔Qt)
-    app.cpp            — Qt UI (canvas, mini-editor, menus, painters)
+    bridge.rs          — cxx-qt AppState + invokables (Rust↔Qt), undo,
+                          batching, library parse cache, wire cache
+    app.cpp            — theme, dialogs, MainWindow (layout + signal wiring),
+                          run_gui entry
+    canvas.h/.cpp      — WireTool (interactive wiring), CanvasView
+                          (zoom/pan/drops/keys), CanvasLayer (scene↔state
+                          sync + channel routing)
+    items.h/.cpp       — scene items: InstanceItem, PortPinItem,
+                          BundlePinItem, TopPortItem, WireItem, junction
+                          dots; NetKey codec
+    editor_buffer.h/.cpp — mini-editor buffer: render/parse/commit,
+                          completion context, inline error highlighter
+    canvas_constants.h — layout/routing constants (column pitch, pin
+                          geometry, zoom bounds)
     mod.rs             — gui::run() entry
 tests/
   integration.rs       — end-to-end parser + codegen tests
-  fixtures/            — counter.{vhd,v}, fifo_sync.vhd
+  migration.rs         — .hdlc version migration (v2/v3 → v4, rejection)
+  project_roundtrip.rs — load fixture project → codegen → re-parse
+  sv_roundtrip.rs, vhdl_roundtrip.rs — parse → codegen → parse shape checks
+  fixtures/            — counter.{vhd,v}, fifo_sync.{vhd,v}, .hdlc fixtures
 openspec/              — feature change proposals + archived specs
 ```
