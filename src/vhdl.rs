@@ -7,7 +7,7 @@ use vhdl_lang::ast::{
     Designator, InstantiatedUnit, InterfaceDeclaration, LabeledConcurrentStatement, ModeIndication,
     Name,
 };
-use vhdl_lang::{NullDiagnostics, VHDLParser, VHDLStandard};
+use vhdl_lang::{Diagnostic, VHDLParser, VHDLStandard};
 
 use crate::ParseError;
 use crate::types::{
@@ -19,7 +19,10 @@ pub fn parse_vhdl(path: &Path) -> Result<Vec<ModuleDef>, ParseError> {
     let source_hash = seahash::hash(&source_bytes);
 
     let parser = VHDLParser::new(VHDLStandard::VHDL2008);
-    let mut diagnostics = NullDiagnostics;
+    // Collect parser diagnostics instead of discarding them. vhdl_lang
+    // recovers from syntax errors and returns Ok with whatever it salvaged,
+    // so a garbage file used to load silently as an empty library.
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
     let (_source, design_file) = parser
         .parse_design_file(path, &mut diagnostics)
@@ -61,6 +64,16 @@ pub fn parse_vhdl(path: &Path) -> Result<Vec<ModuleDef>, ParseError> {
                 dependencies,
             });
         }
+    }
+
+    // No entities AND syntax diagnostics → the file is broken, not merely
+    // entity-free (packages-only files parse with no diagnostics). Surface
+    // it instead of silently loading an empty library.
+    if modules.is_empty()
+        && let Some(d) = diagnostics.first()
+    {
+        let line = d.pos.range.start.line + 1; // 0-based in vhdl_lang
+        return Err(ParseError::VhdlParse(format!("line {line}: {}", d.message)));
     }
 
     Ok(modules)
@@ -416,6 +429,14 @@ end entity bar;
     fn empty_file() {
         let modules = parse_vhdl_str("").unwrap();
         assert!(modules.is_empty());
+    }
+
+    #[test]
+    fn garbage_reports_parse_error() {
+        // vhdl_lang recovers from syntax errors and returns Ok — without the
+        // diagnostics check this loaded silently as an empty library.
+        let result = parse_vhdl_str("this is not VHDL at all }{");
+        assert!(result.is_err(), "garbage VHDL must surface a parse error");
     }
 
     #[test]

@@ -64,6 +64,12 @@ enum Command {
         project: PathBuf,
     },
 
+    /// Migrate .hdlc project files to the current format version (in place)
+    Migrate {
+        /// Paths to .hdlc project files
+        projects: Vec<PathBuf>,
+    },
+
     /// Launch the Qt GUI (default when no subcommand is given)
     Gui,
 }
@@ -104,7 +110,40 @@ fn main() -> ExitCode {
         Some(Command::Validate { project }) => cmd_validate(&project),
         Some(Command::Codegen { project, output }) => cmd_codegen(&project, output.as_deref()),
         Some(Command::Inspect { project }) => cmd_inspect(&project),
+        Some(Command::Migrate { projects }) => cmd_migrate(&projects),
     }
+}
+
+/// Load each project (load_project applies in-process migrations, e.g. v3 →
+/// v4 fills default `consumer_slices` / `manual_bundles`) and save it back at
+/// CURRENT_VERSION. Idempotent: files already current are rewritten as-is.
+fn cmd_migrate(projects: &[PathBuf]) -> ExitCode {
+    if projects.is_empty() {
+        error!("usage: hdl-compose migrate <path.hdlc> [<path.hdlc> ...]");
+        return ExitCode::from(2);
+    }
+    let mut failed = 0;
+    for path in projects {
+        match project::load_project(path) {
+            Ok((schematic, warnings)) => {
+                for w in &warnings {
+                    warn!("{}: {w}", path.display());
+                }
+                if let Err(e) = project::save_project(&schematic, path) {
+                    error!("{}: save failed: {e}", path.display());
+                    failed += 1;
+                } else {
+                    info!("migrated {}", path.display());
+                    println!("migrated {}", path.display());
+                }
+            }
+            Err(e) => {
+                error!("{}: load failed: {e}", path.display());
+                failed += 1;
+            }
+        }
+    }
+    if failed > 0 { ExitCode::from(1) } else { ExitCode::SUCCESS }
 }
 
 fn cmd_gui() -> ExitCode {

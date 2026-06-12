@@ -2287,7 +2287,9 @@ fn resolve_port_width(
 
 fn parse_net_rhs(rhs: &str) -> Option<NetRef> {
     let trimmed = rhs.trim();
-    if trimmed.is_empty() || trimmed == "open" {
+    // "open" is case-insensitive, matching the VHDL keyword and the C++
+    // editor's check — a literal "OPEN" must not become a net named OPEN.
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("open") {
         return None;
     }
     // Strip optional bracket suffix `[h:l]` or `[i]` and parse it.
@@ -2709,5 +2711,117 @@ mod tests {
         });
         assert_eq!(port_type_brief(&pt), "logic[7:0]");
         assert_eq!(port_type_brief(&PortType::StdLogic), "logic");
+    }
+
+    #[test]
+    fn parse_net_rhs_open_and_empty() {
+        assert_eq!(parse_net_rhs(""), None);
+        assert_eq!(parse_net_rhs("   "), None);
+        assert_eq!(parse_net_rhs("open"), None);
+        assert_eq!(parse_net_rhs("OPEN"), None);
+        assert_eq!(parse_net_rhs(" Open "), None);
+    }
+
+    #[test]
+    fn parse_net_rhs_variants() {
+        assert_eq!(parse_net_rhs("clk"), Some(NetRef::TopPort("clk".into())));
+        assert_eq!(
+            parse_net_rhs("u_a.dout"),
+            Some(NetRef::InstancePort("u_a".into(), "dout".into()))
+        );
+        assert_eq!(
+            parse_net_rhs("u_a.dout[3]"),
+            Some(NetRef::InstancePortSlice(
+                "u_a".into(),
+                "dout".into(),
+                SliceExpr::Bit(3)
+            ))
+        );
+        assert_eq!(
+            parse_net_rhs("u_a.dout[7:4]"),
+            Some(NetRef::InstancePortSlice(
+                "u_a".into(),
+                "dout".into(),
+                SliceExpr::Range { high: 7, low: 4 }
+            ))
+        );
+        assert_eq!(
+            parse_net_rhs("bus[0]"),
+            Some(NetRef::TopPortSlice("bus".into(), SliceExpr::Bit(0)))
+        );
+    }
+
+    #[test]
+    fn parse_net_rhs_malformed_slices() {
+        assert_eq!(parse_net_rhs("u_a.dout[3"), None, "unclosed bracket");
+        assert_eq!(parse_net_rhs("u_a.dout[x]"), None, "non-numeric index");
+        assert_eq!(parse_net_rhs("u_a.dout[1:x]"), None, "non-numeric bound");
+    }
+
+    #[test]
+    fn library_cache_parses_and_tracks_mtime() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("mod.vhd");
+        std::fs::copy("tests/fixtures/counter.vhd", &path).unwrap();
+        let paths = vec![path.clone()];
+        let mut cache = HashMap::new();
+
+        let (mods, errs) = resolve_library_cached(&mut cache, &paths);
+        assert_eq!(errs.len(), 0);
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].name, "counter");
+
+        // Unchanged mtime → served from cache (same result).
+        let (mods, errs) = resolve_library_cached(&mut cache, &paths);
+        assert_eq!((mods.len(), errs.len()), (1, 0));
+
+        // Rewrite with a renamed entity and force the mtime forward — the
+        // cache must notice and re-parse.
+        let renamed = std::fs::read_to_string("tests/fixtures/counter.vhd")
+            .unwrap()
+            .replace("counter", "counter2");
+        std::fs::write(&path, renamed).unwrap();
+        let f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.set_modified(SystemTime::now() + Duration::from_secs(5)).unwrap();
+
+        let (mods, errs) = resolve_library_cached(&mut cache, &paths);
+        assert_eq!(errs.len(), 0);
+        assert_eq!(mods[0].name, "counter2");
+    }
+
+    #[test]
+    fn library_cache_caches_parse_errors() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // .v, not .vhd: vhdl_lang skips garbage with diagnostics but no Err;
+        // sv-parser fails hard, which is the path this test pins.
+        let path = dir.path().join("broken.v");
+        std::fs::write(&path, "this is not Verilog at all }{").unwrap();
+        let paths = vec![path.clone()];
+        let mut cache = HashMap::new();
+
+        let (mods, errs) = resolve_library_cached(&mut cache, &paths);
+        assert_eq!((mods.len(), errs.len()), (0, 1));
+        // Second call returns the cached error rather than dropping it.
+        let (mods, errs) = resolve_library_cached(&mut cache, &paths);
+        assert_eq!((mods.len(), errs.len()), (0, 1));
+        assert_eq!(errs[0].0, path);
+    }
+
+    #[test]
+    fn library_cache_drops_removed_paths() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = dir.path().join("a.vhd");
+        std::fs::copy("tests/fixtures/counter.vhd", &a).unwrap();
+        let mut cache = HashMap::new();
+
+        let (mods, _) = resolve_library_cached(&mut cache, std::slice::from_ref(&a));
+        assert_eq!(mods.len(), 1);
+        assert!(cache.contains_key(&a));
+
+        // Path removed from the library → its cache entry must not linger.
+        let (mods, _) = resolve_library_cached(&mut cache, &[]);
+        assert!(mods.is_empty());
+        assert!(!cache.contains_key(&a));
     }
 }
