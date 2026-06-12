@@ -70,6 +70,8 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <cmath>
+#include <functional>
+#include <memory>
 
 #include "hdl-compose/src/gui/bridge.cxxqt.h"
 
@@ -1665,414 +1667,822 @@ void prompt_preferences(QWidget *parent) {
 
 } // namespace
 
-extern "C" int run_gui(int *argc, char **argv) {
-    // HiDPI: pass-through fractional scale factors (e.g. 2x Retina) without
-    // rounding — keeps fonts and pixmaps crisp on macOS.
-    QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
+namespace {
 
-    QApplication app(*argc, argv);
-    app.setOrganizationName(QStringLiteral("hdl-compose"));
-    app.setApplicationName(QStringLiteral("HDL Compose"));
-    app.setStyle(QStringLiteral("Fusion"));
-    apply_material_dark_theme(app);
+using namespace hdlc;
 
-    QMainWindow window;
-    {
-        QScreen *screen = QGuiApplication::primaryScreen();
-        const QRect avail = screen ? screen->availableGeometry() : QRect(0, 0, 1400, 900);
-        const int w = std::max(1024, static_cast<int>(avail.width() * 0.85));
-        const int h = std::max(720, static_cast<int>(avail.height() * 0.85));
-        window.resize(w, h);
-        window.move(avail.center() - QPoint(w / 2, h / 2));
-    }
+// Tab on the completer popup accepts the highlighted candidate. Default
+// QCompleter binds Return only.
+class TabAcceptFilter : public QObject {
+  public:
+    TabAcceptFilter(QCompleter *c, QObject *parent) : QObject(parent), m_completer(c) {}
 
-    auto *state = new AppState(&window);
-    const QIcon dirty_icon = make_dirty_icon();
-
-    auto *root_splitter = new QSplitter(Qt::Horizontal, &window);
-
-    // --- Sidebar ---
-    auto *sidebar_splitter = new QSplitter(Qt::Vertical, root_splitter);
-
-    auto *tree_model = new QStandardItemModel(&window);
-    auto *tree_view = new QTreeView(sidebar_splitter);
-    tree_view->setModel(tree_model);
-    tree_view->setHeaderHidden(true);
-    tree_view->setMinimumWidth(200);
-    tree_view->setContextMenuPolicy(Qt::CustomContextMenu);
-    tree_view->setSelectionMode(QAbstractItemView::SingleSelection);
-
-    auto *library_label = new QLabel(QStringLiteral("Library"));
-    library_label->setContentsMargins(4, 4, 4, 0);
-    auto *library_view = new LibraryView(sidebar_splitter);
-    auto *library_model = new QStringListModel(&window);
-    library_view->setModel(library_model);
-    auto *library_container = new QWidget(sidebar_splitter);
-    auto *lib_layout = new QVBoxLayout(library_container);
-    lib_layout->setContentsMargins(0, 0, 0, 0);
-    lib_layout->setSpacing(0);
-    lib_layout->addWidget(library_label);
-    lib_layout->addWidget(library_view);
-
-    sidebar_splitter->addWidget(tree_view);
-    sidebar_splitter->addWidget(library_container);
-    sidebar_splitter->setSizes({500, 300});
-
-    // --- Canvas ---
-    auto *scene = new QGraphicsScene(root_splitter);
-    scene->setSceneRect(-2000, -2000, 4000, 4000);
-    auto *canvas = new CanvasView(scene, state, root_splitter);
-    canvas->setMinimumWidth(600);
-    CanvasLayer canvas_layer(scene, state);
-    canvas->setWireTool(canvas_layer.wireTool());
-    canvas->setCanvasLayer(&canvas_layer);
-
-    // --- Mini editor ---
-    // Wrap editor in a panel with a toggle button row above it. Toggle flips
-    // between per-instance editing (default) and top-level entity editing.
-    auto *editor_panel = new QWidget(root_splitter);
-    editor_panel->setMinimumWidth(300);
-    auto *editor_layout = new QVBoxLayout(editor_panel);
-    editor_layout->setContentsMargins(0, 0, 0, 0);
-    editor_layout->setSpacing(2);
-    auto *editor_top_level_btn = new QPushButton(QStringLiteral("Top Level"), editor_panel);
-    editor_top_level_btn->setCheckable(true);
-    editor_top_level_btn->setToolTip(
-        QStringLiteral("Edit the top-level entity declaration: add/remove ports and generics."));
-    editor_layout->addWidget(editor_top_level_btn);
-    auto *editor = new QPlainTextEdit(editor_panel);
-    // Stretch factor 1 so the editor absorbs all extra vertical space when
-    // visible. The trailing stretch (factor 0) takes over when the editor is
-    // hidden — without it, QVBoxLayout would center the lone button.
-    editor_layout->addWidget(editor, 1);
-    editor_layout->addStretch();
-    editor->hide(); // shown only while an instance is selected or top-level mode active
-    // Panel itself stays visible so the Top Level toggle button is always
-    // reachable even when nothing is selected on the canvas.
-    {
-        QFont f(QStringLiteral("Menlo"));
-        f.setStyleHint(QFont::Monospace);
-        f.setFixedPitch(true);
-        editor->setFont(f);
-    }
-    auto *top_level_mode = new bool(false);
-
-    // Holder for the instance currently represented in the buffer. An
-    // empty string means "no instance selected".
-    auto *editor_inst = new QString();
-    // True while the user is actively typing; suppresses auto-repopulate
-    // from model-change signals to avoid clobbering an in-progress edit.
-    auto *editor_editing = new bool(false);
-    // True during programmatic setPlainText so our own write doesn't
-    // flip the editing flag.
-    auto *editor_suppressing = new bool(false);
-
-    // Inline syntax highlighter — red squiggles on bad RHS lines, recomputed
-    // on every text change. Replaces the modal-popup-on-commit behavior.
-    auto *highlighter = new MiniEditorHighlighter(editor->document());
-
-    // RHS / dot-completer. Popup driven manually since QPlainTextEdit
-    // doesn't auto-attach to QCompleter the way QLineEdit does.
-    auto *completer_model = new QStringListModel(editor);
-    auto *completer = new QCompleter(completer_model, editor);
-    completer->setWidget(editor);
-    completer->setCompletionMode(QCompleter::PopupCompletion);
-    completer->setCaseSensitivity(Qt::CaseInsensitive);
-
-    // Tab on the popup accepts the currently-highlighted candidate. Default
-    // QCompleter binds Return only.
-    class TabAcceptFilter : public QObject {
-      public:
-        TabAcceptFilter(QCompleter *c, QObject *parent) : QObject(parent), m_completer(c) {}
-
-      protected:
-        bool eventFilter(QObject *obj, QEvent *ev) override {
-            if (ev->type() == QEvent::KeyPress) {
-                auto *ke = static_cast<QKeyEvent *>(ev);
-                if (ke->key() == Qt::Key_Tab && m_completer->popup()->isVisible()) {
-                    QModelIndex idx = m_completer->popup()->currentIndex();
-                    if (!idx.isValid()) {
-                        idx = m_completer->completionModel()->index(0, 0);
-                    }
-                    if (idx.isValid()) {
-                        QString text = idx.data(Qt::EditRole).toString();
-                        m_completer->popup()->hide();
-                        emit m_completer->activated(text);
-                    }
-                    return true;
+  protected:
+    bool eventFilter(QObject *obj, QEvent *ev) override {
+        if (ev->type() == QEvent::KeyPress) {
+            auto *ke = static_cast<QKeyEvent *>(ev);
+            if (ke->key() == Qt::Key_Tab && m_completer->popup()->isVisible()) {
+                QModelIndex idx = m_completer->popup()->currentIndex();
+                if (!idx.isValid()) {
+                    idx = m_completer->completionModel()->index(0, 0);
                 }
+                if (idx.isValid()) {
+                    QString text = idx.data(Qt::EditRole).toString();
+                    m_completer->popup()->hide();
+                    emit m_completer->activated(text);
+                }
+                return true;
             }
-            return QObject::eventFilter(obj, ev);
+        }
+        return QObject::eventFilter(obj, ev);
+    }
+
+  private:
+    QCompleter *m_completer;
+};
+
+// Focus-out → commit. QPlainTextEdit has no direct focusOut signal.
+class FocusOutFilter : public QObject {
+  public:
+    FocusOutFilter(std::function<void()> on_focus_out, QObject *parent)
+        : QObject(parent), m_cb(std::move(on_focus_out)) {}
+
+  protected:
+    bool eventFilter(QObject *obj, QEvent *ev) override {
+        if (ev->type() == QEvent::FocusOut)
+            m_cb();
+        return QObject::eventFilter(obj, ev);
+    }
+
+  private:
+    std::function<void()> m_cb;
+};
+
+// Main application window: owns the AppState model, the three-pane layout
+// (sidebar / canvas / mini editor), menus, toolbar, and all signal wiring.
+// Mini-editor state lives in members (was heap-allocated lambda captures
+// when this was all one run_gui function).
+class MainWindow : public QMainWindow {
+  public:
+    MainWindow() {
+        {
+            QScreen *screen = QGuiApplication::primaryScreen();
+            const QRect avail = screen ? screen->availableGeometry() : QRect(0, 0, 1400, 900);
+            const int w = std::max(1024, static_cast<int>(avail.width() * 0.85));
+            const int h = std::max(720, static_cast<int>(avail.height() * 0.85));
+            resize(w, h);
+            move(avail.center() - QPoint(w / 2, h / 2));
+        }
+        m_state = new AppState(this);
+        m_dirty_icon = make_dirty_icon();
+        buildLayout();
+        buildMenusAndToolbar();
+        connectEditor();
+        connectModelSignals();
+        connectTreeSignals();
+        statusBar()->showMessage(QStringLiteral("Ready"));
+        update_window_title(this, m_state);
+    }
+
+  private:
+    // --- UI construction ------------------------------------------------
+
+    void buildLayout() {
+        m_root_splitter = new QSplitter(Qt::Horizontal, this);
+
+        // Sidebar: instance tree over module library.
+        auto *sidebar_splitter = new QSplitter(Qt::Vertical, m_root_splitter);
+        m_tree_model = new QStandardItemModel(this);
+        m_tree_view = new QTreeView(sidebar_splitter);
+        m_tree_view->setModel(m_tree_model);
+        m_tree_view->setHeaderHidden(true);
+        m_tree_view->setMinimumWidth(200);
+        m_tree_view->setContextMenuPolicy(Qt::CustomContextMenu);
+        m_tree_view->setSelectionMode(QAbstractItemView::SingleSelection);
+
+        auto *library_label = new QLabel(QStringLiteral("Library"));
+        library_label->setContentsMargins(4, 4, 4, 0);
+        auto *library_view = new LibraryView(sidebar_splitter);
+        m_library_model = new QStringListModel(this);
+        library_view->setModel(m_library_model);
+        auto *library_container = new QWidget(sidebar_splitter);
+        auto *lib_layout = new QVBoxLayout(library_container);
+        lib_layout->setContentsMargins(0, 0, 0, 0);
+        lib_layout->setSpacing(0);
+        lib_layout->addWidget(library_label);
+        lib_layout->addWidget(library_view);
+
+        sidebar_splitter->addWidget(m_tree_view);
+        sidebar_splitter->addWidget(library_container);
+        sidebar_splitter->setSizes({500, 300});
+
+        // Canvas.
+        auto *scene = new QGraphicsScene(m_root_splitter);
+        scene->setSceneRect(-2000, -2000, 4000, 4000);
+        m_canvas = new CanvasView(scene, m_state, m_root_splitter);
+        m_canvas->setMinimumWidth(600);
+        m_canvas_layer = std::make_unique<CanvasLayer>(scene, m_state);
+        m_canvas->setWireTool(m_canvas_layer->wireTool());
+        m_canvas->setCanvasLayer(m_canvas_layer.get());
+
+        // Mini editor panel: toggle row above the buffer. Toggle flips
+        // between per-instance editing (default) and top-level entity
+        // editing. Panel stays visible so the Top Level button is always
+        // reachable even when nothing is selected.
+        auto *editor_panel = new QWidget(m_root_splitter);
+        editor_panel->setMinimumWidth(300);
+        auto *editor_layout = new QVBoxLayout(editor_panel);
+        editor_layout->setContentsMargins(0, 0, 0, 0);
+        editor_layout->setSpacing(2);
+        m_editor_top_level_btn = new QPushButton(QStringLiteral("Top Level"), editor_panel);
+        m_editor_top_level_btn->setCheckable(true);
+        m_editor_top_level_btn->setToolTip(
+            QStringLiteral("Edit the top-level entity declaration: add/remove ports and generics."));
+        editor_layout->addWidget(m_editor_top_level_btn);
+        m_editor = new QPlainTextEdit(editor_panel);
+        // Stretch factor 1 so the editor absorbs all extra vertical space
+        // when visible. The trailing stretch (factor 0) takes over when the
+        // editor is hidden — without it, QVBoxLayout would center the lone
+        // button.
+        editor_layout->addWidget(m_editor, 1);
+        editor_layout->addStretch();
+        m_editor->hide(); // shown only with a selection or top-level mode
+        {
+            QFont f(QStringLiteral("Menlo"));
+            f.setStyleHint(QFont::Monospace);
+            f.setFixedPitch(true);
+            m_editor->setFont(f);
         }
 
-      private:
-        QCompleter *m_completer;
-    };
-    completer->popup()->installEventFilter(new TabAcceptFilter(completer, editor));
+        m_root_splitter->addWidget(sidebar_splitter);
+        m_root_splitter->addWidget(m_canvas);
+        m_root_splitter->addWidget(editor_panel);
+        m_root_splitter->setSizes({250, 800, 350});
+        // Editor panel can be dragged narrow but not collapsed to zero —
+        // otherwise the splitter handle disappears. The Show Editor toolbar
+        // action restores it forcibly.
+        m_root_splitter->setCollapsible(2, false);
+        setCentralWidget(m_root_splitter);
+    }
 
-    // 300 ms idle debounce. textChanged restarts it; on timeout we run the
-    // parser + highlighter + completer popup. Avoids flicker / cursor moves
-    // while user is mid-keystroke.
-    auto *parse_timer = new QTimer(editor);
-    parse_timer->setSingleShot(true);
-    parse_timer->setInterval(300);
+    void buildMenusAndToolbar() {
+        auto *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
+        auto *newAct = fileMenu->addAction(QStringLiteral("&New..."));
+        newAct->setShortcut(QKeySequence::New);
+        auto *openAct = fileMenu->addAction(QStringLiteral("&Open..."));
+        openAct->setShortcut(QKeySequence::Open);
+        auto *addSourceAct = fileMenu->addAction(QStringLiteral("&Add HDL Source..."));
+        addSourceAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+        auto *reloadAct = fileMenu->addAction(QStringLiteral("&Refresh Library"));
+        reloadAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
+        auto *copySourcesAct = fileMenu->addAction(QStringLiteral("&Copy Sources to Project Dir"));
+        fileMenu->addSeparator();
+        auto *saveAct = fileMenu->addAction(QStringLiteral("&Save"));
+        saveAct->setShortcut(QKeySequence::Save);
+        auto *saveAsAct = fileMenu->addAction(QStringLiteral("Save &As..."));
+        saveAsAct->setShortcut(QKeySequence::SaveAs);
+        fileMenu->addSeparator();
+        auto *generateAct = fileMenu->addAction(QStringLiteral("&Generate HDL..."));
+        generateAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
+        fileMenu->addSeparator();
+        auto *prefsAct = fileMenu->addAction(QStringLiteral("&Preferences..."));
+        fileMenu->addSeparator();
+        auto *exitAct = fileMenu->addAction(QStringLiteral("E&xit"));
+        exitAct->setShortcut(QKeySequence::Quit);
 
-    auto repopulate_editor = [=, &window]() {
-        *editor_suppressing = true;
-        if (*top_level_mode) {
-            editor->setPlainText(state->top_level_buffer());
-            editor->show();
-        } else if (editor_inst->isEmpty()) {
-            editor->clear();
-            editor->hide();
-        } else {
-            editor->setPlainText(build_instance_buffer(state, *editor_inst));
-            editor->show();
-        }
-        *editor_suppressing = false;
-        *editor_editing = false;
-        highlighter->setErrorLines({});
-        completer->popup()->hide();
-        parse_timer->stop();
-    };
+        // Edit menu — operations on the selected instance.
+        auto *editMenu = menuBar()->addMenu(QStringLiteral("&Edit"));
+        m_undo_act = editMenu->addAction(QStringLiteral("&Undo"));
+        m_undo_act->setShortcut(QKeySequence::Undo);
+        m_redo_act = editMenu->addAction(QStringLiteral("&Redo"));
+        m_redo_act->setShortcut(QKeySequence::Redo);
+        editMenu->addSeparator();
+        auto *matchByNameAct = editMenu->addAction(QStringLiteral("&Match Ports by Name"));
+        matchByNameAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_M));
+        matchByNameAct->setToolTip(
+            QStringLiteral("Connect unmapped ports on the selected instance to matching top-level "
+                           "ports (same name + direction + type)"));
 
-    auto commit_editor = [=, &window]() {
-        if (!*editor_editing)
-            return; // nothing to commit
-        if (*top_level_mode) {
-            if (!state->commit_top_level_buffer(editor->toPlainText())) {
-                QString err = state->last_error();
-                window.statusBar()->showMessage(
-                    QStringLiteral("Top-level: %1").arg(err.isEmpty() ? QStringLiteral("commit refused") : err), 5000);
+        // Toolbar shares QAction pointers with the File menu so shortcuts,
+        // enable-state, and icons stay in sync.
+        auto *fileToolbar = addToolBar(QStringLiteral("File"));
+        fileToolbar->setObjectName(QStringLiteral("FileToolbar"));
+        fileToolbar->setMovable(false);
+        fileToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        newAct->setIconText(QStringLiteral("New"));
+        openAct->setIconText(QStringLiteral("Open"));
+        addSourceAct->setIconText(QStringLiteral("Add HDL"));
+        reloadAct->setIconText(QStringLiteral("Refresh"));
+        saveAct->setIconText(QStringLiteral("Save"));
+        fileToolbar->addAction(newAct);
+        fileToolbar->addAction(openAct);
+        fileToolbar->addAction(addSourceAct);
+        fileToolbar->addAction(reloadAct);
+        fileToolbar->addSeparator();
+        fileToolbar->addAction(saveAct);
+
+        // Force-reopen the editor panel if the user dragged it narrow.
+        auto *showEditorAct = new QAction(QStringLiteral("Show Editor"), this);
+        showEditorAct->setToolTip(QStringLiteral("Restore the editor panel to its default width."));
+        showEditorAct->setShortcut(QKeySequence(QStringLiteral("Ctrl+\\")));
+        fileToolbar->addSeparator();
+        fileToolbar->addAction(showEditorAct);
+
+        connect(newAct, &QAction::triggered, this, &MainWindow::onNewProject);
+        connect(openAct, &QAction::triggered, this, &MainWindow::onOpenProject);
+        connect(addSourceAct, &QAction::triggered, this, &MainWindow::onAddSource);
+        connect(saveAct, &QAction::triggered, this, &MainWindow::onSaveProject);
+        connect(saveAsAct, &QAction::triggered, this, [this]() { saveAsProject(); });
+        connect(generateAct, &QAction::triggered, this, &MainWindow::onGenerate);
+        connect(reloadAct, &QAction::triggered, this, &MainWindow::onReloadLibrary);
+        connect(copySourcesAct, &QAction::triggered, this, &MainWindow::onCopySources);
+        connect(prefsAct, &QAction::triggered, this, [this]() { prompt_preferences(this); });
+        connect(exitAct, &QAction::triggered, qApp, &QApplication::quit);
+        connect(matchByNameAct, &QAction::triggered, this, &MainWindow::onMatchByName);
+        connect(showEditorAct, &QAction::triggered, this, &MainWindow::showEditorPanel);
+        connect(m_undo_act, &QAction::triggered, this, [this]() {
+            if (m_state->undo()) {
+                statusBar()->showMessage(QStringLiteral("Undo"), 1500);
+            }
+        });
+        connect(m_redo_act, &QAction::triggered, this, [this]() {
+            if (m_state->redo()) {
+                statusBar()->showMessage(QStringLiteral("Redo"), 1500);
+            }
+        });
+    }
+
+    void connectEditor() {
+        // Inline syntax highlighter — red squiggles on bad RHS lines,
+        // recomputed on a 300 ms idle debounce.
+        m_highlighter = new MiniEditorHighlighter(m_editor->document());
+
+        // RHS / dot-completer. Popup driven manually since QPlainTextEdit
+        // doesn't auto-attach to QCompleter the way QLineEdit does.
+        m_completer_model = new QStringListModel(m_editor);
+        m_completer = new QCompleter(m_completer_model, m_editor);
+        m_completer->setWidget(m_editor);
+        m_completer->setCompletionMode(QCompleter::PopupCompletion);
+        m_completer->setCaseSensitivity(Qt::CaseInsensitive);
+        m_completer->popup()->installEventFilter(new TabAcceptFilter(m_completer, m_editor));
+
+        m_parse_timer = new QTimer(m_editor);
+        m_parse_timer->setSingleShot(true);
+        m_parse_timer->setInterval(300);
+
+        // Toggle: enter top-level mode → deselect any instance and load the
+        // top-level entity buffer. Exit → repopulate from the still-selected
+        // instance (or hide the editor if none).
+        connect(m_editor_top_level_btn, &QPushButton::toggled, this, [this](bool checked) {
+            commitEditor(); // flush in-flight edit before swapping
+            m_top_level_mode = checked;
+            if (checked) {
+                m_state->set_selected_instance(QString());
+                m_editor_inst.clear();
+            }
+            repopulateEditor();
+        });
+
+        // textChanged just restarts the debounce timer; all real work waits
+        // for idle.
+        connect(m_editor, &QPlainTextEdit::textChanged, this, [this]() {
+            if (m_editor_suppressing)
+                return;
+            m_editor_editing = true;
+            m_parse_timer->start();
+        });
+
+        connect(m_parse_timer, &QTimer::timeout, this, &MainWindow::onParseTimeout);
+
+        connect(m_completer, QOverload<const QString &>::of(&QCompleter::activated), this,
+                [this](const QString &text) {
+                    QTextCursor c = m_editor->textCursor();
+                    int n = m_completer->completionPrefix().length();
+                    if (n > 0) {
+                        c.movePosition(QTextCursor::Left, QTextCursor::KeepAnchor, n);
+                    }
+                    c.insertText(text);
+                    m_editor->setTextCursor(c);
+                });
+
+        // Focus-out → commit.
+        m_editor->installEventFilter(new FocusOutFilter([this]() { commitEditor(); }, m_editor));
+
+        // Ctrl+Return also commits.
+        auto *commit_sc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), m_editor);
+        commit_sc->setContext(Qt::WidgetWithChildrenShortcut);
+        connect(commit_sc, &QShortcut::activated, this, &MainWindow::commitEditor);
+    }
+
+    void connectModelSignals() {
+        // Title + validation reactive.
+        connect(m_state, &AppState::project_nameChanged, this,
+                [this]() { update_window_title(this, m_state); });
+        connect(m_state, &AppState::dirtyChanged, this, [this]() { update_window_title(this, m_state); });
+        connect(m_state, &AppState::validation_changed, this, [this]() {
+            int errs = m_state->validation_error_count();
+            int warns = m_state->validation_warning_count();
+            statusBar()->showMessage(QStringLiteral("%1 error(s), %2 warning(s)").arg(errs).arg(warns));
+        });
+
+        // Undo/redo enable-state tracks every mutation signal.
+        refreshUndoActions();
+        connect(m_state, &AppState::project_loaded, this, &MainWindow::refreshUndoActions);
+        connect(m_state, &AppState::port_map_changed, this,
+                [this](const QString &, const QString &) { refreshUndoActions(); });
+        connect(m_state, &AppState::port_map_changed_bulk, this, &MainWindow::refreshUndoActions);
+        connect(m_state, &AppState::instance_added, this, [this](const QString &) { refreshUndoActions(); });
+        connect(m_state, &AppState::instance_removed, this, [this](const QString &) { refreshUndoActions(); });
+
+        // Sidebar + canvas reactive.
+        connect(m_state, &AppState::project_loaded, this, [this]() {
+            refreshSidebar();
+            m_canvas_layer->rebuild();
+        });
+        connect(m_state, &AppState::instance_added, this, [this](const QString &name) {
+            refreshSidebar();
+            m_canvas_layer->onInstanceAdded(name);
+        });
+        connect(m_state, &AppState::instance_removed, this, [this](const QString &name) {
+            refreshSidebar();
+            m_canvas_layer->onInstanceRemoved(name);
+        });
+        connect(m_state, &AppState::instance_moved, this,
+                [this](const QString &name, double x, double y) { m_canvas_layer->onInstanceMoved(name, x, y); });
+        connect(m_state, &AppState::port_map_changed, this,
+                [this](const QString &inst, const QString &) { m_canvas_layer->onPortMapChanged(inst); });
+        connect(m_state, &AppState::port_map_changed_bulk, this,
+                [this]() { m_canvas_layer->onPortMapChangedBulk(); });
+        // Aliases only rename/recolor nets — wires, not pin layout.
+        connect(m_state, &AppState::alias_changed, this,
+                [this](const QString &) { m_canvas_layer->rebuildWires(); });
+        connect(m_state, &AppState::library_changed, this, &MainWindow::refreshSidebar);
+
+        // Module re-parse: watch every library path and auto-reload when the
+        // underlying file changes. The reload drops stale port_map entries
+        // and flags affected instances dirty; the user reviews and either
+        // reconnects or clears the dirty flag.
+        m_fs_watcher = new QFileSystemWatcher(this);
+        connect(m_state, &AppState::library_changed, this, &MainWindow::refreshWatcher);
+        connect(m_state, &AppState::project_loaded, this, &MainWindow::refreshWatcher);
+        connect(m_fs_watcher, &QFileSystemWatcher::fileChanged, this, [this](const QString &path) {
+            // Some editors rename-swap to save — re-add the path after a
+            // brief delay in case the watcher lost it.
+            QTimer::singleShot(50, this, [this]() {
+                m_state->reload_library();
+                refreshWatcher();
+            });
+            statusBar()->showMessage(
+                QStringLiteral("Source changed: %1 — reloading").arg(QFileInfo(path).fileName()), 3000);
+        });
+
+        connect(m_state, &AppState::selection_changed, this, &MainWindow::onSelectionChanged);
+
+        // Mini-editor refresh on model changes — only when not being
+        // actively edited; once the user is typing we wait for focus-out.
+        auto editor_model_changed = [this]() {
+            if (m_editor_editing)
+                return;
+            repopulateEditor();
+        };
+        connect(m_state, &AppState::port_map_changed, this,
+                [editor_model_changed](const QString &, const QString &) { editor_model_changed(); });
+        connect(m_state, &AppState::port_map_changed_bulk, this, editor_model_changed);
+        connect(m_state, &AppState::project_loaded, this, [this]() {
+            m_editor_inst.clear();
+            repopulateEditor();
+        });
+    }
+
+    void connectTreeSignals() {
+        // Single-click → set selection via AppState.
+        connect(m_tree_view, &QTreeView::clicked, this, [this](const QModelIndex &index) {
+            QString name = index.data(Qt::UserRole).toString();
+            if (name.isEmpty()) {
                 return;
             }
-            *editor_editing = false;
-            window.statusBar()->showMessage(QStringLiteral("Top-level entity updated"), 2000);
+            m_state->set_selected_instance(name);
+        });
+
+        // Double-click → goto source.
+        connect(m_tree_view, &QTreeView::doubleClicked, this, [this](const QModelIndex &index) {
+            QString inst_name = index.data(Qt::UserRole).toString();
+            if (inst_name.isEmpty()) {
+                return;
+            }
+            int idx = find_instance_index(m_state, inst_name);
+            if (idx < 0) {
+                return;
+            }
+            QString src = m_state->instance_source_path(idx);
+            launch_goto_source(this, src);
+        });
+
+        connect(m_tree_view, &QTreeView::customContextMenuRequested, this, &MainWindow::onTreeContextMenu);
+    }
+
+    // --- Mini editor ------------------------------------------------------
+
+    void repopulateEditor() {
+        m_editor_suppressing = true;
+        if (m_top_level_mode) {
+            m_editor->setPlainText(m_state->top_level_buffer());
+            m_editor->show();
+        } else if (m_editor_inst.isEmpty()) {
+            m_editor->clear();
+            m_editor->hide();
+        } else {
+            m_editor->setPlainText(build_instance_buffer(m_state, m_editor_inst));
+            m_editor->show();
+        }
+        m_editor_suppressing = false;
+        m_editor_editing = false;
+        m_highlighter->setErrorLines({});
+        m_completer->popup()->hide();
+        m_parse_timer->stop();
+    }
+
+    void commitEditor() {
+        if (!m_editor_editing)
+            return; // nothing to commit
+        if (m_top_level_mode) {
+            if (!m_state->commit_top_level_buffer(m_editor->toPlainText())) {
+                QString err = m_state->last_error();
+                statusBar()->showMessage(
+                    QStringLiteral("Top-level: %1").arg(err.isEmpty() ? QStringLiteral("commit refused") : err),
+                    5000);
+                return;
+            }
+            m_editor_editing = false;
+            statusBar()->showMessage(QStringLiteral("Top-level entity updated"), 2000);
             return;
         }
-        if (editor_inst->isEmpty())
+        if (m_editor_inst.isEmpty())
             return;
-        QStringList errs = commit_editor_buffer(state, *editor_inst, editor->toPlainText());
+        QStringList errs = commit_editor_buffer(m_state, m_editor_inst, m_editor->toPlainText());
         if (!errs.isEmpty()) {
             // Refuse silently: squiggles + status bar already told the user.
             // Editor stays as-is; user fixes and retries.
-            window.statusBar()->showMessage(
+            statusBar()->showMessage(
                 QStringLiteral("Mini editor: %1 parse error(s) — fix to commit").arg(errs.size()), 4000);
             return;
         }
         // Don't re-render: that would jump the cursor and clobber the user's
         // formatting. Just mark the buffer clean. Column normalization will
         // happen the next time selection_changed switches away.
-        *editor_editing = false;
-        window.statusBar()->showMessage(QStringLiteral("Mini editor changes applied"), 2000);
-    };
+        m_editor_editing = false;
+        statusBar()->showMessage(QStringLiteral("Mini editor changes applied"), 2000);
+    }
 
-    // Toggle: enter top-level mode → deselect any instance and load the
-    // top-level entity buffer. Exit → repopulate from the still-selected
-    // instance (or hide the editor if none).
-    QObject::connect(editor_top_level_btn, &QPushButton::toggled, &window, [=](bool checked) {
-        commit_editor(); // flush in-flight edit before swapping
-        *top_level_mode = checked;
-        if (checked) {
-            state->set_selected_instance(QString());
-            editor_inst->clear();
-        }
-        repopulate_editor();
-    });
-
-    // Lightweight: textChanged just restarts the debounce timer. All real
-    // work (parsing, highlighter, completer popup) waits for 300 ms idle.
-    QObject::connect(editor, &QPlainTextEdit::textChanged, &window, [=]() {
-        if (*editor_suppressing)
-            return;
-        *editor_editing = true;
-        parse_timer->start();
-    });
-
-    QObject::connect(parse_timer, &QTimer::timeout, &window, [=, &window]() {
-        if (*top_level_mode) {
+    void onParseTimeout() {
+        if (m_top_level_mode) {
             // Top-level grammar isn't checked live; commit-time errors land
             // in the status bar instead of inline squiggles.
-            highlighter->setErrorLines({});
-            completer->popup()->hide();
+            m_highlighter->setErrorLines({});
+            m_completer->popup()->hide();
             return;
         }
-        EditorParseResult parsed = parse_editor_buffer(editor->toPlainText());
+        EditorParseResult parsed = parse_editor_buffer(m_editor->toPlainText());
         QSet<int> err_lines;
         for (const auto &e : parsed.errors)
             err_lines.insert(e.first);
-        highlighter->setErrorLines(err_lines);
+        m_highlighter->setErrorLines(err_lines);
         if (parsed.errors.isEmpty()) {
-            window.statusBar()->clearMessage();
+            statusBar()->clearMessage();
         } else {
-            window.statusBar()->showMessage(QStringLiteral("Mini editor: %1 parse error(s)").arg(parsed.errors.size()));
+            statusBar()->showMessage(
+                QStringLiteral("Mini editor: %1 parse error(s)").arg(parsed.errors.size()));
         }
 
         // Completer popup based on cursor context.
-        QTextCursor cur = editor->textCursor();
+        QTextCursor cur = m_editor->textCursor();
         QString line = cur.block().text();
         int pos_in_block = cur.positionInBlock();
         QString before = line.left(pos_in_block);
         CompletionContext ctx = detect_completion_context(before);
 
         if (ctx.kind == CompletionContext::None) {
-            completer->popup()->hide();
+            m_completer->popup()->hide();
             return;
         }
 
         QStringList items;
         if (ctx.kind == CompletionContext::DotPort) {
-            items = instance_port_candidates(state, ctx.instance);
+            items = instance_port_candidates(m_state, ctx.instance);
         } else {
-            items = rhs_candidates(state, *editor_inst);
+            items = rhs_candidates(m_state, m_editor_inst);
         }
-        completer_model->setStringList(items);
-        completer->setCompletionPrefix(ctx.prefix);
-        if (completer->completionCount() == 0) {
-            completer->popup()->hide();
+        m_completer_model->setStringList(items);
+        m_completer->setCompletionPrefix(ctx.prefix);
+        if (m_completer->completionCount() == 0) {
+            m_completer->popup()->hide();
             return;
         }
-        completer->popup()->setCurrentIndex(completer->completionModel()->index(0, 0));
-        QRect rect = editor->cursorRect();
-        rect.setWidth(completer->popup()->sizeHintForColumn(0) +
-                      completer->popup()->verticalScrollBar()->sizeHint().width());
-        completer->complete(rect);
-    });
+        m_completer->popup()->setCurrentIndex(m_completer->completionModel()->index(0, 0));
+        QRect rect = m_editor->cursorRect();
+        rect.setWidth(m_completer->popup()->sizeHintForColumn(0) +
+                      m_completer->popup()->verticalScrollBar()->sizeHint().width());
+        m_completer->complete(rect);
+    }
 
-    QObject::connect(completer, QOverload<const QString &>::of(&QCompleter::activated), &window,
-                     [=](const QString &text) {
-                         QTextCursor c = editor->textCursor();
-                         int n = completer->completionPrefix().length();
-                         if (n > 0) {
-                             c.movePosition(QTextCursor::Left, QTextCursor::KeepAnchor, n);
-                         }
-                         c.insertText(text);
-                         editor->setTextCursor(c);
-                     });
+    // --- Reactive helpers ---------------------------------------------------
 
-    // Focus-out → commit. QPlainTextEdit has no direct focusOut signal;
-    // install an event filter on the widget.
-    class FocusOutFilter : public QObject {
-      public:
-        FocusOutFilter(std::function<void()> on_focus_out, QObject *parent)
-            : QObject(parent), m_cb(std::move(on_focus_out)) {}
+    void refreshSidebar() {
+        rebuild_tree_model(m_tree_model, m_state, m_dirty_icon);
+        rebuild_library_model(m_library_model, m_state);
+        m_tree_view->expandAll();
+    }
 
-      protected:
-        bool eventFilter(QObject *obj, QEvent *ev) override {
-            if (ev->type() == QEvent::FocusOut)
-                m_cb();
-            return QObject::eventFilter(obj, ev);
+    void refreshUndoActions() {
+        m_undo_act->setEnabled(m_state->can_undo());
+        m_redo_act->setEnabled(m_state->can_redo());
+    }
+
+    void refreshWatcher() {
+        if (!m_fs_watcher->files().isEmpty()) {
+            m_fs_watcher->removePaths(m_fs_watcher->files());
         }
-
-      private:
-        std::function<void()> m_cb;
-    };
-    editor->installEventFilter(new FocusOutFilter(commit_editor, editor));
-
-    // Ctrl+Return also commits.
-    auto *commit_sc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), editor);
-    commit_sc->setContext(Qt::WidgetWithChildrenShortcut);
-    QObject::connect(commit_sc, &QShortcut::activated, &window, commit_editor);
-
-    root_splitter->addWidget(sidebar_splitter);
-    root_splitter->addWidget(canvas);
-    root_splitter->addWidget(editor_panel);
-    root_splitter->setSizes({250, 800, 350});
-    // Editor panel can be dragged narrow but not collapsed to zero. Without
-    // this the splitter handle disappears and the user has no way to bring
-    // it back without resizing the window. A toolbar action below also
-    // restores it forcibly.
-    root_splitter->setCollapsible(2, false);
-    window.setCentralWidget(root_splitter);
-
-    // --- Menu ---
-    auto *fileMenu = window.menuBar()->addMenu(QStringLiteral("&File"));
-    auto *newAct = fileMenu->addAction(QStringLiteral("&New..."));
-    newAct->setShortcut(QKeySequence::New);
-    auto *openAct = fileMenu->addAction(QStringLiteral("&Open..."));
-    openAct->setShortcut(QKeySequence::Open);
-    auto *addSourceAct = fileMenu->addAction(QStringLiteral("&Add HDL Source..."));
-    addSourceAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
-    auto *reloadAct = fileMenu->addAction(QStringLiteral("&Refresh Library"));
-    reloadAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
-    auto *copySourcesAct = fileMenu->addAction(QStringLiteral("&Copy Sources to Project Dir"));
-    fileMenu->addSeparator();
-    auto *saveAct = fileMenu->addAction(QStringLiteral("&Save"));
-    saveAct->setShortcut(QKeySequence::Save);
-    auto *saveAsAct = fileMenu->addAction(QStringLiteral("Save &As..."));
-    saveAsAct->setShortcut(QKeySequence::SaveAs);
-    fileMenu->addSeparator();
-    auto *generateAct = fileMenu->addAction(QStringLiteral("&Generate HDL..."));
-    generateAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
-    fileMenu->addSeparator();
-    auto *prefsAct = fileMenu->addAction(QStringLiteral("&Preferences..."));
-    fileMenu->addSeparator();
-    auto *exitAct = fileMenu->addAction(QStringLiteral("E&xit"));
-
-    // Edit menu — operations on the selected instance.
-    auto *editMenu = window.menuBar()->addMenu(QStringLiteral("&Edit"));
-    auto *undoAct = editMenu->addAction(QStringLiteral("&Undo"));
-    undoAct->setShortcut(QKeySequence::Undo);
-    auto *redoAct = editMenu->addAction(QStringLiteral("&Redo"));
-    redoAct->setShortcut(QKeySequence::Redo);
-    editMenu->addSeparator();
-    auto *matchByNameAct = editMenu->addAction(QStringLiteral("&Match Ports by Name"));
-    matchByNameAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_M));
-    matchByNameAct->setToolTip(QStringLiteral("Connect unmapped ports on the selected instance to matching top-level "
-                                              "ports (same name + direction + type)"));
-
-    QObject::connect(undoAct, &QAction::triggered, &window, [state, &window]() {
-        if (state->undo()) {
-            window.statusBar()->showMessage(QStringLiteral("Undo"), 1500);
+        int n = m_state->library_path_count();
+        QStringList existing;
+        for (int i = 0; i < n; ++i) {
+            QString p = m_state->library_path(i);
+            if (QFileInfo::exists(p))
+                existing << p;
         }
-    });
-    QObject::connect(redoAct, &QAction::triggered, &window, [state, &window]() {
-        if (state->redo()) {
-            window.statusBar()->showMessage(QStringLiteral("Redo"), 1500);
+        if (!existing.isEmpty())
+            m_fs_watcher->addPaths(existing);
+    }
+
+    void onSelectionChanged(const QString &name) {
+        // Commit any outgoing edit against the previous instance before
+        // switching so the user doesn't lose work.
+        commitEditor();
+        // Selecting an instance kicks the editor out of top-level mode.
+        if (!name.isEmpty() && m_top_level_mode) {
+            m_top_level_mode = false;
+            QSignalBlocker b(m_editor_top_level_btn);
+            m_editor_top_level_btn->setChecked(false);
         }
-    });
-    auto refresh_undo_actions = [state, undoAct, redoAct]() {
-        undoAct->setEnabled(state->can_undo());
-        redoAct->setEnabled(state->can_redo());
-    };
-    refresh_undo_actions();
-    QObject::connect(state, &AppState::project_loaded, &window, refresh_undo_actions);
-    QObject::connect(state, &AppState::port_map_changed, &window,
-                     [refresh_undo_actions](const QString &, const QString &) { refresh_undo_actions(); });
-    QObject::connect(state, &AppState::port_map_changed_bulk, &window, refresh_undo_actions);
-    QObject::connect(state, &AppState::instance_added, &window,
-                     [refresh_undo_actions](const QString &) { refresh_undo_actions(); });
-    QObject::connect(state, &AppState::instance_removed, &window,
-                     [refresh_undo_actions](const QString &) { refresh_undo_actions(); });
+        m_canvas_layer->highlight(name);
+        m_editor_inst = name;
+        repopulateEditor();
+        // Sync sidebar tree row.
+        for (int row = 0; row < m_tree_model->rowCount(); ++row) {
+            auto *root_item = m_tree_model->item(row);
+            for (int c = 0; c < root_item->rowCount(); ++c) {
+                auto *child = root_item->child(c);
+                if (child->data(Qt::UserRole).toString() == name) {
+                    m_tree_view->setCurrentIndex(child->index());
+                    return;
+                }
+            }
+        }
+    }
 
-    // Toolbar — quick access to the most-used file actions. Shares QAction
-    // pointers with the File menu so shortcuts, enable-state, and icons stay
-    // in sync.
-    auto *fileToolbar = window.addToolBar(QStringLiteral("File"));
-    fileToolbar->setObjectName(QStringLiteral("FileToolbar"));
-    fileToolbar->setMovable(false);
-    fileToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    newAct->setIconText(QStringLiteral("New"));
-    openAct->setIconText(QStringLiteral("Open"));
-    addSourceAct->setIconText(QStringLiteral("Add HDL"));
-    reloadAct->setIconText(QStringLiteral("Refresh"));
-    saveAct->setIconText(QStringLiteral("Save"));
-    fileToolbar->addAction(newAct);
-    fileToolbar->addAction(openAct);
-    fileToolbar->addAction(addSourceAct);
-    fileToolbar->addAction(reloadAct);
-    fileToolbar->addSeparator();
-    fileToolbar->addAction(saveAct);
-    exitAct->setShortcut(QKeySequence::Quit);
+    void onTreeContextMenu(const QPoint &pos) {
+        QModelIndex idx = m_tree_view->indexAt(pos);
+        if (!idx.isValid()) {
+            return;
+        }
+        QString inst_name = idx.data(Qt::UserRole).toString();
+        if (inst_name.isEmpty()) {
+            return;
+        }
+        QMenu menu(m_tree_view);
+        QAction *renameAct = menu.addAction(QStringLiteral("Rename..."));
+        QAction *deleteAct = menu.addAction(QStringLiteral("Delete"));
+        QAction *chosen = menu.exec(m_tree_view->viewport()->mapToGlobal(pos));
+        if (chosen == renameAct) {
+            bool ok = false;
+            QString new_name = QInputDialog::getText(this, QStringLiteral("Rename Instance"),
+                                                     QStringLiteral("New name:"), QLineEdit::Normal, inst_name, &ok);
+            if (!ok || new_name.trimmed().isEmpty() || new_name == inst_name) {
+                return;
+            }
+            if (!m_state->rename_instance(inst_name, new_name.trimmed())) {
+                show_state_error(this, m_state, QStringLiteral("Rename"));
+            }
+        } else if (chosen == deleteAct) {
+            auto btn = QMessageBox::question(this, QStringLiteral("Delete Instance"),
+                                             QStringLiteral("Delete instance %1?").arg(inst_name));
+            if (btn != QMessageBox::Yes) {
+                return;
+            }
+            if (!m_state->remove_instance(inst_name)) {
+                show_state_error(this, m_state, QStringLiteral("Delete"));
+            }
+        }
+    }
 
-    // Force-reopen the editor panel if the user dragged it narrow or it
-    // somehow ended up zero-width. Restores the panel to its default share
-    // of the window.
-    auto *showEditorAct = new QAction(QStringLiteral("Show Editor"), &window);
-    showEditorAct->setToolTip(QStringLiteral("Restore the editor panel to its default width."));
-    showEditorAct->setShortcut(QKeySequence(QStringLiteral("Ctrl+\\")));
-    QObject::connect(showEditorAct, &QAction::triggered, &window, [root_splitter]() {
-        QList<int> sizes = root_splitter->sizes();
+    // --- File / project actions ---------------------------------------------
+
+    void onNewProject() {
+        QString name;
+        int lang = 0;
+        if (!prompt_new_project(this, name, lang)) {
+            return;
+        }
+        if (!m_state->new_project(name, lang)) {
+            show_state_error(this, m_state, QStringLiteral("New Project"));
+            return;
+        }
+        statusBar()->showMessage(QStringLiteral("Created new project: %1").arg(name), 3000);
+    }
+
+    void onOpenProject() {
+        QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Open Project"), default_open_dir(),
+                                                    QStringLiteral("HDL Compose Projects (*.hdlc)"));
+        if (path.isEmpty()) {
+            return;
+        }
+        if (!m_state->open_project(path)) {
+            show_state_error(this, m_state, QStringLiteral("Open Project"));
+            return;
+        }
+        statusBar()->showMessage(QStringLiteral("Opened %1").arg(path), 3000);
+    }
+
+    void onAddSource() {
+        if (!m_state->has_project()) {
+            QMessageBox::information(this, QStringLiteral("Add HDL Source"),
+                                     QStringLiteral("Create or open a project first."));
+            return;
+        }
+        QStringList paths =
+            QFileDialog::getOpenFileNames(this, QStringLiteral("Add HDL Source(s)"), default_open_dir(),
+                                          QStringLiteral("HDL sources (*.vhd *.vhdl *.v *.sv);;All files (*)"));
+        if (paths.isEmpty()) {
+            return;
+        }
+        int added = 0;
+        QStringList failed;
+        for (const QString &p : paths) {
+            if (m_state->add_library_path(p)) {
+                added++;
+            } else {
+                QString err = m_state->last_error();
+                failed << (err.isEmpty() ? p : QStringLiteral("%1 (%2)").arg(p, err));
+            }
+        }
+        if (!failed.isEmpty()) {
+            QMessageBox::warning(this, QStringLiteral("Add HDL Source"),
+                                 QStringLiteral("Failed to add:\n%1").arg(failed.join(QChar('\n'))));
+        }
+        statusBar()->showMessage(QStringLiteral("Added %1 source(s)").arg(added), 3000);
+    }
+
+    bool saveAsProject() {
+        QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save Project As"), default_open_dir(),
+                                                    QStringLiteral("HDL Compose Projects (*.hdlc)"));
+        if (path.isEmpty()) {
+            return false;
+        }
+        if (!path.endsWith(QStringLiteral(".hdlc"), Qt::CaseInsensitive)) {
+            path += QStringLiteral(".hdlc");
+        }
+        if (!m_state->save_project_as(path)) {
+            show_state_error(this, m_state, QStringLiteral("Save Project"));
+            return false;
+        }
+        statusBar()->showMessage(QStringLiteral("Saved to %1").arg(path), 3000);
+        return true;
+    }
+
+    void onSaveProject() {
+        if (!m_state->has_project()) {
+            QMessageBox::information(this, QStringLiteral("Save"), QStringLiteral("No project to save."));
+            return;
+        }
+        if (m_state->save_project()) {
+            statusBar()->showMessage(QStringLiteral("Saved"), 3000);
+        } else {
+            saveAsProject();
+        }
+    }
+
+    void onGenerate() {
+        if (!m_state->has_project()) {
+            QMessageBox::information(this, QStringLiteral("Generate HDL"), QStringLiteral("No project loaded."));
+            return;
+        }
+        int lang = m_state->project_language();
+        QString filter;
+        QString lang_label;
+        switch (lang) {
+        case 0:
+            filter = QStringLiteral("VHDL (*.vhd *.vhdl)");
+            lang_label = QStringLiteral("VHDL");
+            break;
+        case 1:
+            filter = QStringLiteral("SystemVerilog (*.sv *.v)");
+            lang_label = QStringLiteral("SystemVerilog");
+            break;
+        default:
+            QMessageBox::warning(this, QStringLiteral("Generate HDL"), QStringLiteral("Unknown project language."));
+            return;
+        }
+        QString suggested = m_state->suggest_codegen_path();
+        QString path =
+            QFileDialog::getSaveFileName(this, QStringLiteral("Generate %1").arg(lang_label), suggested, filter);
+        if (path.isEmpty()) {
+            return;
+        }
+        if (m_state->generate_code(path)) {
+            statusBar()->showMessage(QStringLiteral("Generated %1").arg(path), 5000);
+        } else {
+            show_state_error(this, m_state, QStringLiteral("Generate HDL"));
+        }
+    }
+
+    void onReloadLibrary() {
+        if (!m_state->has_project()) {
+            QMessageBox::information(this, QStringLiteral("Refresh Library"), QStringLiteral("No project loaded."));
+            return;
+        }
+        if (m_state->reload_library()) {
+            statusBar()->showMessage(QStringLiteral("Library refreshed"), 3000);
+        } else {
+            show_state_error(this, m_state, QStringLiteral("Refresh Library"));
+        }
+    }
+
+    void onCopySources() {
+        QString proj_path = m_state->current_project_path();
+        if (proj_path.isEmpty()) {
+            QMessageBox::information(this, QStringLiteral("Copy Sources"),
+                                     QStringLiteral("Save the project first so we know where to copy to."));
+            return;
+        }
+        QDir proj_dir = QFileInfo(proj_path).absoluteDir();
+        int n = m_state->library_path_count();
+        if (n == 0) {
+            QMessageBox::information(this, QStringLiteral("Copy Sources"),
+                                     QStringLiteral("No library sources to copy."));
+            return;
+        }
+        auto btn = QMessageBox::question(
+            this, QStringLiteral("Copy Sources"),
+            QStringLiteral("Copy %1 source file(s) into %2?").arg(n).arg(proj_dir.absolutePath()));
+        if (btn != QMessageBox::Yes) {
+            return;
+        }
+        int copied = 0;
+        QStringList failures;
+        QStringList originals;
+        for (int i = 0; i < n; ++i) {
+            originals << m_state->library_path(i);
+        }
+        for (const QString &src : originals) {
+            QFileInfo src_info(src);
+            if (!src_info.exists()) {
+                failures << QStringLiteral("%1 (missing)").arg(src);
+                continue;
+            }
+            QString target = proj_dir.absoluteFilePath(src_info.fileName());
+            if (QFileInfo(target) == src_info) {
+                continue; // already in project dir
+            }
+            if (QFile::exists(target)) {
+                auto overwrite = QMessageBox::question(this, QStringLiteral("Overwrite?"),
+                                                       QStringLiteral("%1 exists. Overwrite?").arg(target));
+                if (overwrite != QMessageBox::Yes) {
+                    failures << QStringLiteral("%1 (skipped)").arg(src);
+                    continue;
+                }
+                QFile::remove(target);
+            }
+            if (!QFile::copy(src, target)) {
+                failures << QStringLiteral("%1 (copy failed)").arg(src);
+                continue;
+            }
+            m_state->remove_library_path(src);
+            m_state->add_library_path(target);
+            copied++;
+        }
+        QString msg = QStringLiteral("Copied %1 of %2 file(s).").arg(copied).arg(n);
+        if (!failures.isEmpty()) {
+            msg += QStringLiteral("\n\nIssues:\n%1").arg(failures.join(QChar('\n')));
+        }
+        QMessageBox::information(this, QStringLiteral("Copy Sources"), msg);
+    }
+
+    void onMatchByName() {
+        QString sel = m_state->selected_instance();
+        if (sel.isEmpty()) {
+            statusBar()->showMessage(QStringLiteral("Match by Name: select an instance first"), 3000);
+            return;
+        }
+        int count = m_state->match_by_name(sel);
+        if (count > 0) {
+            statusBar()->showMessage(QStringLiteral("Matched %1 port(s) by name").arg(count), 3000);
+        } else {
+            statusBar()->showMessage(QStringLiteral("No matching top-level ports found for '%1'").arg(sel), 3000);
+        }
+    }
+
+    // Restore the editor panel to its default share of the window.
+    void showEditorPanel() {
+        QList<int> sizes = m_root_splitter->sizes();
         int total = 0;
         for (int s : sizes)
             total += s;
@@ -2086,408 +2496,50 @@ extern "C" int run_gui(int *argc, char **argv) {
         int remaining = total - editor_w;
         int sidebar_w = static_cast<int>(remaining * 0.25);
         int canvas_w = remaining - sidebar_w;
-        root_splitter->setSizes({sidebar_w, canvas_w, editor_w});
-    });
-    fileToolbar->addSeparator();
-    fileToolbar->addAction(showEditorAct);
+        m_root_splitter->setSizes({sidebar_w, canvas_w, editor_w});
+    }
 
-    window.statusBar()->showMessage(QStringLiteral("Ready"));
-    update_window_title(&window, state);
+    // --- Members --------------------------------------------------------
 
-    auto refresh_sidebar = [tree_model, library_model, state, dirty_icon, tree_view]() {
-        rebuild_tree_model(tree_model, state, dirty_icon);
-        rebuild_library_model(library_model, state);
-        tree_view->expandAll();
-    };
+    AppState *m_state = nullptr;
+    QIcon m_dirty_icon;
+    QSplitter *m_root_splitter = nullptr;
+    QStandardItemModel *m_tree_model = nullptr;
+    QTreeView *m_tree_view = nullptr;
+    QStringListModel *m_library_model = nullptr;
+    CanvasView *m_canvas = nullptr;
+    std::unique_ptr<CanvasLayer> m_canvas_layer;
+    QPushButton *m_editor_top_level_btn = nullptr;
+    QPlainTextEdit *m_editor = nullptr;
+    MiniEditorHighlighter *m_highlighter = nullptr;
+    QStringListModel *m_completer_model = nullptr;
+    QCompleter *m_completer = nullptr;
+    QTimer *m_parse_timer = nullptr;
+    QFileSystemWatcher *m_fs_watcher = nullptr;
+    QAction *m_undo_act = nullptr;
+    QAction *m_redo_act = nullptr;
 
-    // Title + validation reactive
-    QObject::connect(state, &AppState::project_nameChanged, &window,
-                     [&window, state]() { update_window_title(&window, state); });
-    QObject::connect(state, &AppState::dirtyChanged, &window,
-                     [&window, state]() { update_window_title(&window, state); });
-    QObject::connect(state, &AppState::validation_changed, &window, [&window, state]() {
-        int errs = state->validation_error_count();
-        int warns = state->validation_warning_count();
-        window.statusBar()->showMessage(QStringLiteral("%1 error(s), %2 warning(s)").arg(errs).arg(warns));
-    });
+    // Mini-editor state.
+    bool m_top_level_mode = false;
+    QString m_editor_inst; // instance shown in the buffer; empty = none
+    bool m_editor_editing = false;     // user typing; suppress auto-repopulate
+    bool m_editor_suppressing = false; // programmatic setPlainText guard
+};
 
-    // Sidebar + canvas reactive
-    QObject::connect(state, &AppState::project_loaded, &window, [refresh_sidebar, &canvas_layer]() {
-        refresh_sidebar();
-        canvas_layer.rebuild();
-    });
-    QObject::connect(state, &AppState::instance_added, &window, [refresh_sidebar, &canvas_layer](const QString &name) {
-        refresh_sidebar();
-        canvas_layer.onInstanceAdded(name);
-    });
-    QObject::connect(state, &AppState::instance_removed, &window,
-                     [refresh_sidebar, &canvas_layer](const QString &name) {
-                         refresh_sidebar();
-                         canvas_layer.onInstanceRemoved(name);
-                     });
-    QObject::connect(
-        state, &AppState::instance_moved, &window,
-        [&canvas_layer](const QString &name, double x, double y) { canvas_layer.onInstanceMoved(name, x, y); });
-    QObject::connect(state, &AppState::port_map_changed, &window,
-                     [&canvas_layer](const QString &inst, const QString &) {
-                         canvas_layer.onPortMapChanged(inst);
-                     });
-    QObject::connect(state, &AppState::port_map_changed_bulk, &window,
-                     [&canvas_layer]() { canvas_layer.onPortMapChangedBulk(); });
-    // Aliases only rename/recolor nets — wires, not pin layout.
-    QObject::connect(state, &AppState::alias_changed, &window,
-                     [&canvas_layer](const QString &) { canvas_layer.rebuildWires(); });
-    QObject::connect(state, &AppState::library_changed, &window, refresh_sidebar);
+} // anonymous namespace
 
-    // Module re-parse: watch every library path and auto-reload when the
-    // underlying file changes. The reload drops stale port_map entries and
-    // flags affected instances dirty (red outline + sidebar red dot); the
-    // user reviews and either reconnects or clears the dirty flag.
-    auto *fs_watcher = new QFileSystemWatcher(&window);
-    auto refresh_watcher = [fs_watcher, state]() {
-        if (!fs_watcher->files().isEmpty()) {
-            fs_watcher->removePaths(fs_watcher->files());
-        }
-        int n = state->library_path_count();
-        QStringList existing;
-        for (int i = 0; i < n; ++i) {
-            QString p = state->library_path(i);
-            if (QFileInfo::exists(p))
-                existing << p;
-        }
-        if (!existing.isEmpty())
-            fs_watcher->addPaths(existing);
-    };
-    QObject::connect(state, &AppState::library_changed, &window, refresh_watcher);
-    QObject::connect(state, &AppState::project_loaded, &window, refresh_watcher);
-    QObject::connect(fs_watcher, &QFileSystemWatcher::fileChanged, &window,
-                     [&window, state, refresh_watcher](const QString &path) {
-                         // Some editors rename-swap to save — re-add the path
-                         // after a brief delay in case the watcher lost it.
-                         QTimer::singleShot(50, &window, [state, refresh_watcher]() {
-                             state->reload_library();
-                             refresh_watcher();
-                         });
-                         window.statusBar()->showMessage(
-                             QStringLiteral("Source changed: %1 — reloading").arg(QFileInfo(path).fileName()), 3000);
-                     });
-    QObject::connect(state, &AppState::selection_changed, &window,
-                     [&canvas_layer, tree_view, tree_model, editor_inst, top_level_mode, editor_top_level_btn,
-                      commit_editor, repopulate_editor](const QString &name) {
-                         // Commit any outgoing edit against the previous instance
-                         // before switching so the user doesn't lose work.
-                         commit_editor();
-                         // Selecting an instance kicks the editor out of
-                         // top-level mode automatically.
-                         if (!name.isEmpty() && *top_level_mode) {
-                             *top_level_mode = false;
-                             QSignalBlocker b(editor_top_level_btn);
-                             editor_top_level_btn->setChecked(false);
-                         }
-                         canvas_layer.highlight(name);
-                         *editor_inst = name;
-                         repopulate_editor();
-                         // Sync sidebar tree row
-                         for (int row = 0; row < tree_model->rowCount(); ++row) {
-                             auto *root_item = tree_model->item(row);
-                             for (int c = 0; c < root_item->rowCount(); ++c) {
-                                 auto *child = root_item->child(c);
-                                 if (child->data(Qt::UserRole).toString() == name) {
-                                     tree_view->setCurrentIndex(child->index());
-                                     return;
-                                 }
-                             }
-                         }
-                     });
+extern "C" int run_gui(int *argc, char **argv) {
+    // HiDPI: pass-through fractional scale factors (e.g. 2x Retina) without
+    // rounding — keeps fonts and pixmaps crisp on macOS.
+    QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
 
-    // Model-change signals: refresh the mini editor only when it's not being
-    // actively edited. Once the user is typing we wait for focus-out.
-    auto editor_model_changed = [=]() {
-        if (*editor_editing)
-            return;
-        repopulate_editor();
-    };
-    QObject::connect(state, &AppState::port_map_changed, &window,
-                     [editor_model_changed](const QString &, const QString &) { editor_model_changed(); });
-    QObject::connect(state, &AppState::port_map_changed_bulk, &window, editor_model_changed);
-    QObject::connect(state, &AppState::project_loaded, &window, [editor_inst, repopulate_editor]() {
-        editor_inst->clear();
-        repopulate_editor();
-    });
+    QApplication app(*argc, argv);
+    app.setOrganizationName(QStringLiteral("hdl-compose"));
+    app.setApplicationName(QStringLiteral("HDL Compose"));
+    app.setStyle(QStringLiteral("Fusion"));
+    apply_material_dark_theme(app);
 
-    // Tree: single-click → set selection via AppState
-    QObject::connect(tree_view, &QTreeView::clicked, &window, [state](const QModelIndex &index) {
-        QString name = index.data(Qt::UserRole).toString();
-        if (name.isEmpty()) {
-            return;
-        }
-        state->set_selected_instance(name);
-    });
-
-    // Tree: double-click → goto source
-    QObject::connect(tree_view, &QTreeView::doubleClicked, &window, [&window, state](const QModelIndex &index) {
-        QString inst_name = index.data(Qt::UserRole).toString();
-        if (inst_name.isEmpty()) {
-            return;
-        }
-        int idx = find_instance_index(state, inst_name);
-        if (idx < 0) {
-            return;
-        }
-        QString src = state->instance_source_path(idx);
-        launch_goto_source(&window, src);
-    });
-
-    // Tree: right-click → context menu
-    QObject::connect(tree_view, &QTreeView::customContextMenuRequested, &window,
-                     [&window, state, tree_view](const QPoint &pos) {
-                         QModelIndex idx = tree_view->indexAt(pos);
-                         if (!idx.isValid()) {
-                             return;
-                         }
-                         QString inst_name = idx.data(Qt::UserRole).toString();
-                         if (inst_name.isEmpty()) {
-                             return;
-                         }
-                         QMenu menu(tree_view);
-                         QAction *renameAct = menu.addAction(QStringLiteral("Rename..."));
-                         QAction *deleteAct = menu.addAction(QStringLiteral("Delete"));
-                         QAction *chosen = menu.exec(tree_view->viewport()->mapToGlobal(pos));
-                         if (chosen == renameAct) {
-                             bool ok = false;
-                             QString new_name =
-                                 QInputDialog::getText(&window, QStringLiteral("Rename Instance"),
-                                                       QStringLiteral("New name:"), QLineEdit::Normal, inst_name, &ok);
-                             if (!ok || new_name.trimmed().isEmpty() || new_name == inst_name) {
-                                 return;
-                             }
-                             if (!state->rename_instance(inst_name, new_name.trimmed())) {
-                                 show_state_error(&window, state, QStringLiteral("Rename"));
-                             }
-                         } else if (chosen == deleteAct) {
-                             auto btn = QMessageBox::question(&window, QStringLiteral("Delete Instance"),
-                                                              QStringLiteral("Delete instance %1?").arg(inst_name));
-                             if (btn != QMessageBox::Yes) {
-                                 return;
-                             }
-                             if (!state->remove_instance(inst_name)) {
-                                 show_state_error(&window, state, QStringLiteral("Delete"));
-                             }
-                         }
-                     });
-
-    // Menu actions
-    QObject::connect(newAct, &QAction::triggered, &window, [&window, state]() {
-        QString name;
-        int lang = 0;
-        if (!prompt_new_project(&window, name, lang)) {
-            return;
-        }
-        if (!state->new_project(name, lang)) {
-            show_state_error(&window, state, QStringLiteral("New Project"));
-            return;
-        }
-        window.statusBar()->showMessage(QStringLiteral("Created new project: %1").arg(name), 3000);
-    });
-
-    QObject::connect(openAct, &QAction::triggered, &window, [&window, state]() {
-        QString path = QFileDialog::getOpenFileName(&window, QStringLiteral("Open Project"), default_open_dir(),
-                                                    QStringLiteral("HDL Compose Projects (*.hdlc)"));
-        if (path.isEmpty()) {
-            return;
-        }
-        if (!state->open_project(path)) {
-            show_state_error(&window, state, QStringLiteral("Open Project"));
-            return;
-        }
-        window.statusBar()->showMessage(QStringLiteral("Opened %1").arg(path), 3000);
-    });
-
-    QObject::connect(addSourceAct, &QAction::triggered, &window, [&window, state]() {
-        if (!state->has_project()) {
-            QMessageBox::information(&window, QStringLiteral("Add HDL Source"),
-                                     QStringLiteral("Create or open a project first."));
-            return;
-        }
-        QStringList paths =
-            QFileDialog::getOpenFileNames(&window, QStringLiteral("Add HDL Source(s)"), default_open_dir(),
-                                          QStringLiteral("HDL sources (*.vhd *.vhdl *.v *.sv);;All files (*)"));
-        if (paths.isEmpty()) {
-            return;
-        }
-        int added = 0;
-        QStringList failed;
-        for (const QString &p : paths) {
-            if (state->add_library_path(p)) {
-                added++;
-            } else {
-                QString err = state->last_error();
-                failed << (err.isEmpty() ? p : QStringLiteral("%1 (%2)").arg(p, err));
-            }
-        }
-        if (!failed.isEmpty()) {
-            QMessageBox::warning(&window, QStringLiteral("Add HDL Source"),
-                                 QStringLiteral("Failed to add:\n%1").arg(failed.join(QChar('\n'))));
-        }
-        window.statusBar()->showMessage(QStringLiteral("Added %1 source(s)").arg(added), 3000);
-    });
-
-    auto save_as = [&window, state]() -> bool {
-        QString path = QFileDialog::getSaveFileName(&window, QStringLiteral("Save Project As"), default_open_dir(),
-                                                    QStringLiteral("HDL Compose Projects (*.hdlc)"));
-        if (path.isEmpty()) {
-            return false;
-        }
-        if (!path.endsWith(QStringLiteral(".hdlc"), Qt::CaseInsensitive)) {
-            path += QStringLiteral(".hdlc");
-        }
-        if (!state->save_project_as(path)) {
-            show_state_error(&window, state, QStringLiteral("Save Project"));
-            return false;
-        }
-        window.statusBar()->showMessage(QStringLiteral("Saved to %1").arg(path), 3000);
-        return true;
-    };
-
-    QObject::connect(saveAct, &QAction::triggered, &window, [&window, state, save_as]() {
-        if (!state->has_project()) {
-            QMessageBox::information(&window, QStringLiteral("Save"), QStringLiteral("No project to save."));
-            return;
-        }
-        if (state->save_project()) {
-            window.statusBar()->showMessage(QStringLiteral("Saved"), 3000);
-        } else {
-            save_as();
-        }
-    });
-
-    QObject::connect(saveAsAct, &QAction::triggered, &window, [save_as]() { save_as(); });
-
-    QObject::connect(generateAct, &QAction::triggered, &window, [&window, state]() {
-        if (!state->has_project()) {
-            QMessageBox::information(&window, QStringLiteral("Generate HDL"), QStringLiteral("No project loaded."));
-            return;
-        }
-        int lang = state->project_language();
-        QString filter;
-        QString lang_label;
-        switch (lang) {
-        case 0:
-            filter = QStringLiteral("VHDL (*.vhd *.vhdl)");
-            lang_label = QStringLiteral("VHDL");
-            break;
-        case 1:
-            filter = QStringLiteral("SystemVerilog (*.sv *.v)");
-            lang_label = QStringLiteral("SystemVerilog");
-            break;
-        default:
-            QMessageBox::warning(&window, QStringLiteral("Generate HDL"), QStringLiteral("Unknown project language."));
-            return;
-        }
-        QString suggested = state->suggest_codegen_path();
-        QString path =
-            QFileDialog::getSaveFileName(&window, QStringLiteral("Generate %1").arg(lang_label), suggested, filter);
-        if (path.isEmpty()) {
-            return;
-        }
-        if (state->generate_code(path)) {
-            window.statusBar()->showMessage(QStringLiteral("Generated %1").arg(path), 5000);
-        } else {
-            show_state_error(&window, state, QStringLiteral("Generate HDL"));
-        }
-    });
-
-    QObject::connect(reloadAct, &QAction::triggered, &window, [&window, state]() {
-        if (!state->has_project()) {
-            QMessageBox::information(&window, QStringLiteral("Refresh Library"), QStringLiteral("No project loaded."));
-            return;
-        }
-        if (state->reload_library()) {
-            window.statusBar()->showMessage(QStringLiteral("Library refreshed"), 3000);
-        } else {
-            show_state_error(&window, state, QStringLiteral("Refresh Library"));
-        }
-    });
-
-    QObject::connect(copySourcesAct, &QAction::triggered, &window, [&window, state]() {
-        QString proj_path = state->current_project_path();
-        if (proj_path.isEmpty()) {
-            QMessageBox::information(&window, QStringLiteral("Copy Sources"),
-                                     QStringLiteral("Save the project first so we know where to copy to."));
-            return;
-        }
-        QDir proj_dir = QFileInfo(proj_path).absoluteDir();
-        int n = state->library_path_count();
-        if (n == 0) {
-            QMessageBox::information(&window, QStringLiteral("Copy Sources"),
-                                     QStringLiteral("No library sources to copy."));
-            return;
-        }
-        auto btn = QMessageBox::question(
-            &window, QStringLiteral("Copy Sources"),
-            QStringLiteral("Copy %1 source file(s) into %2?").arg(n).arg(proj_dir.absolutePath()));
-        if (btn != QMessageBox::Yes) {
-            return;
-        }
-        int copied = 0;
-        QStringList failures;
-        QStringList originals;
-        for (int i = 0; i < n; ++i) {
-            originals << state->library_path(i);
-        }
-        for (const QString &src : originals) {
-            QFileInfo src_info(src);
-            if (!src_info.exists()) {
-                failures << QStringLiteral("%1 (missing)").arg(src);
-                continue;
-            }
-            QString target = proj_dir.absoluteFilePath(src_info.fileName());
-            if (QFileInfo(target) == src_info) {
-                continue; // already in project dir
-            }
-            if (QFile::exists(target)) {
-                auto overwrite = QMessageBox::question(&window, QStringLiteral("Overwrite?"),
-                                                       QStringLiteral("%1 exists. Overwrite?").arg(target));
-                if (overwrite != QMessageBox::Yes) {
-                    failures << QStringLiteral("%1 (skipped)").arg(src);
-                    continue;
-                }
-                QFile::remove(target);
-            }
-            if (!QFile::copy(src, target)) {
-                failures << QStringLiteral("%1 (copy failed)").arg(src);
-                continue;
-            }
-            state->remove_library_path(src);
-            state->add_library_path(target);
-            copied++;
-        }
-        QString msg = QStringLiteral("Copied %1 of %2 file(s).").arg(copied).arg(n);
-        if (!failures.isEmpty()) {
-            msg += QStringLiteral("\n\nIssues:\n%1").arg(failures.join(QChar('\n')));
-        }
-        QMessageBox::information(&window, QStringLiteral("Copy Sources"), msg);
-    });
-
-    QObject::connect(prefsAct, &QAction::triggered, &window, [&window]() { prompt_preferences(&window); });
-
-    QObject::connect(exitAct, &QAction::triggered, &app, &QApplication::quit);
-
-    QObject::connect(matchByNameAct, &QAction::triggered, &window, [&window, state]() {
-        QString sel = state->selected_instance();
-        if (sel.isEmpty()) {
-            window.statusBar()->showMessage(QStringLiteral("Match by Name: select an instance first"), 3000);
-            return;
-        }
-        int count = state->match_by_name(sel);
-        if (count > 0) {
-            window.statusBar()->showMessage(QStringLiteral("Matched %1 port(s) by name").arg(count), 3000);
-        } else {
-            window.statusBar()->showMessage(QStringLiteral("No matching top-level ports found for '%1'").arg(sel),
-                                            3000);
-        }
-    });
-
+    MainWindow window;
     window.show();
     return app.exec();
 }
