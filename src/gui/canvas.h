@@ -414,249 +414,22 @@ class CanvasLayer {
         return true;
     }
 
-    static int gutterIndex(int col, bool exits_right) {
-        return exits_right ? (2 * col + 1) : (2 * col - 1);
-    }
-    static qreal gutterCenterX(int idx) {
-        return idx / 2.0 * static_cast<qreal>(kColumnPitch);
-    }
-    struct GutterInfo {
-        qreal safe_min = -1e18;
-        qreal safe_max = 1e18;
-        int nets_using = 0;
-    };
-
-    qreal allocateLaneX(int idx, const QHash<int, GutterInfo> &gutter_info,
-                        QHash<int, int> &gutter_counter) const {
-        const auto it = gutter_info.find(idx);
-        GutterInfo gi = (it != gutter_info.end()) ? *it : GutterInfo{};
-        const qreal natural_x = gutterCenterX(idx);
-        const bool bounded_left = gi.safe_min > -1e17;
-        const bool bounded_right = gi.safe_max < 1e17;
-        int n = gutter_counter.value(idx, 0);
-        gutter_counter[idx] = n + 1;
-
-        if (bounded_left && bounded_right) {
-            if (gi.safe_min > gi.safe_max) {
-                // Over-constrained gutter: pins on both sides demand more
-                // room than exists (shouldn't happen now that instance width
-                // is capped below the column pitch, but guard anyway). Split
-                // the violation instead of collapsing every lane onto one
-                // bound, which routed wires back through a module body.
-                return (gi.safe_min + gi.safe_max) / 2.0;
-            }
-            const qreal w = gi.safe_max - gi.safe_min;
-            const qreal center = (gi.safe_min + gi.safe_max) / 2.0;
-            int lane_slots = (std::max)(1, gi.nets_using);
-            const qreal step = (std::min)(static_cast<qreal>(kWireLaneStep), w / static_cast<qreal>(lane_slots));
-            qreal off = 0.0;
-            if (n > 0) {
-                int sign = (n % 2 == 1) ? 1 : -1;
-                int mag = (n + 1) / 2;
-                off = sign * mag * step;
-            }
-            qreal gx = center + off;
-            gx = std::max(gx, gi.safe_min);
-            gx = std::min(gx, gi.safe_max);
-            return gx;
-        }
-        if (bounded_right) {
-            return gi.safe_max - static_cast<qreal>(n) * static_cast<qreal>(kWireLaneStep);
-        }
-        if (bounded_left) {
-            return gi.safe_min + static_cast<qreal>(n) * static_cast<qreal>(kWireLaneStep);
-        }
-        qreal off = 0.0;
-        if (n > 0) {
-            int sign = (n % 2 == 1) ? 1 : -1;
-            int mag = (n + 1) / 2;
-            off = sign * mag * static_cast<qreal>(kWireLaneStep);
-        }
-        return natural_x + off;
-    }
-
-    void planNet(const QString &src_key, const Endpoint &driver, const QVector<Endpoint> &loads,
-                 const QVector<WireItem *> &wires,
-                 QHash<int, int> &gutter_counter,
-                 const QHash<int, GutterInfo> &gutter_info) {
-        const int g_d = gutterIndex(driver.col, driver.exits_right);
-        QVector<int> g_l(loads.size());
-        QSet<int> unique_g;
-        unique_g.insert(g_d);
-        for (int i = 0; i < loads.size(); ++i) {
-            g_l[i] = gutterIndex(loads[i].col, loads[i].exits_right);
-            unique_g.insert(g_l[i]);
-        }
-        const QColor color = WireItem::colorForNet(src_key);
-        QVector<QPointF> dot_points;
-
-        if (unique_g.size() == 1) {
-            qreal gx = allocateLaneX(g_d, gutter_info, gutter_counter);
-            for (int i = 0; i < loads.size(); ++i) {
-                QVector<QPointF> wp;
-                wp << driver.pt << QPointF(gx, driver.pt.y()) << QPointF(gx, loads[i].pt.y()) << loads[i].pt;
-                wires[i]->setWaypoints(wp);
-            }
-            if (loads.size() >= 2) {
-                QVector<qreal> ys;
-                ys.push_back(driver.pt.y());
-                for (const auto &l : loads)
-                    ys.push_back(l.pt.y());
-                std::sort(ys.begin(), ys.end());
-                for (int i = 1; i < ys.size() - 1; ++i)
-                    dot_points << QPointF(gx, ys[i]);
-            }
-        } else {
-            qreal sum_y = driver.pt.y();
-            int count = 1;
-            for (const auto &l : loads) {
-                sum_y += l.pt.y();
-                ++count;
-            }
-            qreal hy = sum_y / static_cast<qreal>(count);
-            QHash<int, qreal> gx_for_idx;
-            QVector<int> sorted_gutters(unique_g.begin(), unique_g.end());
-            std::sort(sorted_gutters.begin(), sorted_gutters.end());
-            for (int idx : sorted_gutters)
-                gx_for_idx[idx] = allocateLaneX(idx, gutter_info, gutter_counter);
-            qreal dgx = gx_for_idx[g_d];
-
-            qreal bx_min = gx_for_idx[sorted_gutters.first()];
-            qreal bx_max = gx_for_idx[sorted_gutters.last()];
-            for (auto v : gx_for_idx) {
-                bx_min = std::min(bx_min, v);
-                bx_max = std::max(bx_max, v);
-            }
-            hy = adjustBridgeY(hy, bx_min, bx_max);
-
-            for (int i = 0; i < loads.size(); ++i) {
-                qreal lgx = gx_for_idx[g_l[i]];
-                QVector<QPointF> wp;
-                wp << driver.pt << QPointF(dgx, driver.pt.y()) << QPointF(dgx, hy);
-                if (lgx != dgx)
-                    wp << QPointF(lgx, hy);
-                wp << QPointF(lgx, loads[i].pt.y()) << loads[i].pt;
-                wires[i]->setWaypoints(wp);
-            }
-
-            QVector<qreal> tap_xs;
-            tap_xs.append(gx_for_idx.values());
-            std::sort(tap_xs.begin(), tap_xs.end());
-            tap_xs.erase(std::unique(tap_xs.begin(), tap_xs.end()), tap_xs.end());
-            for (int i = 1; i < tap_xs.size() - 1; ++i)
-                dot_points << QPointF(tap_xs[i], hy);
-
-            QHash<int, QVector<qreal>> ys_at_gutter;
-            ys_at_gutter[g_d].push_back(driver.pt.y());
-            for (int i = 0; i < loads.size(); ++i)
-                ys_at_gutter[g_l[i]].push_back(loads[i].pt.y());
-            for (auto it = ys_at_gutter.constBegin(); it != ys_at_gutter.constEnd(); ++it) {
-                const auto &ys = it.value();
-                if (ys.size() < 2)
-                    continue;
-                QVector<qreal> sorted = ys;
-                sorted.push_back(hy);
-                std::sort(sorted.begin(), sorted.end());
-                qreal gx = gx_for_idx[it.key()];
-                for (int i = 1; i < sorted.size() - 1; ++i) {
-                    qreal y = sorted[i];
-                    if (std::abs(y - hy) < 0.5)
-                        continue;
-                    dot_points << QPointF(gx, y);
-                }
-            }
-        }
-
-        QSet<QPair<int, int>> dedupe;
-        for (const auto &p : dot_points) {
-            auto key = qMakePair(static_cast<int>(std::round(p.x())), static_cast<int>(std::round(p.y())));
-            if (dedupe.contains(key))
-                continue;
-            dedupe.insert(key);
-            auto *dot = new JunctionDotItem(p, color);
-            m_scene->addItem(dot);
-            m_junction_dots.push_back(dot);
-        }
-    }
-
-    qreal adjustBridgeY(qreal preferred, qreal bx_min, qreal bx_max) const {
-        constexpr qreal kMargin = 8.0;
-        QVector<std::pair<qreal, qreal>> blocking;
-        for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
-            QRectF r = it.value()->sceneBoundingRect();
-            if (r.right() < bx_min || r.left() > bx_max)
-                continue;
-            blocking.push_back({r.top() - kMargin, r.bottom() + kMargin});
-        }
-        auto in_blocked = [&](qreal y) {
-            for (const auto &b : blocking)
-                if (y >= b.first && y <= b.second)
-                    return true;
-            return false;
-        };
-        if (!in_blocked(preferred))
-            return preferred;
-        QVector<qreal> candidates;
-        for (const auto &b : blocking) {
-            candidates.push_back(b.first - 1);
-            candidates.push_back(b.second + 1);
-        }
-        std::sort(candidates.begin(), candidates.end(), [&](qreal a, qreal b) {
-            return std::abs(a - preferred) < std::abs(b - preferred);
-        });
-        for (qreal y : candidates) {
-            if (!in_blocked(y))
-                return y;
-        }
-        return preferred;
-    }
+    // Routing geometry (lane allocation, bridge planning, junction dots)
+    // lives in Rust — src/routing.rs — reached via plan_routes_ffi /
+    // resolve_clear_y_ffi below. The canvas only gathers pin positions and
+    // module rects and applies the returned polylines.
 
     qreal resolveClearY(InstanceItem *self, qreal snapped_x, qreal w, qreal h, qreal proposed_y) const {
-        constexpr qreal kMargin = static_cast<qreal>(kMinModuleVerticalGap) / 2.0;
-        QRectF proposed(snapped_x, proposed_y, w, h);
-        QRectF probe = proposed.adjusted(-kMargin, -kMargin, kMargin, kMargin);
-
-        QVector<QRectF> blocking;
+        rust::Vec<FfiRect> obstacles;
         for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
             if (it.value() == self)
                 continue;
-            QRectF r = it.value()->sceneBoundingRect().adjusted(-kMargin, -kMargin, kMargin, kMargin);
-            if (r.right() < probe.left() || r.left() > probe.right())
-                continue;
-            blocking.push_back(r);
+            QRectF r = it.value()->sceneBoundingRect();
+            obstacles.push_back(FfiRect{r.left(), r.top(), r.right(), r.bottom()});
         }
-        if (blocking.isEmpty())
-            return proposed_y;
-
-        auto clear_at = [&](qreal y) {
-            QRectF cand(snapped_x, y, w, h);
-            cand.adjust(-kMargin, -kMargin, kMargin, kMargin);
-            for (const auto &b : blocking) {
-                if (b.intersects(cand))
-                    return false;
-            }
-            return true;
-        };
-
-        if (clear_at(proposed_y))
-            return proposed_y;
-
-        QVector<qreal> candidates;
-        for (const auto &b : blocking) {
-            candidates.push_back(b.top() - h);
-            candidates.push_back(b.bottom());
-        }
-        std::sort(candidates.begin(), candidates.end(), [&](qreal a, qreal b) {
-            return std::abs(a - proposed_y) < std::abs(b - proposed_y);
-        });
-        for (qreal y : candidates) {
-            if (clear_at(y))
-                return y;
-        }
-        qreal max_bottom = proposed_y;
-        for (const auto &b : blocking)
-            max_bottom = std::max(max_bottom, b.bottom());
-        return max_bottom;
+        return resolve_clear_y_ffi(snapped_x, w, h, proposed_y,
+                                   static_cast<double>(kMinModuleVerticalGap) / 2.0,
+                                   std::move(obstacles));
     }
 
     // Single authority for instance placement: snap X to the column grid,
@@ -714,59 +487,58 @@ class CanvasLayer {
         QStringList src_keys = by_src.keys();
         std::sort(src_keys.begin(), src_keys.end());
 
-        struct NetData {
-            Endpoint driver;
-            QVector<Endpoint> loads;
-            QVector<WireItem *> wires;
-        };
-        QHash<QString, NetData> nets;
+        // Gather net endpoints in stable (sorted-key) order — lane
+        // assignment in the router depends on allocation order.
+        rust::Vec<FfiNet> nets;
+        QVector<QVector<WireItem *>> net_wires; // parallel to nets
+        QVector<QColor> net_colors;             // parallel to nets
         for (const QString &src_key : src_keys) {
             Endpoint driver;
             if (!resolveEndpoint(src_key, driver))
                 continue;
-            NetData d;
-            d.driver = driver;
+            FfiNet net;
+            net.driver = FfiEndpoint{driver.pt.x(), driver.pt.y(), driver.exits_right, driver.col};
+            QVector<WireItem *> wires;
             for (auto *w : by_src[src_key]) {
                 Endpoint l;
                 if (!resolveEndpoint(w->targetKey(), l))
                     continue;
-                d.loads.push_back(l);
-                d.wires.push_back(w);
+                net.loads.push_back(FfiEndpoint{l.pt.x(), l.pt.y(), l.exits_right, l.col});
+                wires.push_back(w);
             }
-            if (!d.loads.isEmpty())
-                nets[src_key] = std::move(d);
+            if (wires.isEmpty())
+                continue;
+            nets.push_back(std::move(net));
+            net_wires.push_back(wires);
+            net_colors.push_back(WireItem::colorForNet(src_key));
         }
 
-        QHash<int, GutterInfo> gutter_info;
-        for (const QString &src_key : src_keys) {
-            auto it = nets.find(src_key);
-            if (it == nets.end())
-                continue;
-            const NetData &d = it.value();
-            QSet<int> net_gutters;
-            auto tighten = [&](const Endpoint &e) {
-                int idx = gutterIndex(e.col, e.exits_right);
-                net_gutters.insert(idx);
-                GutterInfo &gi = gutter_info[idx];
-                if (e.exits_right)
-                    gi.safe_min = std::max(gi.safe_min, e.pt.x() + static_cast<qreal>(kWireStubMin));
-                else
-                    gi.safe_max = std::min(gi.safe_max, e.pt.x() - static_cast<qreal>(kWireStubMin));
-            };
-            tighten(d.driver);
-            for (const auto &l : d.loads)
-                tighten(l);
-            for (int g : net_gutters)
-                gutter_info[g].nets_using++;
+        rust::Vec<FfiRect> obstacles;
+        for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+            QRectF r = it.value()->sceneBoundingRect();
+            obstacles.push_back(FfiRect{r.left(), r.top(), r.right(), r.bottom()});
         }
 
-        QHash<int, int> gutter_counter;
-        for (const QString &src_key : src_keys) {
-            auto it = nets.find(src_key);
-            if (it == nets.end())
-                continue;
-            const NetData &d = it.value();
-            planNet(src_key, d.driver, d.loads, d.wires, gutter_counter, gutter_info);
+        FfiRouteResult routes = plan_routes_ffi(
+            std::move(nets), std::move(obstacles),
+            FfiRouteParams{static_cast<double>(kColumnPitch), static_cast<double>(kWireLaneStep),
+                           static_cast<double>(kWireStubMin)});
+
+        size_t wi = 0;
+        for (const auto &wires : net_wires) {
+            for (auto *w : wires) {
+                const FfiWire &fw = routes.wires[wi++];
+                QVector<QPointF> pts;
+                pts.reserve(static_cast<int>(fw.points.size()));
+                for (const FfiPoint &fp : fw.points)
+                    pts << QPointF(fp.x, fp.y);
+                w->setWaypoints(pts);
+            }
+        }
+        for (const FfiDot &d : routes.dots) {
+            auto *dot = new JunctionDotItem(QPointF(d.x, d.y), net_colors[d.net]);
+            m_scene->addItem(dot);
+            m_junction_dots.push_back(dot);
         }
         updateSceneRect();
     }

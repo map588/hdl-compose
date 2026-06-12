@@ -405,6 +405,76 @@ pub mod qobject {
         #[qsignal]
         fn library_changed(self: Pin<&mut AppState>);
     }
+
+    // --- Wire routing FFI ----------------------------------------------
+    //
+    // Pure geometry; the canvas resolves pin positions / module rects and
+    // passes them in, Rust plans the routes (see src/routing.rs — that's
+    // where the logic and its property tests live).
+
+    struct FfiEndpoint {
+        x: f64,
+        y: f64,
+        exits_right: bool,
+        col: i32,
+    }
+
+    struct FfiNet {
+        driver: FfiEndpoint,
+        loads: Vec<FfiEndpoint>,
+    }
+
+    struct FfiRect {
+        left: f64,
+        top: f64,
+        right: f64,
+        bottom: f64,
+    }
+
+    struct FfiPoint {
+        x: f64,
+        y: f64,
+    }
+
+    struct FfiWire {
+        points: Vec<FfiPoint>,
+    }
+
+    struct FfiDot {
+        x: f64,
+        y: f64,
+        /// Index into the input `nets` (per-net dot coloring).
+        net: i32,
+    }
+
+    struct FfiRouteResult {
+        /// One polyline per load, flattened net-major in input order.
+        wires: Vec<FfiWire>,
+        dots: Vec<FfiDot>,
+    }
+
+    struct FfiRouteParams {
+        column_pitch: f64,
+        lane_step: f64,
+        stub_min: f64,
+    }
+
+    extern "Rust" {
+        fn plan_routes_ffi(
+            nets: Vec<FfiNet>,
+            obstacles: Vec<FfiRect>,
+            params: FfiRouteParams,
+        ) -> FfiRouteResult;
+
+        fn resolve_clear_y_ffi(
+            left: f64,
+            width: f64,
+            height: f64,
+            proposed_y: f64,
+            margin: f64,
+            obstacles: Vec<FfiRect>,
+        ) -> f64;
+    }
 }
 
 use std::collections::HashMap;
@@ -417,6 +487,7 @@ use cxx_qt_lib::QString;
 
 use crate::codegen;
 use crate::project;
+use crate::routing;
 use crate::schematic::Diagnostic;
 use crate::types::{
     Direction, Language, ModuleDef, NetRef, PortDef, PortType, Range, RangeDir, RangeExpr,
@@ -504,6 +575,69 @@ fn resolve_library_cached(
         }
     }
     (modules, errors)
+}
+
+// --- Routing FFI wrappers (logic lives in crate::routing) -------------------
+
+fn plan_routes_ffi(
+    nets: Vec<qobject::FfiNet>,
+    obstacles: Vec<qobject::FfiRect>,
+    params: qobject::FfiRouteParams,
+) -> qobject::FfiRouteResult {
+    let conv_ep = |e: &qobject::FfiEndpoint| routing::Endpoint {
+        x: e.x,
+        y: e.y,
+        exits_right: e.exits_right,
+        col: e.col,
+    };
+    let nets_r: Vec<routing::Net> = nets
+        .iter()
+        .map(|n| routing::Net {
+            driver: conv_ep(&n.driver),
+            loads: n.loads.iter().map(conv_ep).collect(),
+        })
+        .collect();
+    let obstacles_r: Vec<routing::Rect> = obstacles.iter().map(conv_rect).collect();
+    let p = routing::Params {
+        column_pitch: params.column_pitch,
+        lane_step: params.lane_step,
+        stub_min: params.stub_min,
+    };
+
+    let result = routing::plan_routes(&nets_r, &obstacles_r, p);
+    qobject::FfiRouteResult {
+        wires: result
+            .wires
+            .into_iter()
+            .map(|poly| qobject::FfiWire {
+                points: poly
+                    .into_iter()
+                    .map(|pt| qobject::FfiPoint { x: pt.x, y: pt.y })
+                    .collect(),
+            })
+            .collect(),
+        dots: result
+            .dots
+            .into_iter()
+            .map(|d| qobject::FfiDot { x: d.x, y: d.y, net: d.net as i32 })
+            .collect(),
+    }
+}
+
+fn resolve_clear_y_ffi(
+    left: f64,
+    width: f64,
+    height: f64,
+    proposed_y: f64,
+    margin: f64,
+    obstacles: Vec<qobject::FfiRect>,
+) -> f64 {
+    let obstacles_r: Vec<routing::Rect> = obstacles.iter().map(conv_rect).collect();
+    routing::resolve_clear_y(left, width, height, proposed_y, margin, &obstacles_r)
+}
+
+fn conv_rect(r: &qobject::FfiRect) -> routing::Rect {
+    routing::Rect { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
 }
 
 const UNDO_STACK_LIMIT: usize = 100;
