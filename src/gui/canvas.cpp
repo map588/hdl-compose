@@ -34,12 +34,11 @@ QString allocate_instance_name(AppState *state, const QString &module) {
 }
 
 bool parse_pin_key(PortPinItem *pin, QString *inst, QString *port) {
-    QString k = pin->key();
-    int dot = k.indexOf(QChar('.'));
-    if (dot < 0)
+    NetKey k = NetKey::parse(pin->key());
+    if (!k.valid || k.is_top)
         return false;
-    *inst = k.left(dot);
-    *port = k.mid(dot + 1);
+    *inst = k.instance;
+    *port = k.port;
     return true;
 }
 
@@ -69,8 +68,8 @@ QString WireTool::compatibilityError(PortPinItem *src, PortPinItem *dst) const {
     if (src->key().isEmpty() || dst->key().isEmpty()) {
         return QStringLiteral("cannot wire a bundle header; expand it and wire a member port");
     }
-    bool src_top = src->key().startsWith(QStringLiteral("top:"));
-    bool dst_top = dst->key().startsWith(QStringLiteral("top:"));
+    bool src_top = NetKey::parse(src->key()).is_top;
+    bool dst_top = NetKey::parse(dst->key()).is_top;
     if (!src_top && !dst_top && src->direction() == 1 && dst->direction() == 1) {
         return QStringLiteral("output-to-output: only one driver per net allowed");
     }
@@ -135,25 +134,20 @@ bool WireTool::tryCommit(PortPinItem *src, PortPinItem *dst) {
         QToolTip::showText(QCursor::pos(), err);
         return false;
     }
-    bool src_top = src->key().startsWith(QStringLiteral("top:"));
-    bool dst_top = dst->key().startsWith(QStringLiteral("top:"));
+    NetKey src_k = NetKey::parse(src->key());
+    NetKey dst_k = NetKey::parse(dst->key());
 
-    if (src_top && dst_top) {
+    if (src_k.is_top && dst_k.is_top) {
         QToolTip::showText(QCursor::pos(), QStringLiteral("cannot wire two top-level ports"));
         return false;
     }
 
-    if (src_top || dst_top) {
-        PortPinItem *top = src_top ? src : dst;
-        PortPinItem *inst_pin = src_top ? dst : src;
-        QString inst_key = inst_pin->key();
-        int dot = inst_key.indexOf(QChar('.'));
-        if (dot < 0)
+    if (src_k.is_top || dst_k.is_top) {
+        const NetKey &top = src_k.is_top ? src_k : dst_k;
+        const NetKey &inst_pin = src_k.is_top ? dst_k : src_k;
+        if (!inst_pin.valid)
             return false;
-        QString inst = inst_key.left(dot);
-        QString port = inst_key.mid(dot + 1);
-        QString top_name = top->key().mid(4);
-        m_state->set_port_map_entry(inst, port, top_name);
+        m_state->set_port_map_entry(inst_pin.instance, inst_pin.port, top.port);
         return true;
     }
 
@@ -162,25 +156,19 @@ bool WireTool::tryCommit(PortPinItem *src, PortPinItem *dst) {
     }
     auto can_drive = [](int dir) { return dir == 1 || dir == 2; };
     PortPinItem *driver = can_drive(src->direction()) ? src : dst;
+    const NetKey &load_k = (driver == src) ? dst_k : src_k;
+    const NetKey &driver_k = (driver == src) ? src_k : dst_k;
     PortPinItem *load = (driver == src) ? dst : src;
-    QString load_key = load->key();
-    int dot = load_key.indexOf(QChar('.'));
-    if (dot < 0)
+    if (!load_k.valid)
         return false;
-    QString inst = load_key.left(dot);
-    QString port = load_key.mid(dot + 1);
-    QString dkey = driver->key();
-    QString driver_rhs = dkey.startsWith(QStringLiteral("top:")) ? dkey.mid(4) : dkey;
-    if (driver->width() == 1 && load->width() == 0) {
-        int dd = dkey.indexOf(QChar('.'));
-        if (dd > 0 && !dkey.startsWith(QStringLiteral("top:"))) {
-            QString d_inst = dkey.left(dd);
-            QString d_port = dkey.mid(dd + 1);
-            m_state->set_port_map_entry_slice(inst, port, d_inst, d_port, 0, 0);
-            return true;
-        }
+    if (driver->width() == 1 && load->width() == 0 && driver_k.valid && !driver_k.is_top) {
+        m_state->set_port_map_entry_slice(load_k.instance, load_k.port, driver_k.instance,
+                                          driver_k.port, 0, 0);
+        return true;
     }
-    m_state->set_port_map_entry(inst, port, driver_rhs);
+    QString driver_rhs =
+        driver_k.is_top ? driver_k.port : NetKey::forPin(driver_k.instance, driver_k.port);
+    m_state->set_port_map_entry(load_k.instance, load_k.port, driver_rhs);
     return true;
 }
 
@@ -205,7 +193,7 @@ bool WireTool::tryCommitMultiLoad(PortPinItem *a, PortPinItem *b) {
     if (a_driven && b_driven && a_rhs == b_rhs) {
         return true;
     }
-    QString rhs = QStringLiteral("%1.%2").arg(a_inst, a_port);
+    QString rhs = NetKey::forPin(a_inst, a_port);
     m_state->set_port_map_entry(a_inst, a_port, rhs);
     m_state->set_port_map_entry(b_inst, b_port, rhs);
     m_sticky_after_commit = true;

@@ -466,7 +466,7 @@ void InstanceItem::layoutPins() {
         auto *pin = new PortPinItem(e.name, e.direction, e.width, side, this);
         pin->setSlot(slot);
         pin->setPos(0, kInstanceHeaderHeight);
-        pin->setKey(QStringLiteral("%1.%2").arg(m_name, e.name));
+        pin->setKey(NetKey::forPin(m_name, e.name));
         pin->setWireTool(m_wire_tool);
         m_pins.push_back(pin);
         m_port_anchor.insert(e.name, pin);

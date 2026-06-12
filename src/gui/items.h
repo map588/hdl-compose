@@ -63,6 +63,48 @@ inline QString format_width(int w) {
 // Definition lives in app.cpp inside `namespace hdlc { ... }`.
 int find_instance_index(AppState *state, const QString &name);
 
+// --- NetKey ------------------------------------------------------------------
+//
+// Codec for the string keys the canvas exchanges with the bridge:
+//   "<inst>.<port>"   instance pin
+//   "top:<name>"      top-level port
+//   either form may carry a "[h]" / "[h:l]" slice suffix
+// All construction and parsing of these strings lives here.
+struct NetKey {
+    QString instance; // empty for top-level ports
+    QString port;     // port (or top-port) name, slice suffix stripped
+    bool is_top = false;
+    bool valid = false;
+
+    static QString topPrefix() { return QStringLiteral("top:"); }
+    static QString forTop(const QString &name) { return topPrefix() + name; }
+    static QString forPin(const QString &inst, const QString &port) {
+        return QStringLiteral("%1.%2").arg(inst, port);
+    }
+    // Strip a trailing "[...]" slice suffix.
+    static QString base(const QString &key) {
+        int b = key.indexOf(QChar('['));
+        return (b >= 0) ? key.left(b) : key;
+    }
+    static NetKey parse(const QString &key) {
+        NetKey k;
+        QString s = base(key);
+        if (s.startsWith(topPrefix())) {
+            k.is_top = true;
+            k.port = s.mid(4);
+            k.valid = !k.port.isEmpty();
+            return k;
+        }
+        int dot = s.indexOf(QChar('.'));
+        if (dot <= 0 || dot == s.size() - 1)
+            return k;
+        k.instance = s.left(dot);
+        k.port = s.mid(dot + 1);
+        k.valid = true;
+        return k;
+    }
+};
+
 // --- JunctionDotItem --------------------------------------------------------
 
 class JunctionDotItem : public QGraphicsEllipseItem {
@@ -464,7 +506,7 @@ class TopPortItem : public PortPinItem {
   public:
     TopPortItem(const QString &name, int direction, int width, PinSide side)
         : PortPinItem(name, direction, width, side, /*parent*/ nullptr) {
-        setKey(QStringLiteral("top:%1").arg(name));
+        setKey(NetKey::forTop(name));
         setAcceptedMouseButtons(Qt::LeftButton);
     }
 

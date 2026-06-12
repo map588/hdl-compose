@@ -135,10 +135,9 @@ class CanvasView : public QGraphicsView {
             if (auto *s = scene()) {
                 for (QGraphicsItem *it : s->selectedItems()) {
                     if (auto *wire = dynamic_cast<WireItem *>(it)) {
-                        const QString &tk = wire->targetKey();
-                        int dot = tk.indexOf(QChar('.'));
-                        if (dot > 0) {
-                            wires_to_clear.append({tk.left(dot), tk.mid(dot + 1)});
+                        NetKey k = NetKey::parse(wire->targetKey());
+                        if (k.valid && !k.is_top) {
+                            wires_to_clear.append({k.instance, k.port});
                         }
                     } else if (auto *inst = dynamic_cast<InstanceItem *>(it)) {
                         instances_to_remove.append(inst->instanceName());
@@ -393,12 +392,11 @@ class CanvasLayer {
 
     bool resolveEndpoint(const QString &key, Endpoint &out) const {
         out.key = key;
-        if (key.startsWith(QStringLiteral("top:"))) {
-            QString nm = key.mid(4);
-            int bracket = nm.indexOf(QChar('['));
-            if (bracket >= 0)
-                nm.truncate(bracket);
-            auto *tp = m_top_port_by_name.value(nm, nullptr);
+        NetKey k = NetKey::parse(key);
+        if (!k.valid)
+            return false;
+        if (k.is_top) {
+            auto *tp = m_top_port_by_name.value(k.port, nullptr);
             if (!tp)
                 return false;
             out.pt = tp->tipScenePos();
@@ -406,18 +404,10 @@ class CanvasLayer {
             out.col = columnForX(out.pt.x());
             return true;
         }
-        int dot = key.indexOf(QChar('.'));
-        if (dot < 0)
-            return false;
-        QString inst = key.left(dot);
-        QString port = key.mid(dot + 1);
-        int bracket = port.indexOf(QChar('['));
-        if (bracket >= 0)
-            port.truncate(bracket);
-        auto *item = m_items.value(inst, nullptr);
+        auto *item = m_items.value(k.instance, nullptr);
         if (!item)
             return false;
-        out.pt = item->portAnchorScenePos(port);
+        out.pt = item->portAnchorScenePos(k.port);
         QRectF r = item->sceneBoundingRect();
         out.exits_right = out.pt.x() >= r.center().x();
         out.col = columnForX(r.center().x());
@@ -548,12 +538,7 @@ class CanvasLayer {
             qreal dgx = gx_for_idx[g_d];
 
             QSet<QString> endpoint_insts;
-            auto inst_of = [](const QString &k) -> QString {
-                if (k.startsWith(QStringLiteral("top:")))
-                    return QString();
-                int d = k.indexOf(QChar('.'));
-                return (d >= 0) ? k.left(d) : QString();
-            };
+            auto inst_of = [](const QString &k) { return NetKey::parse(k).instance; };
             QString d_inst = inst_of(driver.key);
             if (!d_inst.isEmpty())
                 endpoint_insts.insert(d_inst);
@@ -710,10 +695,7 @@ class CanvasLayer {
         m_junction_dots.clear();
     }
 
-    static QString baseKey(const QString &key) {
-        int b = key.indexOf(QChar('['));
-        return (b >= 0) ? key.left(b) : key;
-    }
+    static QString baseKey(const QString &key) { return NetKey::base(key); }
 
     // Net hover-highlight: light up every wire of the hovered net so fan-out
     // is traceable. Empty key clears.
