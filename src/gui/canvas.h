@@ -877,7 +877,18 @@ class CanvasLayer {
         rerouteWiresFor(QString());
     }
 
-    void onPortMapChanged() {
+    // Per-entry change: only the named instance's pins can be affected
+    // (pin layout depends on ports/bundles/generics, not on other
+    // instances' port maps). Wires always rebuild — routing is global.
+    void onPortMapChanged(const QString &inst_name) {
+        if (auto *item = m_items.value(inst_name, nullptr))
+            item->relayoutPins();
+        rebuildWires();
+    }
+
+    // Bulk change (generic override, editor commit, undo of a batch):
+    // anything may have moved, so relayout everything.
+    void onPortMapChangedBulk() {
         for (auto it = m_items.begin(); it != m_items.end(); ++it) {
             it.value()->relayoutPins();
         }

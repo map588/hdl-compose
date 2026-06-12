@@ -2134,11 +2134,14 @@ extern "C" int run_gui(int *argc, char **argv) {
         state, &AppState::instance_moved, &window,
         [&canvas_layer](const QString &name, double x, double y) { canvas_layer.onInstanceMoved(name, x, y); });
     QObject::connect(state, &AppState::port_map_changed, &window,
-                     [&canvas_layer](const QString &, const QString &) { canvas_layer.onPortMapChanged(); });
+                     [&canvas_layer](const QString &inst, const QString &) {
+                         canvas_layer.onPortMapChanged(inst);
+                     });
     QObject::connect(state, &AppState::port_map_changed_bulk, &window,
-                     [&canvas_layer]() { canvas_layer.onPortMapChanged(); });
+                     [&canvas_layer]() { canvas_layer.onPortMapChangedBulk(); });
+    // Aliases only rename/recolor nets — wires, not pin layout.
     QObject::connect(state, &AppState::alias_changed, &window,
-                     [&canvas_layer](const QString &) { canvas_layer.onPortMapChanged(); });
+                     [&canvas_layer](const QString &) { canvas_layer.rebuildWires(); });
     QObject::connect(state, &AppState::library_changed, &window, refresh_sidebar);
 
     // Module re-parse: watch every library path and auto-reload when the
