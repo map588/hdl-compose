@@ -273,23 +273,24 @@ void CanvasView::dropEvent(QDropEvent *event) {
     }
     QString module = QString::fromUtf8(data);
     QString inst_name = allocate_instance_name(m_state, module);
+    // Batch so add + initial position form a single undo step.
+    m_state->begin_batch();
     if (!m_state->add_instance(inst_name, module)) {
+        m_state->end_batch();
         return;
     }
     QPointF scene_pos = mapToScene(event->position().toPoint());
-    int col = static_cast<int>(std::round(scene_pos.x() / kColumnPitch));
-    qreal w = kMinInstanceWidth;
-    qreal y = scene_pos.y();
-    InstanceItem *item = m_canvas_layer ? m_canvas_layer->itemFor(inst_name) : nullptr;
-    if (item)
-        w = item->width();
-    qreal snapped_x = col * kColumnPitch - w / 2.0;
-    // Resolve overlap here so the MODEL gets the corrected position — the
+    // Resolve placement here so the MODEL gets the corrected position — the
     // itemChange hook only corrects the visual item, and an uncorrected
     // model position reloads as overlapping modules after save.
-    if (item && m_canvas_layer)
-        y = m_canvas_layer->resolveClearY(item, snapped_x, w, item->rect().height(), y);
-    m_state->set_instance_position(inst_name, snapped_x, y);
+    InstanceItem *item = m_canvas_layer ? m_canvas_layer->itemFor(inst_name) : nullptr;
+    QPointF pos(scene_pos.x() - kMinInstanceWidth / 2.0, scene_pos.y());
+    if (item && m_canvas_layer) {
+        pos = m_canvas_layer->placeInstance(
+            item, QPointF(scene_pos.x() - item->width() / 2.0, scene_pos.y()));
+    }
+    m_state->set_instance_position(inst_name, pos.x(), pos.y());
+    m_state->end_batch();
     event->acceptProposedAction();
 }
 

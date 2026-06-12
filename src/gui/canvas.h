@@ -687,6 +687,19 @@ class CanvasLayer {
         return max_bottom;
     }
 
+    // Single authority for instance placement: snap X to the column grid,
+    // shove Y clear of other modules. Interactive drags (itemChange) and
+    // programmatic placement (drop) both go through here; `proposed` is the
+    // item's top-left corner.
+    QPointF placeInstance(InstanceItem *item, const QPointF &proposed) const {
+        const qreal w = item->width();
+        const qreal centered = proposed.x() + w / 2.0;
+        const int col = static_cast<int>(std::round(centered / static_cast<qreal>(kColumnPitch)));
+        const qreal snapped_x = col * kColumnPitch - w / 2.0;
+        const qreal y = resolveClearY(item, snapped_x, w, item->rect().height(), proposed.y());
+        return QPointF(snapped_x, y);
+    }
+
     void clearJunctionDots() {
         for (auto *d : m_junction_dots) {
             m_scene->removeItem(d);

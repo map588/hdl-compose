@@ -873,13 +873,12 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
 QVariant InstanceItem::itemChange(GraphicsItemChange change, const QVariant &value) {
     if (change == ItemPositionChange) {
         QPointF p = value.toPointF();
+        if (m_canvas_layer)
+            return m_canvas_layer->placeInstance(this, p);
+        // Layer not attached yet (mid-construction): snap X only.
         qreal centered = p.x() + m_width / 2.0;
         int col = static_cast<int>(std::round(centered / kColumnPitch));
-        qreal snapped_x = col * kColumnPitch - m_width / 2.0;
-        qreal y = p.y();
-        if (m_canvas_layer)
-            y = m_canvas_layer->resolveClearY(this, snapped_x, m_width, rect().height(), y);
-        return QPointF(snapped_x, y);
+        return QPointF(col * kColumnPitch - m_width / 2.0, p.y());
     }
     if (change == ItemPositionHasChanged && m_canvas_layer) {
         m_canvas_layer->onInstanceColumnChanged();

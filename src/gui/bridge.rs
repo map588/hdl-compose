@@ -995,7 +995,10 @@ impl qobject::AppState {
     pub fn add_instance(mut self: Pin<&mut Self>, name: &QString, module: &QString) -> bool {
         let name_s = name.to_string();
         let module_s = module.to_string();
-        self.as_mut().push_snapshot();
+        // Batch-aware so drop (add + initial position) is one undo step.
+        // Signals still fire immediately — the canvas must create the item
+        // before the position arrives.
+        self.as_mut().snapshot_for_mutation();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s.add_instance(name_s.clone(), module_s).map(|_| ()),
             None => {
@@ -1071,18 +1074,27 @@ impl qobject::AppState {
         y: f64,
     ) -> bool {
         let name_s = name.to_string();
-        let ok = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
-            Some(s) => match s.get_instance_mut(&name_s) {
-                Some(inst) => {
-                    inst.position = (x as f32, y as f32);
-                    true
-                }
-                None => false,
-            },
-            None => false,
-        };
-        if !ok {
+        let exists = self
+            .as_ref()
+            .rust()
+            .schematic
+            .as_ref()
+            .is_some_and(|s| s.instances.iter().any(|i| i.name == name_s));
+        if !exists {
             return false;
+        }
+        // Snapshot so a completed move is undoable. Called once per drag
+        // release / drop — never per drag tick.
+        self.as_mut().snapshot_for_mutation();
+        if let Some(inst) = self
+            .as_mut()
+            .rust_mut()
+            .get_mut()
+            .schematic
+            .as_mut()
+            .and_then(|s| s.get_instance_mut(&name_s))
+        {
+            inst.position = (x as f32, y as f32);
         }
         self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
