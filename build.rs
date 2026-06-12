@@ -13,6 +13,8 @@ fn main() {
             .cc_builder(|cc| {
                 cc.file("src/gui/app.cpp");
                 cc.file("src/gui/canvas.cpp");
+                cc.file("src/gui/editor_buffer.cpp");
+                cc.file("src/gui/items.cpp");
             })
             .build();
     }
