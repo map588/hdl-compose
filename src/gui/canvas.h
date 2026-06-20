@@ -83,6 +83,10 @@ class CanvasView : public QGraphicsView {
     CanvasView(QGraphicsScene *scene, AppState *state, QWidget *parent = nullptr)
         : QGraphicsView(scene, parent), m_state(state) {
         setRenderHint(QPainter::Antialiasing);
+        // Default MinimalViewportUpdate repaints disjoint per-item rects; with
+        // antialiasing the AA fringe at the seams isn't cleared, ghosting moved
+        // wires. Union into one bounding rect — still repaints only on change.
+        setViewportUpdateMode(QGraphicsView::BoundingRectViewportUpdate);
         setDragMode(QGraphicsView::RubberBandDrag);
         setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
         setResizeAnchor(QGraphicsView::AnchorViewCenter);
