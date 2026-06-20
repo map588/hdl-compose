@@ -47,6 +47,58 @@ void WireItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *) {
         m_layer->setHoveredNet(QString());
 }
 
+// --- TopPortItem drag (needs full CanvasLayer type) -------------------------
+
+void TopPortItem::mousePressEvent(QGraphicsSceneMouseEvent *event) {
+    // Shift+click toggles this port in the selection (append) instead of arming
+    // a wire — the plain click is taken by wiring, so this is how to multi-select
+    // for Delete.
+    if (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ShiftModifier)) {
+        setSelected(!isSelected());
+        event->accept();
+        return;
+    }
+    if (event->button() == Qt::LeftButton) {
+        m_press_scene = event->scenePos();
+        m_start_y = pos().y();
+        m_moved = false;
+        event->accept();
+        return;
+    }
+    PortPinItem::mousePressEvent(event);
+}
+
+void TopPortItem::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
+    if ((event->buttons() & Qt::LeftButton) && m_layer) {
+        if (!m_moved && (event->scenePos() - m_press_scene).manhattanLength() >= kClickThresholdPx)
+            m_moved = true;
+        if (m_moved) {
+            qreal y = m_layer->clampTopPortY(m_start_y + (event->scenePos().y() - m_press_scene.y()));
+            setPos(m_locked_x, y); // X stays pinned to the edge
+            m_layer->replanWires();
+        }
+        event->accept();
+        return;
+    }
+    PortPinItem::mouseMoveEvent(event);
+}
+
+void TopPortItem::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
+    if (event->button() == Qt::LeftButton) {
+        if (m_moved) {
+            m_moved = false;
+            if (m_layer)
+                m_layer->setTopPortY(portName(), pos().y());
+        } else if (m_wire_tool) {
+            // No drag: treat as a click — arm/commit a wire like a normal pin.
+            m_wire_tool->onPinPressed(this, event->scenePos());
+        }
+        event->accept();
+        return;
+    }
+    PortPinItem::mouseReleaseEvent(event);
+}
+
 // --- WireTool ---------------------------------------------------------------
 
 bool WireTool::tryCommit(PortPinItem *src, PortPinItem *dst) {

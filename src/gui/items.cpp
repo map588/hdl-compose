@@ -63,6 +63,41 @@ QRectF BundlePinItem::boundingRect() const {
     return QRectF(x, m_slot * kPinSlotHeight, w, kPinSlotHeight);
 }
 
+// The whole row (arrow + label + button) folds the bundle — not just the
+// button glyph. Without this the hit target is PortPinItem's tiny tip square.
+QPainterPath BundlePinItem::shape() const {
+    qreal pw = m_parent ? m_parent->width() : kMinInstanceWidth;
+    qreal half = kPinShapeSize;
+    qreal budget = m_parent ? m_parent->labelBudget(m_side) : pw;
+    // Confine the hit region to this side's button + label so it can't span the
+    // module and swallow clicks on the opposite side's ports.
+    qreal left, right;
+    if (m_side == PinSide::Left) {
+        left = -half;
+        right = qMin(pw, half + 4 + budget);
+    } else {
+        left = qMax(qreal(0), pw - half - 4 - budget);
+        right = pw + half;
+    }
+    QPainterPath p;
+    p.addRect(QRectF(left, m_slot * kPinSlotHeight, right - left, kPinSlotHeight));
+    return p;
+}
+
+// Collapsed: the fat button straddles the module edge, so the inherited tip
+// (the edge) lands at the button's center and wires draw over it. Anchor at the
+// button's outer face so member wires emerge from the port instead. Expanded
+// headers carry no wire — fall back to the edge.
+QPointF BundlePinItem::tipScenePos() const {
+    if (m_header)
+        return PortPinItem::tipScenePos();
+    qreal y = m_slot * kPinSlotHeight + kPinSlotHeight / 2.0;
+    qreal pw = m_parent ? m_parent->width() : kMinInstanceWidth;
+    qreal half = kPinShapeSize;
+    qreal tip_x = (m_side == PinSide::Left) ? -half : pw + half;
+    return mapToScene(QPointF(tip_x, y));
+}
+
 // format_width moved inline to items.h.
 
 void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
@@ -196,13 +231,49 @@ void BundlePinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, Q
     }
 }
 
+// The bundle row spans most of the module side, so it must not steal drags
+// meant to move the module: a click folds the bundle, a drag moves the parent
+// instance (reusing its placement + undo path). We drive the parent directly
+// rather than letting the press fall through, so the gesture also works over
+// the button that overhangs the module edge.
 void BundlePinItem::mousePressEvent(QGraphicsSceneMouseEvent *event) {
     if (event->button() == Qt::LeftButton && m_parent) {
-        m_parent->toggleBundleExpanded(m_name);
+        m_press_scene = event->scenePos();
+        m_parent_start = m_parent->pos();
+        m_dragged = false;
         event->accept();
         return;
     }
     PortPinItem::mousePressEvent(event);
+}
+
+void BundlePinItem::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
+    if (m_parent && (event->buttons() & Qt::LeftButton)) {
+        QPointF delta = event->scenePos() - m_press_scene;
+        if (!m_dragged && delta.manhattanLength() >= kClickThresholdPx)
+            m_dragged = true;
+        if (m_dragged)
+            m_parent->setPos(m_parent_start + delta);
+        event->accept();
+        return;
+    }
+    PortPinItem::mouseMoveEvent(event);
+}
+
+void BundlePinItem::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
+    if (event->button() == Qt::LeftButton && m_parent) {
+        if (m_dragged) {
+            m_dragged = false;
+            m_parent->commitDragPosition();
+            event->accept();
+            return;
+        }
+        // Click: fold/unfold. relayoutPins() deletes `this`, so toggle last.
+        event->accept();
+        m_parent->toggleBundleExpanded(m_name);
+        return;
+    }
+    PortPinItem::mouseReleaseEvent(event);
 }
 
 void InstanceItem::layoutPins() {
@@ -635,7 +706,6 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     bool is_bundle = dynamic_cast<BundlePinItem *>(this) != nullptr;
 
     QMenu menu;
-    QAction *groupAct = nullptr;
     QAction *ungroupAct = nullptr;
     QAction *promoteAct = nullptr;
     QAction *clearAct = nullptr;
@@ -643,7 +713,8 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     if (is_bundle) {
         ungroupAct = menu.addAction(QStringLiteral("Ungroup"));
     } else {
-        groupAct = menu.addAction(QStringLiteral("Group into interface..."));
+        // Grouping lives on the module's context menu (InstanceItem) — it needs
+        // a fresh multi-port selection, not a single pre-picked pin.
         promoteAct = menu.addAction(QStringLiteral("Promote to top-level port"));
         // Slice dialog makes sense only for multi-bit ports (width != 0).
         if (m_width != 0) {
@@ -652,33 +723,74 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
         clearAct = menu.addAction(QStringLiteral("Clear connection"));
     }
     QAction *chosen = menu.exec(event->screenPos());
-    if (!chosen) {
-        event->accept();
+    event->accept();
+    if (!chosen)
+        return;
+
+    QWidget *parent_w = nullptr;
+    if (auto *s = scene()) {
+        if (!s->views().isEmpty())
+            parent_w = s->views().first()->window();
+    }
+    const QString port = m_name;
+
+    // These mutate AppState, which synchronously relayouts pins and deletes
+    // THIS item — doing that inside the pin's own event handler is a
+    // use-after-free. Defer to after the handler returns. Capture by value
+    // (never `this`).
+    if (chosen == promoteAct) {
+        QTimer::singleShot(0, [state, inst, port]() {
+            QString resolved = state->promote_port_to_top(inst, port);
+            if (!resolved.isEmpty() && resolved != port)
+                QToolTip::showText(QCursor::pos(), QStringLiteral("Promoted as '%1'").arg(resolved));
+        });
+    } else if (chosen == ungroupAct) {
+        QTimer::singleShot(0, [state, inst, port]() { state->remove_manual_bundle(inst, port); });
+    } else if (chosen == clearAct) {
+        QTimer::singleShot(0, [state, inst, port]() { state->clear_port_map_entry(inst, port); });
+    } else if (chosen == sliceAct) {
+        QTimer::singleShot(0, [state, inst, port, parent_w]() {
+            prompt_connect_slice(parent_w, state, inst, port);
+        });
+    }
+}
+
+void InstanceItem::commitDragPosition() {
+    if (m_canvas_layer)
+        setPos(m_canvas_layer->placeInstance(this, pos()));
+    QPointF p = pos();
+    m_state->set_instance_position(m_name, p.x(), p.y());
+}
+
+void InstanceItem::toggleBundleExpanded(const QString &bundle) {
+    if (m_expanded_bundles.contains(bundle))
+        m_expanded_bundles.remove(bundle);
+    else
+        m_expanded_bundles.insert(bundle);
+    relayoutPins();
+    // Anchors moved (members <-> header): reroute so collapsed members merge
+    // into one bus wire and expanded members split back out.
+    if (m_canvas_layer)
+        m_canvas_layer->replanWires();
+}
+
+void InstanceItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
+    if (!m_state) {
+        event->ignore();
         return;
     }
-    if (chosen == promoteAct) {
-        QString resolved = state->promote_port_to_top(inst, m_name);
-        if (!resolved.isEmpty() && resolved != m_name) {
-            QToolTip::showText(QCursor::pos(), QStringLiteral("Promoted as '%1'").arg(resolved));
-        }
-    } else if (chosen == groupAct) {
+    QMenu menu;
+    QAction *groupAct = menu.addAction(QStringLiteral("Group ports into interface..."));
+    QAction *chosen = menu.exec(event->screenPos());
+    if (chosen == groupAct) {
         QWidget *parent_w = nullptr;
         if (auto *s = scene()) {
             if (!s->views().isEmpty())
                 parent_w = s->views().first()->window();
         }
-        prompt_create_manual_bundle(parent_w, state, inst, m_name);
-    } else if (chosen == ungroupAct) {
-        state->remove_manual_bundle(inst, m_name);
-    } else if (chosen == clearAct) {
-        state->clear_port_map_entry(inst, m_name);
-    } else if (chosen == sliceAct) {
-        QWidget *parent_w = nullptr;
-        if (auto *s = scene()) {
-            if (!s->views().isEmpty())
-                parent_w = s->views().first()->window();
-        }
-        prompt_connect_slice(parent_w, state, inst, m_name);
+        // Empty preselection: the dialog opens with no port checked, so the
+        // user picks the whole group from scratch.
+        prompt_create_manual_bundle(parent_w, m_state, m_name, QString());
     }
     event->accept();
 }
@@ -695,10 +807,11 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
 
 QVariant InstanceItem::itemChange(GraphicsItemChange change, const QVariant &value) {
     if (change == ItemPositionChange) {
+        // Live placement: snap X to the column grid, but let Y follow the cursor.
+        // Vertical collision-shoving is deferred to release/drop (see
+        // commitDragPosition / placeInstance) so dragging within a rank stays
+        // smooth instead of fighting the cursor each frame.
         QPointF p = value.toPointF();
-        if (m_canvas_layer)
-            return m_canvas_layer->placeInstance(this, p);
-        // Layer not attached yet (mid-construction): snap X only.
         qreal centered = p.x() + m_width / 2.0;
         int col = static_cast<int>(std::round(centered / kColumnPitch));
         return QPointF(col * kColumnPitch - m_width / 2.0, p.y());

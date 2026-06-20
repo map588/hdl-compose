@@ -83,10 +83,14 @@ class CanvasView : public QGraphicsView {
     CanvasView(QGraphicsScene *scene, AppState *state, QWidget *parent = nullptr)
         : QGraphicsView(scene, parent), m_state(state) {
         setRenderHint(QPainter::Antialiasing);
-        // Default MinimalViewportUpdate repaints disjoint per-item rects; with
-        // antialiasing the AA fringe at the seams isn't cleared, ghosting moved
-        // wires. Union into one bounding rect — still repaints only on change.
-        setViewportUpdateMode(QGraphicsView::BoundingRectViewportUpdate);
+        // Region-based update modes (Minimal/BoundingRect) repaint only the
+        // union of items' self-reported boundingRects. Anything painted outside
+        // a boundingRect (wire width markers on the port stub) or overlapping
+        // items whose state changes (selection blue, net-hover) leak stale
+        // pixels. Repaint the visible viewport on change instead — this is
+        // paint-only; the incremental wire replanning is untouched and a
+        // schematic viewport is cheap to raster.
+        setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
         setDragMode(QGraphicsView::RubberBandDrag);
         setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
         setResizeAnchor(QGraphicsView::AnchorViewCenter);
@@ -134,6 +138,7 @@ class CanvasView : public QGraphicsView {
         if (event->key() == Qt::Key_Backspace || event->key() == Qt::Key_Delete) {
             QVector<QPair<QString, QString>> wires_to_clear;
             QVector<QString> instances_to_remove;
+            QVector<QString> top_ports_to_remove;
             if (auto *s = scene()) {
                 for (QGraphicsItem *it : s->selectedItems()) {
                     if (auto *wire = dynamic_cast<WireItem *>(it)) {
@@ -141,6 +146,8 @@ class CanvasView : public QGraphicsView {
                         if (k.valid && !k.is_top) {
                             wires_to_clear.append({k.instance, k.port});
                         }
+                    } else if (auto *top = dynamic_cast<TopPortItem *>(it)) {
+                        top_ports_to_remove.append(top->portName());
                     } else if (auto *inst = dynamic_cast<InstanceItem *>(it)) {
                         instances_to_remove.append(inst->instanceName());
                     }
@@ -158,6 +165,11 @@ class CanvasView : public QGraphicsView {
             }
             if (batch)
                 m_state->end_batch();
+            for (const QString &name : top_ports_to_remove) {
+                if (m_state->remove_top_port(name)) {
+                    did_something = true;
+                }
+            }
             for (const QString &name : instances_to_remove) {
                 if (m_state->remove_instance(name)) {
                     did_something = true;
@@ -336,6 +348,32 @@ class CanvasLayer {
         return {lo, hi};
     }
 
+    // Vertical range a top port may be dragged over: the placed modules'
+    // bounding box. Falls back to the default stack span when empty.
+    std::pair<qreal, qreal> topPortYBounds() const {
+        if (m_items.isEmpty())
+            return {-300.0, 300.0};
+        qreal top = 1e18, bot = -1e18;
+        for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+            QRectF r = it.value()->sceneBoundingRect();
+            top = std::min(top, r.top());
+            bot = std::max(bot, r.bottom());
+        }
+        return {top, bot};
+    }
+
+    qreal clampTopPortY(qreal y) const {
+        auto [top, bot] = topPortYBounds();
+        return std::min(std::max(y, top), bot);
+    }
+
+    // Persist a user-dragged top-port Y so rebuildTopPorts re-applies it
+    // instead of restacking to the default.
+    void setTopPortY(const QString &name, qreal y) {
+        m_top_port_y[name] = clampTopPortY(y);
+        replanWires();
+    }
+
     void rebuildTopPorts() {
         for (auto *t : m_top_ports) {
             m_scene->removeItem(t);
@@ -362,7 +400,10 @@ class CanvasLayer {
         for (int i : inputs) {
             QString nm = m_state->top_port_name(i);
             auto *tp = new TopPortItem(nm, 0, m_state->top_port_width(i), PinSide::Left);
-            tp->setPos(in_x, in_y);
+            qreal y = m_top_port_y.contains(nm) ? clampTopPortY(m_top_port_y.value(nm)) : in_y;
+            tp->setLockedX(in_x);
+            tp->setLayer(this);
+            tp->setPos(in_x, y);
             tp->setWireTool(&m_wire_tool);
             m_scene->addItem(tp);
             m_top_ports.push_back(tp);
@@ -372,7 +413,10 @@ class CanvasLayer {
         for (int i : outputs) {
             QString nm = m_state->top_port_name(i);
             auto *tp = new TopPortItem(nm, 1, m_state->top_port_width(i), PinSide::Right);
-            tp->setPos(out_x, out_y);
+            qreal y = m_top_port_y.contains(nm) ? clampTopPortY(m_top_port_y.value(nm)) : out_y;
+            tp->setLockedX(out_x);
+            tp->setLayer(this);
+            tp->setPos(out_x, y);
             tp->setWireTool(&m_wire_tool);
             m_scene->addItem(tp);
             m_top_ports.push_back(tp);
@@ -386,6 +430,7 @@ class CanvasLayer {
         QPointF pt;
         bool exits_right = false;
         int col = 0;
+        const void *anchor = nullptr; // the pin/header item this resolves to
     };
 
     static int columnForX(qreal x) {
@@ -404,12 +449,14 @@ class CanvasLayer {
             out.pt = tp->tipScenePos();
             out.exits_right = (tp->side() == PinSide::Left);
             out.col = columnForX(out.pt.x());
+            out.anchor = tp;
             return true;
         }
         auto *item = m_items.value(k.instance, nullptr);
         if (!item)
             return false;
         out.pt = item->portAnchorScenePos(k.port);
+        out.anchor = item->portAnchorItem(k.port);
         QRectF r = item->sceneBoundingRect();
         out.exits_right = out.pt.x() >= r.center().x();
         out.col = columnForX(r.center().x());
@@ -479,8 +526,25 @@ class CanvasLayer {
             m_scene->setSceneRect(base);
     }
 
+    // Identity of a routed net by the pin/header items it connects (not pixel
+    // positions — those collide under rounding). Collapsed bundle members share
+    // the same header items, so they collapse to one key. Direction-agnostic
+    // (all anchors pooled, then sorted) so a mixed-direction bundle still merges
+    // into one bus instead of one per direction.
+    static QString anchorKey(QVector<quintptr> anchors) {
+        std::sort(anchors.begin(), anchors.end());
+        QString k;
+        for (quintptr a : anchors)
+            k += QString::number(a) + QStringLiteral(";");
+        return k;
+    }
+
     void replanWires() {
         clearJunctionDots();
+
+        // Recomputed below; reset so a freshly-expanded bundle splits back out.
+        for (auto *w : m_wires)
+            w->setVisible(true);
 
         QHash<QString, QVector<WireItem *>> by_src;
         for (auto *w : m_wires)
@@ -494,6 +558,8 @@ class CanvasLayer {
         rust::Vec<FfiNet> nets;
         QVector<QVector<WireItem *>> net_wires; // parallel to nets
         QVector<QColor> net_colors;             // parallel to nets
+        QHash<QString, int> net_index;          // anchor key -> index into nets
+        QVector<WireItem *> hidden;             // collapsed-bundle duplicates
         for (const QString &src_key : src_keys) {
             Endpoint driver;
             if (!resolveEndpoint(src_key, driver))
@@ -501,15 +567,32 @@ class CanvasLayer {
             FfiNet net;
             net.driver = FfiEndpoint{driver.pt.x(), driver.pt.y(), driver.exits_right, driver.col};
             QVector<WireItem *> wires;
+            QVector<quintptr> anchors;
+            anchors.push_back(reinterpret_cast<quintptr>(driver.anchor));
+            bool all_anchored = driver.anchor != nullptr;
             for (auto *w : by_src[src_key]) {
                 Endpoint l;
                 if (!resolveEndpoint(w->targetKey(), l))
                     continue;
                 net.loads.push_back(FfiEndpoint{l.pt.x(), l.pt.y(), l.exits_right, l.col});
+                anchors.push_back(reinterpret_cast<quintptr>(l.anchor));
+                all_anchored = all_anchored && l.anchor != nullptr;
                 wires.push_back(w);
             }
             if (wires.isEmpty())
                 continue;
+
+            // A collapsed bundle's members resolve to the same header items, so
+            // they share this key: keep one representative wire, hide the rest —
+            // the result reads as a single wire. Unresolved anchors fall back to
+            // a unique key so distinct nets never merge.
+            QString key = all_anchored ? anchorKey(anchors) : src_key;
+            if (net_index.contains(key)) {
+                for (auto *w : wires)
+                    hidden.push_back(w);
+                continue;
+            }
+            net_index.insert(key, static_cast<int>(net_wires.size()));
             nets.push_back(std::move(net));
             net_wires.push_back(wires);
             net_colors.push_back(WireItem::colorForNet(src_key));
@@ -542,6 +625,8 @@ class CanvasLayer {
             m_scene->addItem(dot);
             m_junction_dots.push_back(dot);
         }
+        for (auto *w : hidden)
+            w->setVisible(false);
         updateSceneRect();
     }
 
@@ -562,7 +647,9 @@ class CanvasLayer {
             w->setAppState(m_state);
             w->setCanvasLayer(this);
             w->setWidth(m_state->wire_width(i));
-            w->setZValue(1);
+            // Below instances (z=0) so the port polygons and module bodies draw
+            // on top of the wire endpoints, not the other way around.
+            w->setZValue(-1);
             m_scene->addItem(w);
             m_wires.push_back(w);
         }
@@ -651,6 +738,7 @@ class CanvasLayer {
     QHash<QString, InstanceItem *> m_items;
     std::vector<TopPortItem *> m_top_ports;
     QHash<QString, TopPortItem *> m_top_port_by_name;
+    QHash<QString, qreal> m_top_port_y; // user-dragged Y overrides, by port name
     std::vector<WireItem *> m_wires;
     std::vector<JunctionDotItem *> m_junction_dots;
     std::pair<int, int> m_last_col_bounds = {0, 0};

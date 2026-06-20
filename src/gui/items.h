@@ -368,14 +368,21 @@ class BundlePinItem : public PortPinItem {
     }
 
     QRectF boundingRect() const override;
+    QPainterPath shape() const override;
+    QPointF tipScenePos() const override;
     void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override;
 
   protected:
     void mousePressEvent(QGraphicsSceneMouseEvent *event) override;
+    void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override;
+    void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override;
 
   private:
     bool m_header;
     int m_member_count;
+    QPointF m_press_scene;
+    QPointF m_parent_start;
+    bool m_dragged = false;
 };
 
 // --- InstanceItem -----------------------------------------------------------
@@ -414,14 +421,15 @@ class InstanceItem : public QGraphicsRectItem {
         return it.value()->tipScenePos();
     }
 
-    void toggleBundleExpanded(const QString &bundle) {
-        if (m_expanded_bundles.contains(bundle)) {
-            m_expanded_bundles.remove(bundle);
-        } else {
-            m_expanded_bundles.insert(bundle);
-        }
-        relayoutPins();
+    // The pin/header item a port resolves to. Collapsed bundle members all
+    // return the same header item; expanded members return their own pins.
+    // Used to merge a collapsed bundle's wires into one bus by identity.
+    const void *portAnchorItem(const QString &port_name) const {
+        auto it = m_port_anchor.find(port_name);
+        return (it == m_port_anchor.end()) ? nullptr : static_cast<const void *>(it.value());
     }
+
+    void toggleBundleExpanded(const QString &bundle);
 
     bool bundleExpanded(const QString &bundle) const { return m_expanded_bundles.contains(bundle); }
 
@@ -441,6 +449,10 @@ class InstanceItem : public QGraphicsRectItem {
         layoutPins();
         update();
     }
+
+    // End-of-drag: settle clear of other modules (deferred from the live drag),
+    // then persist the position. Defined in items.cpp (needs CanvasLayer).
+    void commitDragPosition();
 
     void layoutPins();
 
@@ -471,8 +483,7 @@ class InstanceItem : public QGraphicsRectItem {
             return;
         }
         if (m_dragged) {
-            QPointF p = pos();
-            m_state->set_instance_position(m_name, p.x(), p.y());
+            commitDragPosition();
         } else {
             m_state->set_selected_instance(m_name);
         }
@@ -480,6 +491,7 @@ class InstanceItem : public QGraphicsRectItem {
     }
 
     QVariant itemChange(GraphicsItemChange change, const QVariant &value) override;
+    void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override;
 
   private:
     AppState *m_state;
@@ -505,7 +517,14 @@ class TopPortItem : public PortPinItem {
         : PortPinItem(name, direction, width, side, /*parent*/ nullptr) {
         setKey(NetKey::forTop(name));
         setAcceptedMouseButtons(Qt::LeftButton);
+        // Selectable so rubber-band select + Delete can remove top ports.
+        setFlag(QGraphicsItem::ItemIsSelectable, true);
     }
+
+    void setLayer(CanvasLayer *layer) { m_layer = layer; }
+    // The edge X this port snaps to; dragging only changes Y.
+    void setLockedX(qreal x) { m_locked_x = x; }
+    qreal lockedX() const { return m_locked_x; }
 
     QPointF tipScenePos() const override { return mapToScene(QPointF(0, 0)); }
 
@@ -518,8 +537,14 @@ class TopPortItem : public PortPinItem {
 
     void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override { event->accept(); }
 
-    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override {
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) override {
         painter->setRenderHint(QPainter::Antialiasing);
+
+        if (option && (option->state & QStyle::State_Selected)) {
+            painter->setBrush(Qt::NoBrush);
+            painter->setPen(QPen(QColor(66, 180, 244), 2.0));
+            painter->drawEllipse(QPointF(0, 0), kPinShapeSize + 2, kPinShapeSize + 2);
+        }
 
         if (armedState()) {
             painter->setBrush(Qt::NoBrush);
@@ -563,6 +588,20 @@ class TopPortItem : public PortPinItem {
         }
         return QRectF(0, -kPinSlotHeight / 2.0, kPinShapeSize + 6 + 180, kPinSlotHeight);
     }
+
+  protected:
+    // Click arms/commits a wire (base behavior); drag repositions the port
+    // vertically along its edge. Defined in canvas.cpp (needs CanvasLayer).
+    void mousePressEvent(QGraphicsSceneMouseEvent *event) override;
+    void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override;
+    void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override;
+
+  private:
+    CanvasLayer *m_layer = nullptr;
+    qreal m_locked_x = 0;
+    QPointF m_press_scene;
+    qreal m_start_y = 0;
+    bool m_moved = false;
 };
 
 } // namespace hdlc

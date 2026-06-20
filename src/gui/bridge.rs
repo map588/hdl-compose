@@ -293,6 +293,9 @@ pub mod qobject {
         ) -> QString;
 
         #[qinvokable]
+        fn remove_top_port(self: Pin<&mut AppState>, name: &QString) -> bool;
+
+        #[qinvokable]
         fn set_generic_map_entry(
             self: Pin<&mut AppState>,
             instance: &QString,
@@ -1945,6 +1948,49 @@ impl qobject::AppState {
         self.as_mut().rebuild_library_and_validate();
         self.as_mut().project_loaded();
         QString::from(&resolved_name)
+    }
+
+    /// Delete a top-level port and clear any instance connections that drove
+    /// or were driven by it. Undoable; no-op (returns false) if absent.
+    pub fn remove_top_port(mut self: Pin<&mut Self>, name: &QString) -> bool {
+        let name_s = name.to_string();
+        // Existence check before the snapshot so a miss leaves no undo entry.
+        {
+            let this = self.as_ref();
+            let r = this.rust();
+            let exists = r
+                .schematic
+                .as_ref()
+                .is_some_and(|s| s.top_ports.iter().any(|p| p.name == name_s));
+            if !exists {
+                return false;
+            }
+        }
+        self.as_mut().push_snapshot();
+        {
+            let s = self
+                .as_mut()
+                .rust_mut()
+                .get_mut()
+                .schematic
+                .as_mut()
+                .expect("checked above");
+            s.top_ports.retain(|p| p.name != name_s);
+            // Disconnect any port_map entry that referenced this top port.
+            let target = NetRef::TopPort(name_s.clone());
+            for inst in s.instances.iter_mut() {
+                for entry in inst.port_map.values_mut() {
+                    if entry.as_ref().is_some_and(|net| net.base() == target) {
+                        *entry = None;
+                    }
+                }
+            }
+        }
+        self.as_mut().rust_mut().get_mut().dirty = true;
+        self.as_mut().set_dirty(true);
+        self.as_mut().rebuild_library_and_validate();
+        self.as_mut().project_loaded();
+        true
     }
 
     pub fn create_manual_bundle(
