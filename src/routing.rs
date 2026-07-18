@@ -127,30 +127,15 @@ fn build_gutter_info(nets: &[Net], p: Params) -> HashMap<i32, GutterInfo> {
     info
 }
 
-/// Pick the X for the next lane in gutter `idx`. Zigzag fan (0, +1, -1,
-/// +2, -2, …) around the natural center; squeezes the step when the gutter
-/// is bounded on both sides.
-fn allocate_lane_x(
-    idx: i32,
-    info: &HashMap<i32, GutterInfo>,
-    counter: &mut HashMap<i32, i32>,
-    p: Params,
-) -> f64 {
+/// X for lane `slot` of `total` in gutter `idx`, spread evenly around the
+/// gutter's usable center. Squeezes the step when the gutter is bounded on
+/// both sides so every lane stays inside the safe window.
+fn lane_x(idx: i32, slot: usize, total: usize, info: &HashMap<i32, GutterInfo>, p: Params) -> f64 {
     let gi = info.get(&idx).copied().unwrap_or_default();
     let natural_x = gutter_center_x(idx, p.column_pitch);
     let bounded_left = gi.safe_min > -1e17;
     let bounded_right = gi.safe_max < 1e17;
-    let n = *counter.get(&idx).unwrap_or(&0);
-    counter.insert(idx, n + 1);
-
-    let zigzag = |n: i32, step: f64| -> f64 {
-        if n == 0 {
-            return 0.0;
-        }
-        let sign = if n % 2 == 1 { 1.0 } else { -1.0 };
-        let mag = ((n + 1) / 2) as f64;
-        sign * mag * step
-    };
+    let offset = |step: f64| (slot as f64 - (total.saturating_sub(1)) as f64 / 2.0) * step;
 
     if bounded_left && bounded_right {
         if gi.safe_min > gi.safe_max {
@@ -162,18 +147,37 @@ fn allocate_lane_x(
         }
         let w = gi.safe_max - gi.safe_min;
         let center = (gi.safe_min + gi.safe_max) / 2.0;
-        let lane_slots = gi.nets_using.max(1) as f64;
-        let step = p.lane_step.min(w / lane_slots);
-        let gx = center + zigzag(n, step);
-        return gx.clamp(gi.safe_min, gi.safe_max);
+        let step = p.lane_step.min(w / total.max(1) as f64);
+        return (center + offset(step)).clamp(gi.safe_min, gi.safe_max);
     }
     if bounded_right {
-        return gi.safe_max - n as f64 * p.lane_step;
+        return gi.safe_max - slot as f64 * p.lane_step;
     }
     if bounded_left {
-        return gi.safe_min + n as f64 * p.lane_step;
+        return gi.safe_min + slot as f64 * p.lane_step;
     }
-    natural_x + zigzag(n, p.lane_step)
+    natural_x + offset(p.lane_step)
+}
+
+/// Assign each (net, gutter) pair a lane X. Lanes in a gutter are ordered
+/// by the net's vertical-span midpoint in that gutter, so nets flowing in
+/// parallel keep their relative order instead of weaving — this is what
+/// keeps a busy column from becoming a rats' nest.
+fn assign_lanes(
+    per_gutter: &HashMap<i32, Vec<(usize, f64)>>, // gutter -> [(net_idx, span midpoint)]
+    info: &HashMap<i32, GutterInfo>,
+    p: Params,
+) -> HashMap<(usize, i32), f64> {
+    let mut lanes: HashMap<(usize, i32), f64> = HashMap::new();
+    for (&idx, users) in per_gutter {
+        let mut ordered = users.clone();
+        ordered.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(a.0.cmp(&b.0)));
+        let total = ordered.len();
+        for (slot, (net_idx, _)) in ordered.into_iter().enumerate() {
+            lanes.insert((net_idx, idx), lane_x(idx, slot, total, info, p));
+        }
+    }
+    lanes
 }
 
 /// Shift the bridge Y off any module body overlapping its X range.
@@ -208,15 +212,23 @@ fn adjust_bridge_y(preferred: f64, bx_min: f64, bx_max: f64, obstacles: &[Rect])
 }
 
 /// Route every net. `nets` must be in a stable order (the caller sorts by
-/// net key) — lane assignment depends on allocation order.
+/// net key) — slot assignment ties break on input order.
 pub fn plan_routes(nets: &[Net], obstacles: &[Rect], p: Params) -> RouteResult {
     let info = build_gutter_info(nets, p);
-    let mut counter: HashMap<i32, i32> = HashMap::new();
     let mut result = RouteResult::default();
 
+    // Phase 1: per net, which gutters it uses and its vertical span there.
+    struct NetPlan {
+        g_d: i32,
+        g_l: Vec<i32>,
+        unique_g: Vec<i32>,
+        hy: Option<f64>, // provisional bridge Y (multi-gutter nets only)
+    }
+    let mut plans: Vec<NetPlan> = Vec::with_capacity(nets.len());
+    // gutter -> [(net index, span midpoint in that gutter)]
+    let mut per_gutter: HashMap<i32, Vec<(usize, f64)>> = HashMap::new();
     for (net_idx, net) in nets.iter().enumerate() {
-        let driver = net.driver;
-        let g_d = gutter_index(driver.col, driver.exits_right);
+        let g_d = gutter_index(net.driver.col, net.driver.exits_right);
         let g_l: Vec<i32> = net
             .loads
             .iter()
@@ -227,11 +239,51 @@ pub fn plan_routes(nets: &[Net], obstacles: &[Rect], p: Params) -> RouteResult {
         unique_g.sort_unstable();
         unique_g.dedup();
 
+        let hy = if unique_g.len() > 1 {
+            let sum_y: f64 = net.driver.y + net.loads.iter().map(|l| l.y).sum::<f64>();
+            Some(sum_y / (1 + net.loads.len()) as f64)
+        } else {
+            None
+        };
+
+        for &g in &unique_g {
+            // Ys this net touches in gutter g: pins entering it + bridge Y.
+            let mut ys: Vec<f64> = Vec::new();
+            if g_d == g {
+                ys.push(net.driver.y);
+            }
+            for (i, l) in net.loads.iter().enumerate() {
+                if g_l[i] == g {
+                    ys.push(l.y);
+                }
+            }
+            if let Some(hy) = hy {
+                ys.push(hy);
+            }
+            let lo = ys.iter().cloned().fold(f64::INFINITY, f64::min);
+            let hi = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            per_gutter.entry(g).or_default().push((net_idx, (lo + hi) / 2.0));
+        }
+        plans.push(NetPlan { g_d, g_l, unique_g, hy });
+    }
+
+    // Phase 2: crossing-aware lane assignment per gutter.
+    let lanes = assign_lanes(&per_gutter, &info, p);
+
+    // Phase 3: emit polylines. Bridges that would overlap an earlier bridge
+    // (shared X range, same Y band) get nudged apart by one lane step.
+    let mut bridges: Vec<(f64, f64, f64)> = Vec::new(); // (bx_min, bx_max, hy)
+    for (net_idx, net) in nets.iter().enumerate() {
+        let plan = &plans[net_idx];
+        let driver = net.driver;
+        let g_d = plan.g_d;
+        let g_l = &plan.g_l;
+
         let mut dot_points: Vec<Point> = Vec::new();
 
-        if unique_g.len() == 1 {
+        if plan.unique_g.len() == 1 {
             // Everything shares one gutter: stub → vertical trunk → stub.
-            let gx = allocate_lane_x(g_d, &info, &mut counter, p);
+            let gx = lanes[&(net_idx, g_d)];
             for l in &net.loads {
                 result.wires.push(vec![
                     Point { x: driver.x, y: driver.y },
@@ -250,12 +302,10 @@ pub fn plan_routes(nets: &[Net], obstacles: &[Rect], p: Params) -> RouteResult {
             }
         } else {
             // Bridge route. Bridge Y = mean of all pin Ys, shifted off any
-            // module body in its X range.
-            let sum_y: f64 = driver.y + net.loads.iter().map(|l| l.y).sum::<f64>();
-            let mut hy = sum_y / (1 + net.loads.len()) as f64;
+            // module body in its X range, then off earlier bridges.
             let mut gx_for_idx: HashMap<i32, f64> = HashMap::new();
-            for &idx in &unique_g {
-                gx_for_idx.insert(idx, allocate_lane_x(idx, &info, &mut counter, p));
+            for &idx in &plan.unique_g {
+                gx_for_idx.insert(idx, lanes[&(net_idx, idx)]);
             }
             let dgx = gx_for_idx[&g_d];
 
@@ -265,7 +315,21 @@ pub fn plan_routes(nets: &[Net], obstacles: &[Rect], p: Params) -> RouteResult {
                 bx_min = bx_min.min(v);
                 bx_max = bx_max.max(v);
             }
-            hy = adjust_bridge_y(hy, bx_min, bx_max, obstacles);
+            let mut hy = adjust_bridge_y(plan.hy.unwrap(), bx_min, bx_max, obstacles);
+            // Separate overlapping bridges: two horizontals sharing a Y band
+            // and an X range read as one wire.
+            let overlaps = |hy: f64, bridges: &[(f64, f64, f64)]| {
+                bridges.iter().any(|&(mn, mx, y)| {
+                    mn <= bx_max && mx >= bx_min && (y - hy).abs() < p.lane_step
+                })
+            };
+            let mut guard = 0;
+            while overlaps(hy, &bridges) && guard < 64 {
+                hy += p.lane_step;
+                hy = adjust_bridge_y(hy, bx_min, bx_max, obstacles);
+                guard += 1;
+            }
+            bridges.push((bx_min, bx_max, hy));
 
             for (i, l) in net.loads.iter().enumerate() {
                 let lgx = gx_for_idx[&g_l[i]];
@@ -444,6 +508,70 @@ mod tests {
         ];
         let r = plan_routes(&nets, &[], P);
         assert_ne!(r.wires[0][1].x, r.wires[1][1].x, "lanes must not coincide");
+    }
+
+    fn segments_intersect(a0: Point, a1: Point, b0: Point, b1: Point) -> bool {
+        // Proper crossing of one horizontal and one vertical segment.
+        let (h, v) = if (a0.y - a1.y).abs() < 1e-9 && (b0.x - b1.x).abs() < 1e-9 {
+            ((a0, a1), (b0, b1))
+        } else if (b0.y - b1.y).abs() < 1e-9 && (a0.x - a1.x).abs() < 1e-9 {
+            ((b0, b1), (a0, a1))
+        } else {
+            return false;
+        };
+        let (hx0, hx1) = (h.0.x.min(h.1.x), h.0.x.max(h.1.x));
+        let (vy0, vy1) = (v.0.y.min(v.1.y), v.0.y.max(v.1.y));
+        v.0.x > hx0 && v.0.x < hx1 && h.0.y > vy0 && h.0.y < vy1
+    }
+
+    fn crossings(a: &[Point], b: &[Point]) -> usize {
+        let mut n = 0;
+        for sa in a.windows(2) {
+            for sb in b.windows(2) {
+                if segments_intersect(sa[0], sa[1], sb[0], sb[1]) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn parallel_nets_in_one_gutter_do_not_cross() {
+        // Two nets flowing top→top and bottom→bottom through one gutter.
+        // Order-blind lane allocation used to weave these.
+        let nets = [
+            Net { driver: ep(180.0, 100.0, true, 0), loads: vec![ep(300.0, 120.0, false, 1)] },
+            Net { driver: ep(180.0, 200.0, true, 0), loads: vec![ep(300.0, 220.0, false, 1)] },
+            Net { driver: ep(180.0, 300.0, true, 0), loads: vec![ep(300.0, 320.0, false, 1)] },
+        ];
+        let r = plan_routes(&nets, &[], P);
+        for i in 0..r.wires.len() {
+            for j in i + 1..r.wires.len() {
+                assert_eq!(
+                    crossings(&r.wires[i], &r.wires[j]),
+                    0,
+                    "wires {i} and {j} cross"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_bridges_get_separated() {
+        // Two long bridges with identical mean Y and overlapping X span
+        // must not collapse onto one horizontal line.
+        let nets = [
+            Net { driver: ep(20.0, 100.0, false, 0), loads: vec![ep(1660.0, 300.0, true, 3)] },
+            Net { driver: ep(20.0, 150.0, false, 0), loads: vec![ep(1660.0, 250.0, true, 3)] },
+        ];
+        let r = plan_routes(&nets, &[], P);
+        let hy0 = r.wires[0][2].y;
+        let hy1 = r.wires[1][2].y;
+        assert!(
+            (hy0 - hy1).abs() >= P.lane_step,
+            "bridges share a band: {hy0} vs {hy1}"
+        );
     }
 
     #[test]

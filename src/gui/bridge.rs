@@ -2912,7 +2912,7 @@ fn compute_pin_issues(
     diagnostics: &[Diagnostic],
 ) -> HashMap<String, (i32, String)> {
     let mut map: HashMap<String, (i32, String)> = HashMap::new();
-    let mut add = |map: &mut HashMap<String, (i32, String)>, key: String, level: i32, msg: &str| {
+    let add = |map: &mut HashMap<String, (i32, String)>, key: String, level: i32, msg: &str| {
         let e = map.entry(key).or_insert((0, String::new()));
         if level > e.0 {
             *e = (level, msg.to_string());
