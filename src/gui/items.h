@@ -585,6 +585,15 @@ class InstanceItem : public QGraphicsRectItem {
             event->accept();
             return;
         }
+        // Shift-click edits the selection in place: drop this block if it's
+        // selected, add it otherwise. (Ctrl/Cmd-click extends the selection
+        // but Qt's movable-item handling never removes a single item.)
+        if (event->button() == Qt::LeftButton
+            && (event->modifiers() & Qt::ShiftModifier)) {
+            setSelected(!isSelected());
+            event->accept();
+            return;
+        }
         if (event->button() == Qt::LeftButton) {
             m_pressScenePos = event->scenePos();
             m_dragged = false;
@@ -700,21 +709,21 @@ class TopPortItem : public PortPinItem {
         f.setBold(true);
         painter->setFont(f);
         painter->setPen(QColor(220, 220, 220));
-        label = painter->fontMetrics().elidedText(label, Qt::ElideMiddle, 180);
+        label = painter->fontMetrics().elidedText(label, Qt::ElideMiddle, 300);
         if (side() == PinSide::Left) {
-            painter->drawText(QRectF(-180 - kPinShapeSize - 6, -kPinSlotHeight / 2.0, 180, kPinSlotHeight),
+            painter->drawText(QRectF(-300 - kPinShapeSize - 6, -kPinSlotHeight / 2.0, 300, kPinSlotHeight),
                               Qt::AlignRight | Qt::AlignVCenter, label);
         } else {
-            painter->drawText(QRectF(kPinShapeSize + 6, -kPinSlotHeight / 2.0, 180, kPinSlotHeight),
+            painter->drawText(QRectF(kPinShapeSize + 6, -kPinSlotHeight / 2.0, 300, kPinSlotHeight),
                               Qt::AlignLeft | Qt::AlignVCenter, label);
         }
     }
 
     QRectF boundingRect() const override {
         if (side() == PinSide::Left) {
-            return QRectF(-180 - kPinShapeSize - 6, -kPinSlotHeight / 2.0, 180 + kPinShapeSize + 6, kPinSlotHeight);
+            return QRectF(-300 - kPinShapeSize - 6, -kPinSlotHeight / 2.0, 300 + kPinShapeSize + 6, kPinSlotHeight);
         }
-        return QRectF(0, -kPinSlotHeight / 2.0, kPinShapeSize + 6 + 180, kPinSlotHeight);
+        return QRectF(0, -kPinSlotHeight / 2.0, kPinShapeSize + 6 + 300, kPinSlotHeight);
     }
 
   private:

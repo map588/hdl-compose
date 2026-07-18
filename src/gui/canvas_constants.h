@@ -18,7 +18,10 @@ inline constexpr int kPinLabelHPadding = 8;
 inline constexpr int kInstanceCenterPadding = 24;
 
 // --- Column / wire grid ---
-inline constexpr int kColumnPitch = 480;
+// Pitch sized so long HDL signal names fit unelided in the block body
+// (labels size the block up to kMaxInstanceWidth) while keeping full
+// wire gutters between columns.
+inline constexpr int kColumnPitch = 560;
 inline constexpr int kColumnGutterHalf = 60;
 // Cap instance width below the column pitch so a module body can never
 // invade the wire gutters on either side of its column.
