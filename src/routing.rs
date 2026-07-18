@@ -566,10 +566,50 @@ pub fn optimize_positions(
     used.sort_unstable();
     used.dedup();
     let rank: HashMap<i32, i32> = used.iter().enumerate().map(|(r, &c)| (c, r as i32)).collect();
+    let precap: Vec<i32> = col.iter().map(|c| rank[c]).collect();
     for c in col.iter_mut() {
         *c = rank[c];
         if max_cols > 0 {
             *c = (*c).min(max_cols as i32 - 1);
+        }
+    }
+
+    // --- 1d. Spread: use the whole column budget. Cramming independent
+    // blocks into one column funnels every input through one gutter; while
+    // columns remain unused, split the tallest column in two (later ranks
+    // and lower blocks move right, so edge direction survives).
+    if max_cols > 0 {
+        loop {
+            let mut by_col: HashMap<i32, Vec<usize>> = HashMap::new();
+            for (i, &c) in col.iter().enumerate() {
+                by_col.entry(c).or_default().push(i);
+            }
+            if by_col.len() >= max_cols {
+                break;
+            }
+            let tallest = by_col
+                .iter()
+                .filter(|(_, m)| m.len() >= 2)
+                .max_by(|a, b| {
+                    let h = |m: &Vec<usize>| m.iter().map(|&i| nodes[i].height + gap).sum::<f64>();
+                    h(a.1).partial_cmp(&h(b.1)).unwrap()
+                })
+                .map(|(&c, m)| (c, m.clone()));
+            let Some((tc, mut members)) = tallest else { break };
+            members.sort_by(|&a, &b| {
+                precap[a]
+                    .cmp(&precap[b])
+                    .then(a.cmp(&b))
+            });
+            for c in col.iter_mut() {
+                if *c > tc {
+                    *c += 1;
+                }
+            }
+            let half = members.len() / 2;
+            for &i in &members[half..] {
+                col[i] = tc + 1;
+            }
         }
     }
 
@@ -627,9 +667,29 @@ pub fn optimize_positions(
         }
     }
 
-    // --- 3. Straightening: align each block's first input pin exactly ---
+    // --- 3a. Driver centering (right→left): a fan-out driver sits with its
+    // output pin at the mean of the input pins it feeds, so the fan spreads
+    // symmetrically instead of bundling behind the loads.
     let mut cols_sorted: Vec<i32> = by_col.keys().copied().collect();
     cols_sorted.sort_unstable();
+    for &c in cols_sorted.iter().rev() {
+        let members = orders.get(&c).cloned().unwrap_or_default();
+        for &i in &members {
+            let targets: Vec<f64> = edges
+                .iter()
+                .filter(|&&(f, _, t, _, _)| f == i && col[t] > c)
+                .map(|&(_, fdy, t, tdy, _)| y[t] + tdy - fdy)
+                .collect();
+            if targets.len() >= 2 {
+                y[i] = targets.iter().sum::<f64>() / targets.len() as f64;
+            }
+        }
+        let mut order = Vec::new();
+        legalize(&mut y, &mut order, &members);
+        orders.insert(c, order);
+    }
+
+    // --- 3b. Straightening: align each block's first input pin exactly ---
     for &c in &cols_sorted[1..] {
         let members = orders.get(&c).cloned().unwrap_or_default();
         for &i in &members {
@@ -957,6 +1017,37 @@ mod tests {
         let edges = [PlaceEdge { from: 0, from_dy: 50.0, to: 1, to_dy: 50.0, directed: false }];
         let r = optimize_positions(&nodes, &edges, 60.0, 0);
         assert_eq!(r[0].1, r[1].1, "undirected edge must not split columns: {r:?}");
+    }
+
+    #[test]
+    fn optimize_spreads_into_column_budget() {
+        // Six unconnected blocks would all land in column 0 — with a budget
+        // of 3 they spread across three columns instead of one tall stack.
+        let nodes: Vec<PlaceNode> = (0..6).map(|i| pn(i, 100.0)).collect();
+        let r = optimize_positions(&nodes, &[], 60.0, 3);
+        let mut cols: Vec<i32> = r.iter().map(|e| e.1).collect();
+        cols.sort_unstable();
+        cols.dedup();
+        assert_eq!(cols.len(), 3, "{r:?}");
+    }
+
+    #[test]
+    fn optimize_centers_driver_on_fanout() {
+        // The driver's output pin sits at the mean of the input pins it
+        // feeds — fan spreads symmetrically, not bundled to one side.
+        let nodes = [pn(0, 100.0), pn(1, 100.0), pn(2, 100.0), pn(3, 100.0)];
+        let edges = [
+            pe(0, 50.0, 1, 50.0),
+            pe(0, 50.0, 2, 50.0),
+            pe(0, 50.0, 3, 50.0),
+        ];
+        let r = optimize_positions(&nodes, &edges, 60.0, 0);
+        let y_of = |id: i32| r.iter().find(|e| e.0 == id).unwrap().2;
+        let load_pin_mean = (y_of(1) + y_of(2) + y_of(3)) / 3.0 + 50.0;
+        assert!(
+            (y_of(0) + 50.0 - load_pin_mean).abs() < 5.0,
+            "driver not centered: {r:?}"
+        );
     }
 
     #[test]
