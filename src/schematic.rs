@@ -114,6 +114,7 @@ impl Schematic {
             manual_bundles: HashMap::new(),
             consumer_slices: HashMap::new(),
             dirty: false,
+            locked: false,
         });
         Ok(self.instances.last_mut().unwrap())
     }

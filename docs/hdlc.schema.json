@@ -165,6 +165,10 @@
             "type": "string"
           }
         },
+        "locked": {
+          "description": "Position lock: only manual drags move this instance — Tidy and the\nsettle/push-shove passes leave it exactly where the user put it.",
+          "type": "boolean"
+        },
         "manual_bundles": {
           "description": "User-authored bundle groupings that override (or add to) the module's\nauto-detected bundles. Keyed by bundle name → ordered list of port\nnames that belong to it. Empty for instances that don't use manual\ngrouping; absent from v2 `.hdlc` files and deserializes as default.",
           "type": "object",

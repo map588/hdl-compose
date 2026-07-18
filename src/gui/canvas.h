@@ -529,9 +529,13 @@ class CanvasLayer {
         QVector<InstanceItem *> by_id;
         for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
             InstanceItem *ii = it.value();
+            // Locked blocks are immovable for the shover, same as the
+            // dragged selection.
+            const bool is_fixed =
+                fixed.contains(ii) || m_state->instance_locked(ii->instanceName());
             items.push_back(FfiColItem{static_cast<qint32>(by_id.size()),
                                        instanceColumn(ii), ii->pos().y(),
-                                       ii->rect().height(), fixed.contains(ii)});
+                                       ii->rect().height(), is_fixed});
             by_id.append(ii);
         }
         auto moves = legalize_columns_ffi(std::move(items), kMinModuleVerticalGap);
@@ -560,12 +564,16 @@ class CanvasLayer {
         for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
             InstanceItem *ii = it.value();
             before.insert(ii, ii->pos());
+            const bool locked = m_state->instance_locked(ii->instanceName());
             const qreal cx = ii->pos().x() + ii->width() / 2.0;
             const int col = static_cast<int>(std::round(cx / static_cast<qreal>(kColumnPitch)));
-            const qreal x = col * static_cast<qreal>(kColumnPitch) - ii->width() / 2.0;
-            ii->setPos(x, ii->pos().y());
+            if (!locked) {
+                // Locked blocks keep even off-grid manual positions.
+                const qreal x = col * static_cast<qreal>(kColumnPitch) - ii->width() / 2.0;
+                ii->setPos(x, ii->pos().y());
+            }
             items.push_back(FfiColItem{static_cast<qint32>(by_id.size()), col, ii->pos().y(),
-                                       ii->rect().height(), false});
+                                       ii->rect().height(), locked});
             by_id.append(ii);
         }
         auto moves = legalize_columns_ffi(std::move(items), kMinModuleVerticalGap);
@@ -595,12 +603,21 @@ class CanvasLayer {
         rust::Vec<FfiPlaceEdge> edges;
         QVector<InstanceItem *> by_id;
         QHash<QString, int> id_of;
+        QList<InstanceItem *> locked;
         for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+            // Locked blocks sit out entirely: not re-placed, and edges to
+            // them don't tug the rest of the layout.
+            if (m_state->instance_locked(it.key())) {
+                locked << it.value();
+                continue;
+            }
             id_of.insert(it.key(), by_id.size());
             nodes.push_back(FfiPlaceNode{static_cast<qint32>(by_id.size()),
                                          it.value()->rect().height()});
             by_id.append(it.value());
         }
+        if (by_id.isEmpty())
+            return;
         for (auto *w : m_wires) {
             auto pin_ref = [&](const QString &key, int &id, double &dy, int &dir) -> bool {
                 NetKey k = NetKey::parse(key);
@@ -645,6 +662,10 @@ class CanvasLayer {
             m_state->set_instance_position(ii->instanceName(), x, p.y);
         }
         m_state->end_batch();
+        // Clear any overlap between the fresh layout and locked blocks —
+        // the locked ones stay, everything else shifts minimally.
+        if (!locked.isEmpty())
+            settleAfterMove(locked);
         rebuildTopPorts();
         replanWires();
         updateGroupHulls();

@@ -114,6 +114,10 @@ pub struct Instance {
     /// user acknowledgement or when the missing ports reappear.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dirty: bool,
+    /// Position lock: only manual drags move this instance — Tidy and the
+    /// settle/push-shove passes leave it exactly where the user put it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
 }
 
 /// A named grouping of instances that codegen emits as its own

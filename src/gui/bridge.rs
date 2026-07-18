@@ -484,6 +484,13 @@ pub mod qobject {
         #[qinvokable]
         fn pin_direction_code(self: &AppState, key: &QString) -> i32;
 
+        /// Position lock: locked instances only move by manual drag.
+        #[qinvokable]
+        fn instance_locked(self: &AppState, name: &QString) -> bool;
+
+        #[qinvokable]
+        fn set_instance_locked(self: Pin<&mut AppState>, name: &QString, locked: bool) -> bool;
+
         #[qsignal]
         fn project_loaded(self: Pin<&mut AppState>);
 
@@ -3502,6 +3509,33 @@ impl qobject::AppState {
         self.pin_info(&key.to_string())
             .map(|p| p.direction)
             .unwrap_or(-1)
+    }
+
+    pub fn instance_locked(&self, name: &QString) -> bool {
+        let n = name.to_string();
+        self.rust()
+            .schematic
+            .as_ref()
+            .and_then(|s| s.instances.iter().find(|i| i.name == n))
+            .map(|i| i.locked)
+            .unwrap_or(false)
+    }
+
+    pub fn set_instance_locked(mut self: Pin<&mut Self>, name: &QString, locked: bool) -> bool {
+        let n = name.to_string();
+        if !self.has_instance(&n) {
+            self.as_mut().record_error(format!("instance not found: {n}"));
+            return false;
+        }
+        self.as_mut().snapshot_for_mutation();
+        if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut()
+            && let Some(inst) = s.get_instance_mut(&n)
+        {
+            inst.locked = locked;
+        }
+        self.as_mut().rust_mut().get_mut().dirty = true;
+        self.as_mut().set_dirty(true);
+        true
     }
 }
 

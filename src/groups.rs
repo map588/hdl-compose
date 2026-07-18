@@ -357,6 +357,7 @@ pub fn expand_hierarchy(schematic: &Schematic, library: &[ModuleDef]) -> Hierarc
             manual_bundles: HashMap::new(),
             consumer_slices: HashMap::new(),
             dirty: false,
+            locked: false,
         });
         // Outside pins that referenced inside pins now reference the group pin.
         for inst in cur.instances.iter_mut() {

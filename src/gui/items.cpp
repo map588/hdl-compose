@@ -567,6 +567,17 @@ void InstanceItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *opti
                       Qt::AlignLeft | Qt::AlignVCenter,
                       painter->fontMetrics().elidedText(m_module, Qt::ElideRight, static_cast<int>(r.width()) - 24));
 
+    // Locked blocks: padlock in the header's top-right corner.
+    if (m_state->instance_locked(m_name)) {
+        QRectF g = toggleGlyphRect();
+        painter->setPen(QPen(QColor(210, 180, 100), 1.2));
+        painter->setBrush(Qt::NoBrush);
+        // Shackle + body, drawn small enough to read at normal zoom.
+        QRectF body(g.left() + 3, g.top() + 8, 12, 8);
+        painter->drawRoundedRect(body, 2, 2);
+        painter->drawArc(QRectF(g.left() + 5, g.top() + 2, 8, 10), 0, 180 * 16);
+    }
+
     // Collapsed group blocks: accent border + '+' button to expand back
     // into the hull view. (Expanded groups draw their '−' on the hull.)
     if (m_state->is_group_block(m_name)) {
@@ -885,6 +896,7 @@ void InstanceItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     QAction *ungroupAct = nullptr;
     QAction *collapseAct = nullptr;
     QAction *createGroupAct = nullptr;
+    QAction *lockAct = nullptr;
     if (group_block) {
         expandAct = menu.addAction(QStringLiteral("Expand group"));
         ungroupAct = menu.addAction(QStringLiteral("Ungroup"));
@@ -896,6 +908,11 @@ void InstanceItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
         } else {
             createGroupAct = menu.addAction(QStringLiteral("Group into module..."));
         }
+        const bool locked = m_state->instance_locked(m_name);
+        lockAct = menu.addAction(locked ? QStringLiteral("Unlock Position")
+                                        : QStringLiteral("Lock Position"));
+        lockAct->setToolTip(QStringLiteral(
+            "Locked blocks only move by manual drag — Tidy and push-shove leave them alone"));
     }
     QAction *chosen = menu.exec(event->screenPos());
     event->accept();
@@ -913,7 +930,10 @@ void InstanceItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     // Group mutations rebuild the canvas and delete THIS item — defer past
     // the handler, capture by value, never `this` (except reading selection
     // synchronously below, before any mutation).
-    if (chosen == groupPortsAct) {
+    if (chosen == lockAct) {
+        st->set_instance_locked(name, !st->instance_locked(name));
+        update();
+    } else if (chosen == groupPortsAct) {
         prompt_create_manual_bundle(parent_w, m_state, m_name, QString());
     } else if (chosen == expandAct) {
         QTimer::singleShot(0, [st, name]() { st->set_group_collapsed(name, false); });
