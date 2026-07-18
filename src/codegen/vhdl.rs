@@ -942,4 +942,56 @@ mod tests {
         );
         assert!(output.contains("q => led_s(0)"), "{output}");
     }
+
+    #[test]
+    fn sliced_wide_driver_intermediate_uses_port_width() {
+        // count[28:24] (29-bit driver, consumer_slices) onto a 5-bit top
+        // port: the intermediate must be 5 bits, not the driver's 29.
+        let mut s = Schematic::new("top_level", Language::Vhdl);
+        s.top_ports.push(PortDef {
+            name: "led".into(),
+            direction: Direction::Out,
+            port_type: PortType::StdLogicVector(Range {
+                high: RangeExpr::Literal(4),
+                low: RangeExpr::Literal(0),
+                dir: RangeDir::Downto,
+            }),
+            bundle: None,
+        });
+        {
+            let inst = s.add_instance("u_pulse", "pulse_gen").unwrap();
+            inst.port_map
+                .insert("count".into(), Some(NetRef::TopPort("led".into())));
+            inst.consumer_slices.insert(
+                "count".into(),
+                crate::types::SliceExpr::Range { high: 28, low: 24 },
+            );
+        }
+        let lib = vec![ModuleDef {
+            name: "pulse_gen".into(),
+            generics: vec![],
+            ports: vec![PortDef {
+                name: "count".into(),
+                direction: Direction::Out,
+                port_type: PortType::StdLogicVector(Range {
+                    high: RangeExpr::Literal(28),
+                    low: RangeExpr::Literal(0),
+                    dir: RangeDir::Downto,
+                }),
+                bundle: None,
+            }],
+            source_path: "pulse_gen.vhd".into(),
+            source_hash: 0,
+            dependencies: vec![],
+        }];
+        let output = generate_vhdl(&s, &lib, &[]).unwrap();
+        assert!(
+            output.contains("signal led_s : std_logic_vector(4 downto 0);"),
+            "{output}"
+        );
+        assert!(
+            output.contains("count(28 downto 24) => led_s"),
+            "{output}"
+        );
+    }
 }

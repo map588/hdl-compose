@@ -3569,9 +3569,16 @@ fn compute_pin_issues(
             .iter()
             .filter(|r| crate::nets::pin_direction(s, &lib_map, r) != Some(Direction::InOut))
             .collect();
-        if hard.len() > 1 {
+        let conflicting: Vec<&&NetRef> = hard
+            .iter()
+            .filter(|a| {
+                hard.iter()
+                    .any(|b| *b != **a && crate::nets::drivers_conflict(s, a, b))
+            })
+            .collect();
+        if !conflicting.is_empty() {
             let msg = format!("net '{}' has multiple drivers", net.name);
-            for r in &hard {
+            for r in &conflicting {
                 add(&mut map, r.to_key(), 2, &msg);
             }
         }

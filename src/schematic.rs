@@ -666,9 +666,25 @@ impl Schematic {
                             != Some(Direction::InOut)
                     })
                     .collect();
-                if hard_drivers.len() > 1 {
+                // Disjoint slices of one vector port are legitimate fan-in
+                // (led[0]/led[1]/... from different instances); only
+                // overlapping bits conflict.
+                let mut conflicting: Vec<&NetRef> = Vec::new();
+                for (i, a) in hard_drivers.iter().enumerate() {
+                    for b in &hard_drivers[i + 1..] {
+                        if crate::nets::drivers_conflict(self, a, b) {
+                            if !conflicting.contains(a) {
+                                conflicting.push(a);
+                            }
+                            if !conflicting.contains(b) {
+                                conflicting.push(b);
+                            }
+                        }
+                    }
+                }
+                if !conflicting.is_empty() {
                     let pins: Vec<String> =
-                        hard_drivers.iter().map(|r| r.to_key()).collect();
+                        conflicting.iter().map(|r| r.to_key()).collect();
                     diags.push(Diagnostic::error(format!(
                         "net '{}' has multiple drivers: {}",
                         net.name,
@@ -1264,5 +1280,137 @@ mod tests {
             Some(&Some(NetRef::TopPort("clk".into())))
         );
         assert_eq!(inst.port_map.get("rst_n"), Some(&None));
+    }
+}
+
+#[cfg(test)]
+mod slice_driver_tests {
+    use super::*;
+
+    fn led_module() -> ModuleDef {
+        ModuleDef {
+            name: "led_driver".to_string(),
+            generics: Vec::new(),
+            ports: vec![PortDef {
+                name: "led".to_string(),
+                direction: Direction::Out,
+                port_type: PortType::StdLogic,
+                bundle: None,
+            }],
+            source_path: "led_driver.vhd".into(),
+            source_hash: 0,
+            dependencies: Vec::new(),
+        }
+    }
+
+    fn vector_top(width_high: i64) -> Schematic {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.top_ports.push(PortDef {
+            name: "led".to_string(),
+            direction: Direction::Out,
+            port_type: PortType::StdLogicVector(Range {
+                high: RangeExpr::Literal(width_high),
+                low: RangeExpr::Literal(0),
+                dir: RangeDir::Downto,
+            }),
+            bundle: None,
+        });
+        s
+    }
+
+    #[test]
+    fn disjoint_bit_drivers_are_not_multi_driver() {
+        let mut s = vector_top(4);
+        let lib = vec![led_module()];
+        for b in 0..5 {
+            s.add_instance(format!("u{b}"), "led_driver").unwrap();
+            s.set_port_map_entry(
+                &format!("u{b}"),
+                "led",
+                Some(NetRef::TopPortSlice("led".into(), SliceExpr::Bit(b))),
+            )
+            .unwrap();
+        }
+        let errors: Vec<_> = s
+            .validate(&lib)
+            .into_iter()
+            .filter(|d| d.is_error())
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn overlapping_bit_drivers_still_error() {
+        let mut s = vector_top(4);
+        let lib = vec![led_module()];
+        for name in ["u0", "u1"] {
+            s.add_instance(name, "led_driver").unwrap();
+            s.set_port_map_entry(
+                name,
+                "led",
+                Some(NetRef::TopPortSlice("led".into(), SliceExpr::Bit(2))),
+            )
+            .unwrap();
+        }
+        let errors: Vec<_> = s
+            .validate(&lib)
+            .into_iter()
+            .filter(|d| d.is_error() && d.message.contains("multiple drivers"))
+            .collect();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+    }
+
+    #[test]
+    fn full_port_driver_conflicts_with_bit_driver() {
+        let mut s = vector_top(4);
+        let lib = vec![led_module()];
+        s.add_instance("u_full", "led_driver").unwrap();
+        s.set_port_map_entry("u_full", "led", Some(NetRef::TopPort("led".into())))
+            .unwrap();
+        s.add_instance("u_bit", "led_driver").unwrap();
+        s.set_port_map_entry(
+            "u_bit",
+            "led",
+            Some(NetRef::TopPortSlice("led".into(), SliceExpr::Bit(0))),
+        )
+        .unwrap();
+        let errors: Vec<_> = s
+            .validate(&lib)
+            .into_iter()
+            .filter(|d| d.is_error() && d.message.contains("multiple drivers"))
+            .collect();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+    }
+
+    #[test]
+    fn overlapping_range_drivers_error() {
+        let mut s = vector_top(7);
+        let lib = vec![led_module()];
+        s.add_instance("u_lo", "led_driver").unwrap();
+        s.set_port_map_entry(
+            "u_lo",
+            "led",
+            Some(NetRef::TopPortSlice(
+                "led".into(),
+                SliceExpr::Range { high: 4, low: 0 },
+            )),
+        )
+        .unwrap();
+        s.add_instance("u_hi", "led_driver").unwrap();
+        s.set_port_map_entry(
+            "u_hi",
+            "led",
+            Some(NetRef::TopPortSlice(
+                "led".into(),
+                SliceExpr::Range { high: 7, low: 4 },
+            )),
+        )
+        .unwrap();
+        let errors: Vec<_> = s
+            .validate(&lib)
+            .into_iter()
+            .filter(|d| d.is_error() && d.message.contains("multiple drivers"))
+            .collect();
+        assert_eq!(errors.len(), 1, "bit 4 overlaps: {errors:?}");
     }
 }

@@ -151,7 +151,56 @@ fn member_type(
     }
 }
 
-fn has_literal_bounds(pt: &PortType) -> bool {
+/// The target a driver pin pushes onto: the base ref from its own port_map
+/// entry plus the slice of that target it occupies (None = the whole thing).
+/// Non-instance drivers (top In ports) and self-references drive their base
+/// in full.
+pub fn driver_target(schematic: &Schematic, driver: &NetRef) -> (NetRef, Option<SliceExpr>) {
+    if let NetRef::InstancePort(inst_name, port_name) = driver
+        && let Some(inst) = schematic.instances.iter().find(|i| &i.name == inst_name)
+        && let Some(Some(target)) = inst.port_map.get(port_name)
+    {
+        return match target {
+            NetRef::TopPortSlice(n, s) => (NetRef::TopPort(n.clone()), Some(s.clone())),
+            NetRef::InstancePortSlice(i, p, s) => {
+                (NetRef::InstancePort(i.clone(), p.clone()), Some(s.clone()))
+            }
+            other => (other.base(), None),
+        };
+    }
+    (driver.base(), None)
+}
+
+/// Do two drivers conflict? Only when they push onto the same target base
+/// with overlapping bits; disjoint slices of one vector port are fine.
+/// Different bases merged into one net stay conservative (conflict).
+pub fn drivers_conflict(
+    schematic: &Schematic,
+    a: &NetRef,
+    b: &NetRef,
+) -> bool {
+    let (base_a, slice_a) = driver_target(schematic, a);
+    let (base_b, slice_b) = driver_target(schematic, b);
+    if base_a != base_b {
+        return true;
+    }
+    fn bits(s: &SliceExpr) -> (i32, i32) {
+        match s {
+            SliceExpr::Bit(i) => (*i, *i),
+            SliceExpr::Range { high, low } => (*low.min(high), *high.max(low)),
+        }
+    }
+    match (&slice_a, &slice_b) {
+        (Some(x), Some(y)) => {
+            let (al, ah) = bits(x);
+            let (bl, bh) = bits(y);
+            al <= bh && bl <= ah
+        }
+        _ => true,
+    }
+}
+
+pub(crate) fn has_literal_bounds(pt: &PortType) -> bool {
     match pt {
         PortType::StdLogicVector(r) => {
             matches!(r.high, RangeExpr::Literal(_)) && matches!(r.low, RangeExpr::Literal(_))

@@ -285,16 +285,12 @@ pub fn collect_top_intermediates(
         if net.name == port.name {
             continue;
         }
-        // Prefer the net's resolved type (driver-side generics applied);
-        // fall back to the port's own declared type. When anything connects
-        // through a slice of this port, the intermediate must keep the
-        // port's full type — the net type reflects only the sliced driver.
-        let sliced = schematic.instances.iter().any(|inst| {
-            inst.port_map.values().flatten().any(
-                |nr| matches!(nr, NetRef::TopPortSlice(n, _) if n == &port.name),
-            )
-        });
-        let port_type = if sliced {
+        // The intermediate stands in for the PORT, so it takes the port's
+        // own type whenever that type is fully literal. The net's resolved
+        // type (driver-side generics applied) is only for ports whose bounds
+        // reference generics — a sliced or narrower driver must not shrink
+        // or widen the port-adjacent signal.
+        let port_type = if crate::nets::has_literal_bounds(&port.port_type) {
             port.port_type.clone()
         } else {
             net.port_type.clone().unwrap_or_else(|| port.port_type.clone())
