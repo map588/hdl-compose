@@ -113,13 +113,102 @@ fn depth(g: &Group, by_name: &HashMap<&str, &Group>) -> usize {
     d
 }
 
-struct BoundaryPort {
-    name: String,
-    direction: Direction,
-    port_type: PortType,
+pub struct BoundaryPort {
+    pub name: String,
+    pub direction: Direction,
+    pub port_type: PortType,
     /// One representative pin outside the group on this net (driver
     /// preferred) — what the parent-level group instance connects to.
-    outside_ref: Option<NetRef>,
+    pub outside_ref: Option<NetRef>,
+}
+
+/// Derive the boundary ports of a fence: nets with pins both inside and
+/// outside `inside` become ports. Also returns the pin → port-name map for
+/// every pin on a boundary net.
+pub fn derive_boundary(
+    s: &Schematic,
+    library: &[ModuleDef],
+    inside: &HashSet<String>,
+) -> (Vec<BoundaryPort>, HashMap<NetRef, String>) {
+    let lib_map: HashMap<&str, &ModuleDef> =
+        library.iter().map(|m| (m.name.as_str(), m)).collect();
+    let nets = resolve_nets(s, library);
+    let is_inside = |r: &NetRef| match r {
+        NetRef::InstancePort(i, _) => inside.contains(i),
+        _ => false, // top ports and constants are outside
+    };
+    let mut ports: Vec<BoundaryPort> = Vec::new();
+    let mut port_for_pin: HashMap<NetRef, String> = HashMap::new();
+    let mut used_names: HashSet<String> = HashSet::new();
+    for net in &nets.nets {
+        let (ins, outs): (Vec<&NetRef>, Vec<&NetRef>) =
+            net.members.iter().partition(|r| is_inside(r));
+        if ins.is_empty() || outs.is_empty() {
+            continue;
+        }
+        let any_inout = net
+            .members
+            .iter()
+            .any(|r| pin_direction(s, &lib_map, r) == Some(Direction::InOut));
+        let driver_inside = net.drivers.iter().any(&is_inside);
+        let direction = if any_inout {
+            Direction::InOut
+        } else if driver_inside {
+            Direction::Out
+        } else {
+            Direction::In
+        };
+        let outside_ref = net
+            .drivers
+            .iter()
+            .find(|d| !is_inside(d))
+            .or(outs.first().copied())
+            .cloned();
+        let port_type = net.port_type.clone().unwrap_or(PortType::StdLogic);
+        // Port name: prefer the parent top port's bare name (a net named
+        // clk_s would otherwise spawn a clk_s_s intermediate inside the
+        // group); fall back to the net name on collision.
+        let top_member = net.members.iter().find_map(|r| match r {
+            NetRef::TopPort(n) => Some(n.clone()),
+            _ => None,
+        });
+        let mut pname = top_member.unwrap_or_else(|| net.name.clone());
+        if !used_names.insert(pname.clone()) {
+            pname = net.name.clone();
+            used_names.insert(pname.clone());
+        }
+        for pin in &net.members {
+            port_for_pin.insert(pin.clone(), pname.clone());
+        }
+        ports.push(BoundaryPort {
+            name: pname,
+            direction,
+            port_type,
+            outside_ref,
+        });
+    }
+    ports.sort_by(|a, b| a.name.cmp(&b.name));
+    (ports, port_for_pin)
+}
+
+/// Transitive instance membership of a group: direct members plus members
+/// of descendant groups. What the GUI hides when the group is collapsed.
+pub fn transitive_members(s: &Schematic, group_name: &str) -> HashSet<String> {
+    let mut out: HashSet<String> = HashSet::new();
+    let mut queue: Vec<&str> = vec![group_name];
+    let mut seen: HashSet<&str> = HashSet::new();
+    while let Some(gname) = queue.pop() {
+        if !seen.insert(gname) {
+            continue;
+        }
+        if let Some(g) = s.groups.iter().find(|g| g.name == gname) {
+            out.extend(g.members.iter().cloned());
+        }
+        for child in s.groups.iter().filter(|c| c.parent.as_deref() == Some(gname)) {
+            queue.push(&child.name);
+        }
+    }
+    out
 }
 
 /// Collapse every group. Returns the per-group schematics (children first),
@@ -149,64 +238,11 @@ pub fn expand_hierarchy(schematic: &Schematic, library: &[ModuleDef]) -> Hierarc
             .map(|m| m.iter().cloned().collect())
             .unwrap_or_default();
 
-        let lib_map: HashMap<&str, &ModuleDef> = lib.iter().map(|m| (m.name.as_str(), m)).collect();
-        let nets = resolve_nets(&cur, &lib);
-
-        // Derive boundary ports: nets with pins on both sides of the fence.
+        let (ports, port_for_pin) = derive_boundary(&cur, &lib, &inside);
         let is_inside = |r: &NetRef| match r {
             NetRef::InstancePort(i, _) => inside.contains(i),
             _ => false, // top ports and constants are outside
         };
-        let mut ports: Vec<BoundaryPort> = Vec::new();
-        let mut port_for_pin: HashMap<NetRef, String> = HashMap::new();
-        let mut used_names: HashSet<String> = HashSet::new();
-        for net in &nets.nets {
-            let (ins, outs): (Vec<&NetRef>, Vec<&NetRef>) =
-                net.members.iter().partition(|r| is_inside(r));
-            if ins.is_empty() || outs.is_empty() {
-                continue;
-            }
-            let any_inout = net.members.iter().any(|r| {
-                pin_direction(&cur, &lib_map, r) == Some(Direction::InOut)
-            });
-            let driver_inside = net.drivers.iter().any(&is_inside);
-            let direction = if any_inout {
-                Direction::InOut
-            } else if driver_inside {
-                Direction::Out
-            } else {
-                Direction::In
-            };
-            let outside_ref = net
-                .drivers
-                .iter()
-                .find(|d| !is_inside(d))
-                .or(outs.first().copied())
-                .cloned();
-            let port_type = net.port_type.clone().unwrap_or(PortType::StdLogic);
-            // Port name: prefer the parent top port's bare name (a net named
-            // clk_s would otherwise spawn a clk_s_s intermediate inside the
-            // group); fall back to the net name on collision.
-            let top_member = net.members.iter().find_map(|r| match r {
-                NetRef::TopPort(n) => Some(n.clone()),
-                _ => None,
-            });
-            let mut pname = top_member.unwrap_or_else(|| net.name.clone());
-            if !used_names.insert(pname.clone()) {
-                pname = net.name.clone();
-                used_names.insert(pname.clone());
-            }
-            for pin in &net.members {
-                port_for_pin.insert((*pin).clone(), pname.clone());
-            }
-            ports.push(BoundaryPort {
-                name: pname,
-                direction,
-                port_type,
-                outside_ref,
-            });
-        }
-        ports.sort_by(|a, b| a.name.cmp(&b.name));
 
         // Build the group schematic: member instances with outside refs
         // rewritten to the derived top ports.

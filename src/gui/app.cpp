@@ -915,6 +915,12 @@ class MainWindow : public QMainWindow {
             refreshSidebar();
             m_canvas_layer->rebuild();
         });
+        // Group create/collapse/expand changes the visible block set — full
+        // canvas rebuild from the view model.
+        connect(m_state, &AppState::groups_changed, this, [this]() {
+            refreshSidebar();
+            m_canvas_layer->rebuild();
+        });
         connect(m_state, &AppState::instance_added, this, [this](const QString &name) {
             refreshSidebar();
             m_canvas_layer->onInstanceAdded(name);

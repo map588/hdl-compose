@@ -427,6 +427,32 @@ pub mod qobject {
         #[qinvokable]
         fn pin_issue_message(self: &AppState, key: &QString) -> QString;
 
+        /// True when `name` is a collapsed group rendered as a block.
+        #[qinvokable]
+        fn is_group_block(self: &AppState, name: &QString) -> bool;
+
+        /// Innermost group containing instance `name` ("" when ungrouped).
+        #[qinvokable]
+        fn instance_group(self: &AppState, name: &QString) -> QString;
+
+        /// Create a collapsed group from newline-separated instance names.
+        #[qinvokable]
+        fn create_group(self: Pin<&mut AppState>, name: &QString, members: &QString) -> bool;
+
+        /// Dissolve a group: members stay, child groups reparent.
+        #[qinvokable]
+        fn remove_group(self: Pin<&mut AppState>, name: &QString) -> bool;
+
+        #[qinvokable]
+        fn set_group_collapsed(
+            self: Pin<&mut AppState>,
+            name: &QString,
+            collapsed: bool,
+        ) -> bool;
+
+        #[qsignal]
+        fn groups_changed(self: Pin<&mut AppState>);
+
         #[qsignal]
         fn project_loaded(self: Pin<&mut AppState>);
 
@@ -558,7 +584,7 @@ pub mod qobject {
     }
 }
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::SystemTime;
@@ -572,9 +598,37 @@ use crate::project;
 use crate::routing;
 use crate::schematic::Diagnostic;
 use crate::types::{
-    Direction, Language, ModuleDef, NetRef, PortDef, PortType, Range, RangeDir, RangeExpr,
-    Schematic, SliceExpr,
+    Direction, Group, Instance, Language, ModuleDef, NetRef, PortDef, PortType, Range, RangeDir,
+    RangeExpr, Schematic, SliceExpr,
 };
+
+/// One entry in the canvas view: a real instance or a collapsed group
+/// rendered as a synthetic block.
+#[derive(Clone, Copy)]
+enum CanvasRef {
+    Inst(usize),
+    Group(usize),
+}
+
+/// A group is hidden entirely when any ancestor group is collapsed.
+fn group_hidden_by_ancestor(s: &Schematic, g: &Group) -> bool {
+    let mut cur = g.parent.as_deref();
+    let mut hops = 0;
+    while let Some(pname) = cur {
+        let Some(p) = s.groups.iter().find(|x| x.name == pname) else {
+            return false;
+        };
+        if p.collapsed {
+            return true;
+        }
+        cur = p.parent.as_deref();
+        hops += 1;
+        if hops > 64 {
+            return false; // cycle guard; validate_groups reports it
+        }
+    }
+    false
+}
 
 #[derive(Default)]
 pub struct AppStateRust {
@@ -837,19 +891,94 @@ impl qobject::AppState {
     }
 
     // === Read helpers: index-based lookups into schematic + library ===
+    //
+    // Canvas indices address the VIEW: visible instances (not inside a
+    // collapsed group) followed by visible collapsed-group blocks. A
+    // collapsed group renders as a synthetic instance whose ports are the
+    // derived boundary ports, so the whole canvas machinery works unchanged.
+
+    fn canvas_refs(&self) -> Vec<CanvasRef> {
+        let Some(s) = self.rust().schematic.as_ref() else {
+            return Vec::new();
+        };
+        let mut hidden: HashSet<String> = HashSet::new();
+        for g in s.groups.iter().filter(|g| g.collapsed) {
+            hidden.extend(crate::groups::transitive_members(s, &g.name));
+        }
+        let mut out: Vec<CanvasRef> = Vec::new();
+        for (i, inst) in s.instances.iter().enumerate() {
+            if !hidden.contains(&inst.name) {
+                out.push(CanvasRef::Inst(i));
+            }
+        }
+        for (i, g) in s.groups.iter().enumerate() {
+            if g.collapsed && !group_hidden_by_ancestor(s, g) {
+                out.push(CanvasRef::Group(i));
+            }
+        }
+        out
+    }
+
+    fn canvas_ref_at(&self, index: i32) -> Option<CanvasRef> {
+        self.canvas_refs().get(index as usize).copied()
+    }
+
+    fn canvas_instance_at(&self, index: i32) -> Option<&Instance> {
+        match self.canvas_ref_at(index)? {
+            CanvasRef::Inst(i) => self.rust().schematic.as_ref()?.instances.get(i),
+            CanvasRef::Group(_) => None,
+        }
+    }
+
+    fn canvas_group_at(&self, index: i32) -> Option<&Group> {
+        match self.canvas_ref_at(index)? {
+            CanvasRef::Group(i) => self.rust().schematic.as_ref()?.groups.get(i),
+            CanvasRef::Inst(_) => None,
+        }
+    }
+
+    /// Derived boundary ports of a group, as plain PortDefs.
+    fn group_ports(&self, group_name: &str) -> Vec<PortDef> {
+        let r = self.rust();
+        let Some(s) = r.schematic.as_ref() else {
+            return Vec::new();
+        };
+        let members = crate::groups::transitive_members(s, group_name);
+        crate::groups::derive_boundary(s, &r.library, &members)
+            .0
+            .into_iter()
+            .map(|p| PortDef {
+                name: p.name,
+                direction: p.direction,
+                port_type: p.port_type,
+                bundle: None,
+            })
+            .collect()
+    }
+
+    /// Port at a canvas index — owned, because group ports are synthesized.
+    fn canvas_port_at(&self, instance_index: i32, port_index: i32) -> Option<PortDef> {
+        match self.canvas_ref_at(instance_index)? {
+            CanvasRef::Inst(_) => self
+                .instance_port_at(instance_index, port_index)
+                .cloned(),
+            CanvasRef::Group(i) => {
+                let g = self.rust().schematic.as_ref()?.groups.get(i)?;
+                self.group_ports(&g.name).into_iter().nth(port_index as usize)
+            }
+        }
+    }
 
     fn instance_module_ports(&self, instance_index: i32) -> Option<&[PortDef]> {
         let r = self.rust();
-        let s = r.schematic.as_ref()?;
-        let inst = s.instances.get(instance_index as usize)?;
+        let inst = self.canvas_instance_at(instance_index)?;
         let module = r.library.iter().find(|m| m.name == inst.module_ref)?;
         Some(&module.ports)
     }
 
     fn instance_module_def(&self, instance_index: i32) -> Option<&ModuleDef> {
         let r = self.rust();
-        let s = r.schematic.as_ref()?;
-        let inst = s.instances.get(instance_index as usize)?;
+        let inst = self.canvas_instance_at(instance_index)?;
         r.library.iter().find(|m| m.name == inst.module_ref)
     }
 
@@ -921,12 +1050,32 @@ impl qobject::AppState {
 
     fn rebuild_wires(mut self: Pin<&mut Self>) {
         let mut entries: Vec<(String, String, String, i32)> = Vec::new();
+        // Collapsed groups: pins hidden inside render at the group block's
+        // boundary-port pin instead; fully internal wires disappear.
+        let mut hidden: HashSet<String> = HashSet::new();
+        let mut remap: HashMap<String, String> = HashMap::new();
         {
             let r = self.as_ref();
             let Some(s) = r.rust().schematic.as_ref() else {
                 return;
             };
             let lib = &r.rust().library;
+            for g in s
+                .groups
+                .iter()
+                .filter(|g| g.collapsed && !group_hidden_by_ancestor(s, g))
+            {
+                let members = crate::groups::transitive_members(s, &g.name);
+                let (_, pfp) = crate::groups::derive_boundary(s, lib, &members);
+                for (pin, port) in pfp {
+                    if let NetRef::InstancePort(i, _) = &pin
+                        && members.contains(i)
+                    {
+                        remap.insert(pin.to_key(), format!("{}.{}", g.name, port));
+                    }
+                }
+                hidden.extend(members);
+            }
             for inst in &s.instances {
                 let module = lib.iter().find(|m| m.name == inst.module_ref);
                 for (port, net) in &inst.port_map {
@@ -969,11 +1118,31 @@ impl qobject::AppState {
         let wires: Vec<(String, String, i32)> = entries
             .into_iter()
             .filter_map(|(inst, port, driver, width)| {
-                let target = format!("{inst}.{port}");
+                let mut target = format!("{inst}.{port}");
                 // Self-reference: used only as a net identity marker for
                 // multi-load undriven signals. Don't render as a wire.
                 if driver == target {
                     return None;
+                }
+                let mut driver = driver;
+                // Remap hidden endpoints onto their group block pins.
+                if hidden.contains(&inst) {
+                    target = remap.get(&target)?.clone();
+                }
+                let driver_base = NetRef::from_key(&driver)
+                    .map(|r| r.base().to_key())
+                    .unwrap_or_else(|| driver.clone());
+                if let Some(dinst) = NetRef::from_key(&driver)
+                    .as_ref()
+                    .and_then(|r| r.instance_name())
+                    && hidden.contains(dinst)
+                {
+                    // Slice suffix drops with the remap — the group pin
+                    // carries the whole boundary net.
+                    driver = remap.get(&driver_base)?.clone();
+                }
+                if driver == target {
+                    return None; // both ends inside the same group block
                 }
                 let driver_base = NetRef::from_key(&driver)
                     .map(|r| r.base().to_key())
@@ -1263,28 +1432,23 @@ impl qobject::AppState {
 
     // --- Instance inspection ---
     pub fn instance_count(&self) -> i32 {
-        self.rust()
-            .schematic
-            .as_ref()
-            .map(|s| s.instances.len() as i32)
-            .unwrap_or(0)
+        self.canvas_refs().len() as i32
     }
 
     pub fn instance_name(&self, index: i32) -> QString {
-        self.rust()
-            .schematic
-            .as_ref()
-            .and_then(|s| s.instances.get(index as usize))
+        self.canvas_instance_at(index)
             .map(|i| QString::from(&i.name))
+            .or_else(|| self.canvas_group_at(index).map(|g| QString::from(&g.name)))
             .unwrap_or_default()
     }
 
     pub fn instance_module(&self, index: i32) -> QString {
-        self.rust()
-            .schematic
-            .as_ref()
-            .and_then(|s| s.instances.get(index as usize))
+        self.canvas_instance_at(index)
             .map(|i| QString::from(&i.module_ref))
+            .or_else(|| {
+                self.canvas_group_at(index)
+                    .map(|_| QString::from("(group)"))
+            })
             .unwrap_or_default()
     }
 
@@ -1409,27 +1573,32 @@ impl qobject::AppState {
         y: f64,
     ) -> bool {
         let name_s = name.to_string();
-        let exists = self
+        let (is_inst, is_group) = self
             .as_ref()
             .rust()
             .schematic
             .as_ref()
-            .is_some_and(|s| s.instances.iter().any(|i| i.name == name_s));
-        if !exists {
+            .map(|s| {
+                (
+                    s.instances.iter().any(|i| i.name == name_s),
+                    s.groups.iter().any(|g| g.name == name_s),
+                )
+            })
+            .unwrap_or((false, false));
+        if !is_inst && !is_group {
             return false;
         }
         // Snapshot so a completed move is undoable. Called once per drag
         // release / drop — never per drag tick.
         self.as_mut().snapshot_for_mutation();
-        if let Some(inst) = self
-            .as_mut()
-            .rust_mut()
-            .get_mut()
-            .schematic
-            .as_mut()
-            .and_then(|s| s.get_instance_mut(&name_s))
-        {
-            inst.position = (x as f32, y as f32);
+        if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut() {
+            if is_inst {
+                if let Some(inst) = s.get_instance_mut(&name_s) {
+                    inst.position = (x as f32, y as f32);
+                }
+            } else if let Some(g) = s.groups.iter_mut().find(|g| g.name == name_s) {
+                g.position = (x as f32, y as f32);
+            }
         }
         self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
@@ -1439,20 +1608,16 @@ impl qobject::AppState {
     }
 
     pub fn instance_pos_x(&self, index: i32) -> f64 {
-        self.rust()
-            .schematic
-            .as_ref()
-            .and_then(|s| s.instances.get(index as usize))
+        self.canvas_instance_at(index)
             .map(|i| i.position.0 as f64)
+            .or_else(|| self.canvas_group_at(index).map(|g| g.position.0 as f64))
             .unwrap_or(0.0)
     }
 
     pub fn instance_pos_y(&self, index: i32) -> f64 {
-        self.rust()
-            .schematic
-            .as_ref()
-            .and_then(|s| s.instances.get(index as usize))
+        self.canvas_instance_at(index)
             .map(|i| i.position.1 as f64)
+            .or_else(|| self.canvas_group_at(index).map(|g| g.position.1 as f64))
             .unwrap_or(0.0)
     }
 
@@ -1468,10 +1633,7 @@ impl qobject::AppState {
 
     pub fn instance_source_path(&self, index: i32) -> QString {
         let r = self.rust();
-        let Some(s) = r.schematic.as_ref() else {
-            return QString::default();
-        };
-        let Some(inst) = s.instances.get(index as usize) else {
+        let Some(inst) = self.canvas_instance_at(index) else {
             return QString::default();
         };
         let Some(module) = r.library.iter().find(|m| m.name == inst.module_ref) else {
@@ -1632,16 +1794,31 @@ impl qobject::AppState {
             });
         }
         let (inst_name, port_name) = key.split_once('.')?;
-        let inst = s.instances.iter().find(|i| i.name == inst_name)?;
-        let module = r.library.iter().find(|m| m.name == inst.module_ref)?;
-        let p = module.ports.iter().find(|p| p.name == port_name)?;
-        Some(PinInfo {
-            is_top: false,
-            instance: inst_name.to_string(),
-            port: port_name.to_string(),
-            direction: direction_code(&p.direction),
-            width: resolve_port_width(&p.port_type, &module.generics, &inst.generic_map),
-        })
+        if let Some(inst) = s.instances.iter().find(|i| i.name == inst_name) {
+            let module = r.library.iter().find(|m| m.name == inst.module_ref)?;
+            let p = module.ports.iter().find(|p| p.name == port_name)?;
+            return Some(PinInfo {
+                is_top: false,
+                instance: inst_name.to_string(),
+                port: port_name.to_string(),
+                direction: direction_code(&p.direction),
+                width: resolve_port_width(&p.port_type, &module.generics, &inst.generic_map),
+            });
+        }
+        // Collapsed-group block pin: resolvable for hover/width display, but
+        // connect_pins refuses group pins (wire inside the group instead).
+        if s.groups.iter().any(|g| g.name == inst_name && g.collapsed) {
+            let ports = self.group_ports(inst_name);
+            let p = ports.iter().find(|p| p.name == port_name)?;
+            return Some(PinInfo {
+                is_top: false,
+                instance: inst_name.to_string(),
+                port: port_name.to_string(),
+                direction: direction_code(&p.direction),
+                width: port_type_width(&p.port_type),
+            });
+        }
+        None
     }
 
     pub fn connect_pins(
@@ -1663,6 +1840,14 @@ impl qobject::AppState {
         let Some(pb) = self.pin_info(&b_key) else {
             return refuse("");
         };
+        // Collapsed-group pins are derived, not stored — wiring through them
+        // would silently vanish on expand.
+        let is_group_pin = |p: &PinInfo| {
+            !p.is_top && !self.has_instance(&p.instance)
+        };
+        if is_group_pin(&pa) || is_group_pin(&pb) {
+            return refuse("expand the group to edit its wiring");
+        }
 
         // Compatibility: one driver per net; scalar/vector and widths match.
         if !pa.is_top && !pb.is_top && pa.direction == 1 && pb.direction == 1 {
@@ -2173,9 +2358,7 @@ impl qobject::AppState {
     }
 
     pub fn manual_bundle_count(&self, instance_index: i32) -> i32 {
-        let Some(s) = self.rust().schematic.as_ref() else { return 0 };
-        s.instances
-            .get(instance_index as usize)
+        self.canvas_instance_at(instance_index)
             .map(|i| i.manual_bundles.len() as i32)
             .unwrap_or(0)
     }
@@ -2185,8 +2368,7 @@ impl qobject::AppState {
         instance_index: i32,
         bundle_index: i32,
     ) -> Option<(&String, &Vec<String>)> {
-        let s = self.rust().schematic.as_ref()?;
-        let inst = s.instances.get(instance_index as usize)?;
+        let inst = self.canvas_instance_at(instance_index)?;
         // Deterministic order: sort keys so repeated invokable calls align.
         let mut keys: Vec<&String> = inst.manual_bundles.keys().collect();
         keys.sort();
@@ -2626,38 +2808,53 @@ impl qobject::AppState {
 
     // --- Port metadata ---
     pub fn instance_port_count(&self, instance_index: i32) -> i32 {
-        self.instance_module_ports(instance_index)
-            .map(|p| p.len() as i32)
-            .unwrap_or(0)
+        match self.canvas_ref_at(instance_index) {
+            Some(CanvasRef::Inst(_)) => self
+                .instance_module_ports(instance_index)
+                .map(|p| p.len() as i32)
+                .unwrap_or(0),
+            Some(CanvasRef::Group(i)) => self
+                .rust()
+                .schematic
+                .as_ref()
+                .and_then(|s| s.groups.get(i))
+                .map(|g| self.group_ports(&g.name).len() as i32)
+                .unwrap_or(0),
+            None => 0,
+        }
     }
 
     pub fn instance_port_name(&self, instance_index: i32, port_index: i32) -> QString {
-        self.instance_port_at(instance_index, port_index)
+        self.canvas_port_at(instance_index, port_index)
             .map(|p| QString::from(&p.name))
             .unwrap_or_default()
     }
 
     pub fn instance_port_direction(&self, instance_index: i32, port_index: i32) -> i32 {
-        self.instance_port_at(instance_index, port_index)
+        self.canvas_port_at(instance_index, port_index)
             .map(|p| direction_code(&p.direction))
             .unwrap_or(-1)
     }
 
     pub fn instance_port_width(&self, instance_index: i32, port_index: i32) -> i32 {
-        let r = self.rust();
-        let Some(s) = r.schematic.as_ref() else { return 0 };
-        let Some(inst) = s.instances.get(instance_index as usize) else { return 0 };
-        let Some(module) = r.library.iter().find(|m| m.name == inst.module_ref) else {
-            return 0;
-        };
-        let Some(port) = module.ports.get(port_index as usize) else { return 0 };
-        resolve_port_width(&port.port_type, &module.generics, &inst.generic_map)
+        if let Some(inst) = self.canvas_instance_at(instance_index) {
+            let r = self.rust();
+            let Some(module) = r.library.iter().find(|m| m.name == inst.module_ref) else {
+                return 0;
+            };
+            let Some(port) = module.ports.get(port_index as usize) else { return 0 };
+            return resolve_port_width(&port.port_type, &module.generics, &inst.generic_map);
+        }
+        // Group block: boundary types are already resolved.
+        self.canvas_port_at(instance_index, port_index)
+            .map(|p| port_type_width(&p.port_type))
+            .unwrap_or(0)
     }
 
     pub fn instance_port_bundle(&self, instance_index: i32, port_index: i32) -> QString {
-        self.instance_port_at(instance_index, port_index)
-            .and_then(|p| p.bundle.as_ref())
-            .map(QString::from)
+        self.canvas_port_at(instance_index, port_index)
+            .and_then(|p| p.bundle)
+            .map(|b| QString::from(&b))
             .unwrap_or_default()
     }
 
@@ -2900,6 +3097,158 @@ impl qobject::AppState {
             .get(&key.to_string())
             .map(|(_, m)| QString::from(m))
             .unwrap_or_default()
+    }
+
+    // === Groups ===
+
+    pub fn is_group_block(&self, name: &QString) -> bool {
+        let n = name.to_string();
+        self.rust()
+            .schematic
+            .as_ref()
+            .is_some_and(|s| s.groups.iter().any(|g| g.name == n && g.collapsed))
+    }
+
+    pub fn instance_group(&self, name: &QString) -> QString {
+        let n = name.to_string();
+        self.rust()
+            .schematic
+            .as_ref()
+            .and_then(|s| {
+                s.groups
+                    .iter()
+                    .find(|g| g.members.contains(&n))
+                    .map(|g| QString::from(&g.name))
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn create_group(mut self: Pin<&mut Self>, name: &QString, members: &QString) -> bool {
+        let name_s = name.to_string().trim().to_string();
+        let member_list: Vec<String> = members
+            .to_string()
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if name_s.is_empty() || member_list.is_empty() {
+            self.as_mut().record_error("group needs a name and members");
+            return false;
+        }
+        let err: Option<String> = {
+            let this = self.as_ref();
+            let r = this.rust();
+            match r.schematic.as_ref() {
+                None => Some("no project loaded".to_string()),
+                Some(s) => {
+                    if s.groups.iter().any(|g| g.name == name_s)
+                        || s.instances.iter().any(|i| i.name == name_s)
+                        || r.library.iter().any(|m| m.name == name_s)
+                    {
+                        Some(format!("name '{name_s}' is already taken"))
+                    } else {
+                        member_list.iter().find_map(|m| {
+                            if !s.instances.iter().any(|i| i.name == *m) {
+                                Some(format!("no such instance: {m}"))
+                            } else if s.groups.iter().any(|g| g.members.contains(m)) {
+                                Some(format!("'{m}' is already in a group"))
+                            } else {
+                                None
+                            }
+                        })
+                    }
+                }
+            }
+        };
+        if let Some(e) = err {
+            self.as_mut().record_error(e);
+            return false;
+        }
+        self.as_mut().snapshot_for_mutation();
+        if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut() {
+            let pts: Vec<(f32, f32)> = s
+                .instances
+                .iter()
+                .filter(|i| member_list.contains(&i.name))
+                .map(|i| i.position)
+                .collect();
+            let n = pts.len().max(1) as f32;
+            let centroid = (
+                pts.iter().map(|p| p.0).sum::<f32>() / n,
+                pts.iter().map(|p| p.1).sum::<f32>() / n,
+            );
+            s.groups.push(Group {
+                name: name_s.clone(),
+                members: member_list,
+                parent: None,
+                collapsed: true,
+                position: centroid,
+            });
+        }
+        self.as_mut().finish_group_mutation()
+    }
+
+    pub fn remove_group(mut self: Pin<&mut Self>, name: &QString) -> bool {
+        let name_s = name.to_string();
+        let exists = self
+            .as_ref()
+            .rust()
+            .schematic
+            .as_ref()
+            .is_some_and(|s| s.groups.iter().any(|g| g.name == name_s));
+        if !exists {
+            self.as_mut().record_error(format!("no such group: {name_s}"));
+            return false;
+        }
+        self.as_mut().snapshot_for_mutation();
+        if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut() {
+            let parent = s
+                .groups
+                .iter()
+                .find(|g| g.name == name_s)
+                .and_then(|g| g.parent.clone());
+            for g in s.groups.iter_mut() {
+                if g.parent.as_deref() == Some(name_s.as_str()) {
+                    g.parent = parent.clone();
+                }
+            }
+            s.groups.retain(|g| g.name != name_s);
+        }
+        self.as_mut().finish_group_mutation()
+    }
+
+    pub fn set_group_collapsed(
+        mut self: Pin<&mut Self>,
+        name: &QString,
+        collapsed: bool,
+    ) -> bool {
+        let name_s = name.to_string();
+        let exists = self
+            .as_ref()
+            .rust()
+            .schematic
+            .as_ref()
+            .is_some_and(|s| s.groups.iter().any(|g| g.name == name_s));
+        if !exists {
+            self.as_mut().record_error(format!("no such group: {name_s}"));
+            return false;
+        }
+        self.as_mut().snapshot_for_mutation();
+        if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut()
+            && let Some(g) = s.groups.iter_mut().find(|g| g.name == name_s)
+        {
+            g.collapsed = collapsed;
+        }
+        self.as_mut().finish_group_mutation()
+    }
+
+    /// Shared tail for group mutators: dirty + revalidate + notify.
+    fn finish_group_mutation(mut self: Pin<&mut Self>) -> bool {
+        self.as_mut().rust_mut().get_mut().dirty = true;
+        self.as_mut().set_dirty(true);
+        self.as_mut().rebuild_library_and_validate();
+        self.as_mut().groups_changed();
+        true
     }
 }
 

@@ -470,8 +470,27 @@ class InstanceItem : public QGraphicsRectItem {
 
     void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) override;
 
+    // The +/- group-toggle button in the header's top-right corner.
+    QRectF toggleGlyphRect() const {
+        return QRectF(rect().right() - 26, rect().top() + 7, 18, 18);
+    }
+
   protected:
     void mousePressEvent(QGraphicsSceneMouseEvent *event) override {
+        if (event->button() == Qt::LeftButton && m_state) {
+            bool group_block = m_state->is_group_block(m_name);
+            QString grp = group_block ? m_name : m_state->instance_group(m_name);
+            if (!grp.isEmpty() && toggleGlyphRect().contains(event->pos())) {
+                // Mutation rebuilds the canvas and deletes THIS item — defer
+                // past the event handler, capture by value.
+                AppState *st = m_state;
+                QTimer::singleShot(0, [st, grp, group_block]() {
+                    st->set_group_collapsed(grp, !group_block);
+                });
+                event->accept();
+                return;
+            }
+        }
         if (event->button() == Qt::LeftButton) {
             m_pressScenePos = event->scenePos();
             m_dragged = false;

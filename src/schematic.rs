@@ -142,6 +142,14 @@ impl Schematic {
                 }
             }
         }
+        // Group membership follows the rename.
+        for g in self.groups.iter_mut() {
+            for m in g.members.iter_mut() {
+                if m == old_name {
+                    *m = new_name.to_string();
+                }
+            }
+        }
         // Rewrite alias keys if any reference this instance as driver.
         let remapped: Vec<(NetRef, String)> = self
             .aliases
@@ -309,6 +317,24 @@ impl Schematic {
         // Drop any aliases whose key referenced the removed instance as driver.
         self.aliases
             .retain(|k, _| k.instance_name() != Some(name));
+        // Group membership follows the instance; empty groups dissolve.
+        for g in self.groups.iter_mut() {
+            g.members.retain(|m| m != name);
+        }
+        let emptied: Vec<String> = self
+            .groups
+            .iter()
+            .filter(|g| g.members.is_empty())
+            .map(|g| g.name.clone())
+            .collect();
+        for gone in emptied {
+            for g in self.groups.iter_mut() {
+                if g.parent.as_deref() == Some(gone.as_str()) {
+                    g.parent = None;
+                }
+            }
+            self.groups.retain(|g| g.name != gone);
+        }
         Ok(removed)
     }
 

@@ -546,6 +546,30 @@ void InstanceItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *opti
     painter->drawText(QRectF(r.left() + 12, r.top() + 30, r.width() - 24, 16),
                       Qt::AlignLeft | Qt::AlignVCenter,
                       painter->fontMetrics().elidedText(m_module, Qt::ElideRight, static_cast<int>(r.width()) - 24));
+
+    // Group affordances: collapsed group blocks get an accent border and a
+    // '+' (expand); members of an expanded group get a '−' (collapse).
+    bool group_block = m_state->is_group_block(m_name);
+    QString grp = group_block ? m_name : m_state->instance_group(m_name);
+    if (!grp.isEmpty()) {
+        if (group_block) {
+            QPen accent(QColor(170, 140, 220), selected ? 2.0 : 1.4);
+            accent.setCosmetic(true);
+            painter->setPen(accent);
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRoundedRect(r.adjusted(2, 2, -2, -2), 6, 6);
+        }
+        QRectF g = toggleGlyphRect();
+        painter->setPen(QPen(QColor(150, 154, 162), 1.0));
+        painter->setBrush(QColor(52, 56, 62));
+        painter->drawRoundedRect(g, 4, 4);
+        painter->setPen(QColor(226, 228, 232));
+        QFont gf = painter->font();
+        gf.setBold(true);
+        painter->setFont(gf);
+        painter->drawText(g, Qt::AlignCenter,
+                          group_block ? QStringLiteral("+") : QStringLiteral("−"));
+    }
 }
 
 // WireTool, CanvasView, CanvasLayer all live in canvas.h / canvas.cpp.
@@ -823,20 +847,78 @@ void InstanceItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
         event->ignore();
         return;
     }
+    bool group_block = m_state->is_group_block(m_name);
+    QString member_group = group_block ? QString() : m_state->instance_group(m_name);
+
     QMenu menu;
-    QAction *groupAct = menu.addAction(QStringLiteral("Group ports into interface..."));
-    QAction *chosen = menu.exec(event->screenPos());
-    if (chosen == groupAct) {
-        QWidget *parent_w = nullptr;
-        if (auto *s = scene()) {
-            if (!s->views().isEmpty())
-                parent_w = s->views().first()->window();
+    QAction *groupPortsAct = nullptr;
+    QAction *expandAct = nullptr;
+    QAction *ungroupAct = nullptr;
+    QAction *collapseAct = nullptr;
+    QAction *createGroupAct = nullptr;
+    if (group_block) {
+        expandAct = menu.addAction(QStringLiteral("Expand group"));
+        ungroupAct = menu.addAction(QStringLiteral("Ungroup"));
+    } else {
+        groupPortsAct = menu.addAction(QStringLiteral("Group ports into interface..."));
+        if (!member_group.isEmpty()) {
+            collapseAct =
+                menu.addAction(QStringLiteral("Collapse group '%1'").arg(member_group));
+        } else {
+            createGroupAct = menu.addAction(QStringLiteral("Group into module..."));
         }
-        // Empty preselection: the dialog opens with no port checked, so the
-        // user picks the whole group from scratch.
-        prompt_create_manual_bundle(parent_w, m_state, m_name, QString());
     }
+    QAction *chosen = menu.exec(event->screenPos());
     event->accept();
+    if (!chosen)
+        return;
+
+    QWidget *parent_w = nullptr;
+    if (auto *s = scene()) {
+        if (!s->views().isEmpty())
+            parent_w = s->views().first()->window();
+    }
+    AppState *st = m_state;
+    const QString name = m_name;
+
+    // Group mutations rebuild the canvas and delete THIS item — defer past
+    // the handler, capture by value, never `this` (except reading selection
+    // synchronously below, before any mutation).
+    if (chosen == groupPortsAct) {
+        prompt_create_manual_bundle(parent_w, m_state, m_name, QString());
+    } else if (chosen == expandAct) {
+        QTimer::singleShot(0, [st, name]() { st->set_group_collapsed(name, false); });
+    } else if (chosen == ungroupAct) {
+        QTimer::singleShot(0, [st, name]() { st->remove_group(name); });
+    } else if (chosen == collapseAct) {
+        const QString grp = member_group;
+        QTimer::singleShot(0, [st, grp]() { st->set_group_collapsed(grp, true); });
+    } else if (chosen == createGroupAct) {
+        // Members = current multi-selection plus this block.
+        QStringList members;
+        if (auto *sc = scene()) {
+            for (QGraphicsItem *it : sc->selectedItems()) {
+                if (auto *inst = dynamic_cast<InstanceItem *>(it)) {
+                    if (!inst->m_state->is_group_block(inst->instanceName()))
+                        members << inst->instanceName();
+                }
+            }
+        }
+        if (!members.contains(name))
+            members << name;
+        bool ok = false;
+        QString gname = QInputDialog::getText(
+            parent_w, QStringLiteral("Group into module"),
+            QStringLiteral("Module name for group of %1 instance(s):").arg(members.size()),
+            QLineEdit::Normal, QStringLiteral("grp_%1").arg(name), &ok);
+        gname = gname.trimmed();
+        if (ok && !gname.isEmpty()) {
+            const QString joined = members.join(QStringLiteral("\n"));
+            QTimer::singleShot(0, [st, gname, joined]() {
+                st->create_group(gname, joined);
+            });
+        }
+    }
 }
 
 void TopPortItem::paintIssueRing(QPainter *painter, const QPointF &center) {
