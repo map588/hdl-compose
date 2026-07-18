@@ -940,6 +940,10 @@ impl qobject::AppState {
             }
         }
         entries.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        // Mutual references (A.x => B.y and B.y => A.x) describe one wire —
+        // dedup on the unordered pair of base pin keys.
+        let mut seen_pairs: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
         let wires: Vec<(String, String, i32)> = entries
             .into_iter()
             .filter_map(|(inst, port, driver, width)| {
@@ -947,6 +951,17 @@ impl qobject::AppState {
                 // Self-reference: used only as a net identity marker for
                 // multi-load undriven signals. Don't render as a wire.
                 if driver == target {
+                    return None;
+                }
+                let driver_base = NetRef::from_key(&driver)
+                    .map(|r| r.base().to_key())
+                    .unwrap_or_else(|| driver.clone());
+                let pair = if driver_base < target {
+                    (driver_base, target.clone())
+                } else {
+                    (target.clone(), driver_base)
+                };
+                if !seen_pairs.insert(pair) {
                     return None;
                 }
                 Some((driver, target, width))

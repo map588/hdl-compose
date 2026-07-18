@@ -1,5 +1,6 @@
 pub mod codegen;
 pub mod gui;
+pub mod nets;
 pub mod project;
 pub mod routing;
 pub mod schematic;

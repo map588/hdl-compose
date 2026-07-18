@@ -517,19 +517,9 @@ impl Schematic {
                         {
                             driver_port_def = Some(driver_port);
                             if let Some(inst_port) = module_ports.get(port_name.as_str()) {
-                                if driver_port.direction == Direction::In {
-                                    // Input-referenced nets are undriven internal signals.
-                                    // Multiple loads can share the same signal; a driver can be
-                                    // added later. Warn so the user sees elaboration will fail,
-                                    // but do not block codegen.
-                                    diags.push(
-                                        Diagnostic::warning(format!(
-                                            "net shared with input '{ref_inst}.{ref_port}' has no driver (undriven signal)"
-                                        ))
-                                        .with_instance(&inst.name)
-                                        .with_port(port_name),
-                                    );
-                                }
+                                // Driver presence is checked net-wide below —
+                                // referencing another input is fine as long as
+                                // the merged net has a driver somewhere.
                                 if slice_opt.is_none() {
                                     check_compatibility(
                                         &mut diags,
@@ -599,6 +589,52 @@ impl Schematic {
                             );
                         }
                     }
+                }
+            }
+        }
+
+        // Net-level driver checks over the resolved (merged) nets.
+        {
+            let lib_map: HashMap<&str, &ModuleDef> =
+                library.iter().map(|m| (m.name.as_str(), m)).collect();
+            let nets = crate::nets::resolve_nets(self, library);
+            for net in &nets.nets {
+                // InOut pins may legitimately share a net (tri-state bus);
+                // more than one hard driver is a conflict.
+                let hard_drivers: Vec<&NetRef> = net
+                    .drivers
+                    .iter()
+                    .filter(|r| {
+                        crate::nets::pin_direction(self, &lib_map, r)
+                            != Some(Direction::InOut)
+                    })
+                    .collect();
+                if hard_drivers.len() > 1 {
+                    let pins: Vec<String> =
+                        hard_drivers.iter().map(|r| r.to_key()).collect();
+                    diags.push(Diagnostic::error(format!(
+                        "net '{}' has multiple drivers: {}",
+                        net.name,
+                        pins.join(", ")
+                    )));
+                }
+                if net.drivers.is_empty() {
+                    let pins: Vec<String> =
+                        net.members.iter().map(|r| r.to_key()).collect();
+                    diags.push(Diagnostic::warning(format!(
+                        "net '{}' has no driver (pins: {})",
+                        net.name,
+                        pins.join(", ")
+                    )));
+                }
+                // One net, one name: conflicting aliases on merged pins.
+                let aliases = net.aliases(self);
+                if aliases.len() > 1 {
+                    diags.push(Diagnostic::error(format!(
+                        "net '{}' has conflicting aliases: {}",
+                        net.name,
+                        aliases.join(", ")
+                    )));
                 }
             }
         }
@@ -846,7 +882,7 @@ mod tests {
         assert!(
             diags
                 .iter()
-                .any(|d| !d.is_error() && d.message.contains("undriven"))
+                .any(|d| !d.is_error() && d.message.contains("no driver"))
         );
     }
 

@@ -6,6 +6,7 @@ use crate::codegen::{
     collect_top_intermediates, find_top_port_context, port_type_to_vhdl,
     port_type_to_vhdl_signal, resolve_port_type,
 };
+use crate::nets::{Nets, resolve_nets};
 use crate::schematic::Diagnostic;
 use crate::types::*;
 
@@ -44,10 +45,14 @@ pub fn generate_vhdl(
     writeln!(out, "architecture structural of {} is", schematic.top_name).unwrap();
     writeln!(out).unwrap();
 
+    // Resolve connectivity once; declarations and port-map rendering all
+    // derive from the same net view.
+    let nets = resolve_nets(schematic, library);
+
     // Signal declarations: top-port intermediates first (every connected
     // non-inout top port gets its own signal, so internal references all use
     // the intermediate name and no port_map maps directly to the entity port).
-    let top_intermediates = collect_top_intermediates(schematic, library);
+    let top_intermediates = collect_top_intermediates(schematic, &nets);
     for ti in &top_intermediates {
         let type_str = port_type_to_vhdl_signal(&ti.port_type);
         writeln!(out, "  signal {} : {};", ti.sig_name, type_str).unwrap();
@@ -57,8 +62,8 @@ pub fn generate_vhdl(
     }
 
     // Internal nets (instance-driven nets shared across the design).
-    let internal_nets = collect_internal_nets(schematic, library);
-    for (_, sig_name, port_type) in &internal_nets {
+    let internal_nets = collect_internal_nets(&nets);
+    for (sig_name, port_type) in &internal_nets {
         let type_str = port_type_to_vhdl_signal(port_type);
         writeln!(out, "  signal {sig_name} : {type_str};").unwrap();
     }
@@ -104,7 +109,7 @@ pub fn generate_vhdl(
     // Instance statements (alphabetical)
     for inst in &sorted_instances {
         if let Some(module) = lib_map.get(inst.module_ref.as_str()) {
-            emit_instance(&mut out, schematic, inst, module);
+            emit_instance(&mut out, &nets, inst, module);
             writeln!(out).unwrap();
         }
     }
@@ -210,7 +215,7 @@ fn emit_component(out: &mut String, module: &ModuleDef) {
     writeln!(out, "  end component {};", module.name).unwrap();
 }
 
-fn emit_instance(out: &mut String, schematic: &Schematic, inst: &Instance, module: &ModuleDef) {
+fn emit_instance(out: &mut String, nets: &Nets, inst: &Instance, module: &ModuleDef) {
     write!(out, "  {} : {}", inst.name, inst.module_ref).unwrap();
 
     // Generic map
@@ -240,9 +245,15 @@ fn emit_instance(out: &mut String, schematic: &Schematic, inst: &Instance, modul
     // Emit ports in module declaration order
     for (i, port) in module.ports.iter().enumerate() {
         let sep = if i < module.ports.len() - 1 { "," } else { "" };
+        // A port with no entry of its own can still be on a net (another pin
+        // references it) — connect it rather than leaving the net undriven.
+        let pin = NetRef::InstancePort(inst.name.clone(), port.name.clone());
         let rhs = match inst.port_map.get(&port.name) {
-            Some(Some(net_ref)) => render_rhs_vhdl(schematic, net_ref),
-            Some(None) | None => "open".to_string(),
+            Some(Some(net_ref)) => render_rhs_vhdl(nets, net_ref),
+            Some(None) | None => match nets.name_for(&pin) {
+                Some(name) => name.to_string(),
+                None => "open".to_string(),
+            },
         };
         let lhs = match inst.consumer_slices.get(&port.name) {
             Some(SliceExpr::Bit(b)) => format!("{}({})", port.name, b),
@@ -258,8 +269,11 @@ fn emit_instance(out: &mut String, schematic: &Schematic, inst: &Instance, modul
 
 /// Render a NetRef as a VHDL association RHS. Slice variants use
 /// `(i)` for a single bit and `(high downto low)` for a range.
-fn render_rhs_vhdl(schematic: &Schematic, net_ref: &NetRef) -> String {
-    let base_name = schematic.signal_name(net_ref);
+fn render_rhs_vhdl(nets: &Nets, net_ref: &NetRef) -> String {
+    let base_name = nets
+        .name_for(net_ref)
+        .expect("rendered ref is always a net member")
+        .to_string();
     match net_ref {
         NetRef::TopPort(_) | NetRef::InstancePort(_, _) => base_name,
         NetRef::TopPortSlice(_, slice) | NetRef::InstancePortSlice(_, _, slice) => {
@@ -400,6 +414,10 @@ mod tests {
 
         assert!(output.contains("signal u_a_dout : std_logic;"));
         assert!(output.contains("din => u_a_dout"));
+        // The driver has no self-referencing entry — it must still be
+        // connected to the net, never left `open`.
+        assert!(output.contains("dout => u_a_dout"), "{output}");
+        assert!(!output.contains("open"), "{output}");
     }
 
     #[test]
@@ -781,9 +799,16 @@ mod tests {
             .filter(|d| d.is_error())
             .collect();
         let output = generate_vhdl(&s, &lib, &diags).unwrap();
+        // u_drv.bus, top dout, and u_load.in_bus are ONE net routed through
+        // the dout_s intermediate — with the driver's WIDTH=16 resolved.
         assert!(
-            output.contains("signal u_drv_bus : std_logic_vector(15 downto 0);"),
+            output.contains("signal dout_s : std_logic_vector(15 downto 0);"),
             "{output}"
+        );
+        assert!(output.contains("in_bus => dout_s"), "{output}");
+        assert!(
+            !output.contains("u_drv_bus"),
+            "merged net must not declare a second signal: {output}"
         );
     }
 }

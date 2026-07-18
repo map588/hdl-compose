@@ -191,38 +191,26 @@ pub struct TopIntermediate {
 /// alias set to the same string) so codegen doesn't emit `<x> <= <x>;`.
 pub fn collect_top_intermediates(
     schematic: &Schematic,
-    library: &[ModuleDef],
+    nets: &crate::nets::Nets,
 ) -> Vec<TopIntermediate> {
-    use std::collections::HashSet;
-    let mut referenced: HashSet<String> = HashSet::new();
-    for inst in &schematic.instances {
-        for entry in inst.port_map.values() {
-            if let Some(net) = entry
-                && let NetRef::TopPort(name) = net.base()
-            {
-                referenced.insert(name);
-            }
-        }
-    }
     let mut out = Vec::new();
     for port in &schematic.top_ports {
-        if !referenced.contains(&port.name) {
-            continue;
-        }
+        let pin = NetRef::TopPort(port.name.clone());
+        let Some(net) = nets.net_for(&pin) else {
+            continue; // unconnected top port
+        };
         if matches!(port.direction, Direction::InOut) {
             continue;
         }
-        let sig_name = schematic.signal_name(&NetRef::TopPort(port.name.clone()));
-        if sig_name == port.name {
+        if net.name == port.name {
             continue;
         }
-        let port_type = match find_top_port_context(schematic, library, &port.name) {
-            Some((mg, gm)) => resolve_port_type(&port.port_type, mg, gm),
-            None => port.port_type.clone(),
-        };
+        // Prefer the net's resolved type (driver-side generics applied);
+        // fall back to the port's own declared type.
+        let port_type = net.port_type.clone().unwrap_or_else(|| port.port_type.clone());
         out.push(TopIntermediate {
             port_name: port.name.clone(),
-            sig_name,
+            sig_name: net.name.clone(),
             port_type,
             direction: port.direction.clone(),
         });
@@ -255,46 +243,15 @@ pub fn find_top_port_context<'a>(
 }
 
 
-/// Collect all internal nets (driven by instance outputs that are referenced by at least one port).
-/// Returns (net_ref, signal_name, port_type) tuples.
-pub fn collect_internal_nets(
-    schematic: &Schematic,
-    library: &[ModuleDef],
-) -> Vec<(NetRef, String, PortType)> {
-    use std::collections::{HashMap, HashSet};
-
-    let lib_map: HashMap<&str, &ModuleDef> = library.iter().map(|m| (m.name.as_str(), m)).collect();
-
-    // Find all instance-output nets referenced in any port map (normalize slices to base drivers).
-    let mut referenced_nets: HashSet<NetRef> = HashSet::new();
-    for inst in &schematic.instances {
-        for net_ref in inst.port_map.values().flatten() {
-            let base = net_ref.base();
-            if matches!(base, NetRef::InstancePort(_, _)) {
-                referenced_nets.insert(base);
-            }
-        }
-    }
-
-    // For each referenced net, find the driver's port type and resolve any
-    // generic-derived range bounds against the driving instance's generic_map.
-    let mut nets = Vec::new();
-    for net_ref in &referenced_nets {
-        if let NetRef::InstancePort(inst_name, port_name) = net_ref
-            && let Some(driver_inst) = schematic.instances.iter().find(|i| i.name == *inst_name)
-            && let Some(module) = lib_map.get(driver_inst.module_ref.as_str())
-            && let Some(port) = module.ports.iter().find(|p| p.name == *port_name)
-        {
-            let sig_name = schematic.signal_name(net_ref);
-            let resolved =
-                resolve_port_type(&port.port_type, &module.generics, &driver_inst.generic_map);
-            nets.push((net_ref.clone(), sig_name, resolved));
-        }
-    }
-
-    // Sort by signal name for deterministic output
-    nets.sort_by(|a, b| a.1.cmp(&b.1));
-    nets
+/// Collect the internal signal declarations: one per resolved net that does
+/// not route through a top-port intermediate. Returns (signal_name, port_type)
+/// pairs sorted by name.
+pub fn collect_internal_nets(nets: &crate::nets::Nets) -> Vec<(String, PortType)> {
+    nets.nets
+        .iter()
+        .filter(|n| !n.has_top)
+        .filter_map(|n| n.port_type.clone().map(|pt| (n.name.clone(), pt)))
+        .collect()
 }
 
 /// Pre-validate and return errors if any exist.

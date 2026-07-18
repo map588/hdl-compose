@@ -6,6 +6,7 @@ use crate::codegen::{
     collect_top_intermediates, find_top_port_context, port_type_to_sv, port_type_to_sv_wire,
     resolve_port_type,
 };
+use crate::nets::{Nets, resolve_nets};
 use crate::schematic::Diagnostic;
 use crate::types::*;
 
@@ -35,10 +36,14 @@ pub fn generate_sv(
 
     writeln!(out).unwrap();
 
+    // Resolve connectivity once; declarations and port-map rendering all
+    // derive from the same net view.
+    let nets = resolve_nets(schematic, library);
+
     // Top-port intermediate wires + assigns. Every connected non-inout top
     // port routes through an intermediate so internal references all use a
     // single canonical name.
-    let top_intermediates = collect_top_intermediates(schematic, library);
+    let top_intermediates = collect_top_intermediates(schematic, &nets);
     for ti in &top_intermediates {
         let type_str = port_type_to_sv_wire(&ti.port_type);
         writeln!(out, "  {type_str} {};", ti.sig_name).unwrap();
@@ -60,8 +65,8 @@ pub fn generate_sv(
     }
 
     // Wire declarations for internal nets
-    let internal_nets = collect_internal_nets(schematic, library);
-    for (_, sig_name, port_type) in &internal_nets {
+    let internal_nets = collect_internal_nets(&nets);
+    for (sig_name, port_type) in &internal_nets {
         let type_str = port_type_to_sv_wire(port_type);
         writeln!(out, "  {type_str} {sig_name};").unwrap();
     }
@@ -75,7 +80,7 @@ pub fn generate_sv(
 
     for inst in &sorted_instances {
         if let Some(module) = lib_map.get(inst.module_ref.as_str()) {
-            emit_instance(&mut out, schematic, inst, module);
+            emit_instance(&mut out, &nets, inst, module);
             writeln!(out).unwrap();
         }
     }
@@ -138,7 +143,7 @@ fn emit_module_header(out: &mut String, schematic: &Schematic, library: &[Module
     }
 }
 
-fn emit_instance(out: &mut String, schematic: &Schematic, inst: &Instance, module: &ModuleDef) {
+fn emit_instance(out: &mut String, nets: &Nets, inst: &Instance, module: &ModuleDef) {
     write!(out, "  {}", inst.module_ref).unwrap();
 
     // Parameter overrides
@@ -165,9 +170,15 @@ fn emit_instance(out: &mut String, schematic: &Schematic, inst: &Instance, modul
     // Port connections (module declaration order)
     for (i, port) in module.ports.iter().enumerate() {
         let sep = if i < module.ports.len() - 1 { "," } else { "" };
+        // A port with no entry of its own can still be on a net (another pin
+        // references it) — connect it rather than leaving the net undriven.
+        let pin = NetRef::InstancePort(inst.name.clone(), port.name.clone());
         let rhs = match inst.port_map.get(&port.name) {
-            Some(Some(net_ref)) => render_rhs_sv(schematic, net_ref),
-            Some(None) | None => String::new(), // empty parens for unconnected
+            Some(Some(net_ref)) => render_rhs_sv(nets, net_ref),
+            Some(None) | None => match nets.name_for(&pin) {
+                Some(name) => name.to_string(),
+                None => String::new(), // empty parens for unconnected
+            },
         };
         let lhs = match inst.consumer_slices.get(&port.name) {
             Some(SliceExpr::Bit(b)) => format!("{}[{}]", port.name, b),
@@ -181,8 +192,11 @@ fn emit_instance(out: &mut String, schematic: &Schematic, inst: &Instance, modul
 
 /// Render a NetRef as a SystemVerilog expression. Slice variants use
 /// `[i]` for a single bit and `[high:low]` for a range.
-fn render_rhs_sv(schematic: &Schematic, net_ref: &NetRef) -> String {
-    let base_name = schematic.signal_name(net_ref);
+fn render_rhs_sv(nets: &Nets, net_ref: &NetRef) -> String {
+    let base_name = nets
+        .name_for(net_ref)
+        .expect("rendered ref is always a net member")
+        .to_string();
     match net_ref {
         NetRef::TopPort(_) | NetRef::InstancePort(_, _) => base_name,
         NetRef::TopPortSlice(_, slice) | NetRef::InstancePortSlice(_, _, slice) => {
