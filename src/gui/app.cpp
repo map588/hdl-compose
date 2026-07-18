@@ -896,6 +896,9 @@ class MainWindow : public QMainWindow {
             int errs = m_state->validation_error_count();
             int warns = m_state->validation_warning_count();
             statusBar()->showMessage(QStringLiteral("%1 error(s), %2 warning(s)").arg(errs).arg(warns));
+            // Pin issue rings paint from the freshly rebuilt pin_issues map.
+            if (m_canvas && m_canvas->scene())
+                m_canvas->scene()->update();
         });
 
         // Undo/redo enable-state tracks every mutation signal.

@@ -10,6 +10,7 @@
 #include <QFont>
 #include <QFontMetrics>
 #include <QFormLayout>
+#include <QInputDialog>
 #include <QLabel>
 #include <QScrollArea>
 #include <QVBoxLayout>
@@ -108,6 +109,23 @@ void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWi
 
     // Draw shape
     painter->setRenderHint(QPainter::Antialiasing);
+
+    // Validation ring: red = error (multi-driver etc.), amber = warning
+    // (undriven / unconnected input). Tooltip carries the message.
+    if (AppState *state = m_parent ? m_parent->state() : nullptr) {
+        int issue = state->pin_issue_level(m_key);
+        QString base_tip = m_name + format_width(m_width);
+        QString tip = base_tip;
+        if (issue > 0) {
+            painter->setBrush(Qt::NoBrush);
+            QPen ring(issue >= 2 ? QColor(232, 72, 60) : QColor(255, 179, 0), 2.0);
+            painter->setPen(ring);
+            painter->drawEllipse(QPointF(tip_x, y), kPinShapeSize + 3, kPinShapeSize + 3);
+            tip = base_tip + QStringLiteral("\n") + state->pin_issue_message(m_key);
+        }
+        if (tip != toolTip())
+            setToolTip(tip);
+    }
 
     // Armed-state halo: yellow ring around the pin tip when WireTool has armed us.
     if (m_armed_state) {
@@ -710,6 +728,7 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     QAction *promoteAct = nullptr;
     QAction *clearAct = nullptr;
     QAction *sliceAct = nullptr;
+    QAction *constAct = nullptr;
     if (is_bundle) {
         ungroupAct = menu.addAction(QStringLiteral("Ungroup"));
     } else {
@@ -719,6 +738,9 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
         // Slice dialog makes sense only for multi-bit ports (width != 0).
         if (m_width != 0) {
             sliceAct = menu.addAction(QStringLiteral("Connect slice..."));
+        }
+        if (m_direction == 0 /*In*/) {
+            constAct = menu.addAction(QStringLiteral("Tie to constant..."));
         }
         clearAct = menu.addAction(QStringLiteral("Clear connection"));
     }
@@ -751,6 +773,28 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     } else if (chosen == sliceAct) {
         QTimer::singleShot(0, [state, inst, port, parent_w]() {
             prompt_connect_slice(parent_w, state, inst, port);
+        });
+    } else if (chosen == constAct) {
+        const int width = m_width;
+        QTimer::singleShot(0, [state, inst, port, parent_w, width]() {
+            // Language-appropriate default: scalar '0' / 1'b0, vector zeros.
+            bool sv = state->project_language() == 1;
+            QString def;
+            if (width == 0) {
+                def = sv ? QStringLiteral("1'b0") : QStringLiteral("'0'");
+            } else if (sv) {
+                def = QStringLiteral("%1'b0").arg(width > 0 ? width : 1);
+            } else {
+                def = QStringLiteral("(others => '0')");
+            }
+            bool ok = false;
+            QString lit = QInputDialog::getText(
+                parent_w, QStringLiteral("Tie to constant"),
+                QStringLiteral("Literal (emitted verbatim, e.g. %1):").arg(def),
+                QLineEdit::Normal, def, &ok);
+            lit = lit.trimmed();
+            if (ok && !lit.isEmpty())
+                state->set_port_map_entry(inst, port, lit);
         });
     }
 }
@@ -795,7 +839,23 @@ void InstanceItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     event->accept();
 }
 
-// TopPortItem moved to items.h.
+void TopPortItem::paintIssueRing(QPainter *painter, const QPointF &center) {
+    AppState *state = m_layer ? m_layer->state() : nullptr;
+    if (!state)
+        return;
+    int issue = state->pin_issue_level(key());
+    QString tip = portName() + format_width(width());
+    if (issue > 0) {
+        painter->setBrush(Qt::NoBrush);
+        QPen ring(issue >= 2 ? QColor(232, 72, 60) : QColor(255, 179, 0), 2.0);
+        painter->setPen(ring);
+        painter->drawEllipse(center, kPinShapeSize + 3, kPinShapeSize + 3);
+        tip += QStringLiteral("\n") + state->pin_issue_message(key());
+    }
+    if (tip != toolTip())
+        setToolTip(tip);
+}
+
 // WireTool impls + parse_pin_key moved to canvas.cpp.
 
 

@@ -298,6 +298,7 @@ class CanvasLayer {
     CanvasLayer(QGraphicsScene *scene, AppState *state) : m_scene(scene), m_state(state), m_wire_tool(state, scene) {}
 
     WireTool *wireTool() { return &m_wire_tool; }
+    AppState *state() const { return m_state; }
 
     void rebuild() {
         m_wire_tool.cancel();

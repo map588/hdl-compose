@@ -418,6 +418,15 @@ pub mod qobject {
         #[qinvokable]
         fn validation_messages(self: &AppState) -> Vec<String>;
 
+        /// Highest issue severity attached to a pin key ("inst.port" or
+        /// "top:name"): 0 = none, 1 = warning, 2 = error.
+        #[qinvokable]
+        fn pin_issue_level(self: &AppState, key: &QString) -> i32;
+
+        /// Message behind pin_issue_level (empty when clean).
+        #[qinvokable]
+        fn pin_issue_message(self: &AppState, key: &QString) -> QString;
+
         #[qsignal]
         fn project_loaded(self: Pin<&mut AppState>);
 
@@ -584,6 +593,10 @@ pub struct AppStateRust {
     // target_key: always "<inst>.<port>"
     // width: bus width of the wire (1 for scalar, N for vector); -1 unknown.
     wires: Vec<(String, String, i32)>,
+    // Per-pin issue markers for canvas highlighting, keyed like wires
+    // ("inst.port" / "top:name"): (severity 1|2, message). Rebuilt with
+    // diagnostics on every validate.
+    pin_issues: HashMap<String, (i32, String)>,
     // Undo/redo: JSON snapshots of `schematic` taken before each mutation.
     // Capped at UNDO_STACK_LIMIT entries.
     undo_stack: Vec<String>,
@@ -891,10 +904,15 @@ impl qobject::AppState {
             let msg = d.message.clone();
             self.as_mut().record_error(msg);
         }
+        let pin_issues = match self.as_ref().rust().schematic.as_ref() {
+            Some(s) => compute_pin_issues(s, &library, &diagnostics),
+            None => HashMap::new(),
+        };
         {
             let m = self.as_mut().rust_mut().get_mut();
             m.library = library;
             m.diagnostics = diagnostics;
+            m.pin_issues = pin_issues;
         }
         self.as_mut().rebuild_wires();
         self.as_mut().library_changed();
@@ -2867,6 +2885,68 @@ impl qobject::AppState {
         out.extend(diags.iter().filter(|d| !d.is_error()).map(|d| d.to_string()));
         out
     }
+
+    pub fn pin_issue_level(&self, key: &QString) -> i32 {
+        self.rust()
+            .pin_issues
+            .get(&key.to_string())
+            .map(|(l, _)| *l)
+            .unwrap_or(0)
+    }
+
+    pub fn pin_issue_message(&self, key: &QString) -> QString {
+        self.rust()
+            .pin_issues
+            .get(&key.to_string())
+            .map(|(_, m)| QString::from(m))
+            .unwrap_or_default()
+    }
+}
+
+/// Map diagnostics onto canvas pin keys for inline highlighting. Instance-
+/// scoped diagnostics land on their pin; net-level conditions (no driver,
+/// driver conflict) land on every affected member pin.
+fn compute_pin_issues(
+    s: &Schematic,
+    library: &[ModuleDef],
+    diagnostics: &[Diagnostic],
+) -> HashMap<String, (i32, String)> {
+    let mut map: HashMap<String, (i32, String)> = HashMap::new();
+    let mut add = |map: &mut HashMap<String, (i32, String)>, key: String, level: i32, msg: &str| {
+        let e = map.entry(key).or_insert((0, String::new()));
+        if level > e.0 {
+            *e = (level, msg.to_string());
+        }
+    };
+    for d in diagnostics {
+        if let (Some(i), Some(p)) = (&d.instance, &d.port) {
+            let level = if d.is_error() { 2 } else { 1 };
+            add(&mut map, format!("{i}.{p}"), level, &d.message);
+        }
+    }
+    let lib_map: HashMap<&str, &ModuleDef> =
+        library.iter().map(|m| (m.name.as_str(), m)).collect();
+    let nets = crate::nets::resolve_nets(s, library);
+    for net in &nets.nets {
+        let hard: Vec<&NetRef> = net
+            .drivers
+            .iter()
+            .filter(|r| crate::nets::pin_direction(s, &lib_map, r) != Some(Direction::InOut))
+            .collect();
+        if hard.len() > 1 {
+            let msg = format!("net '{}' has multiple drivers", net.name);
+            for r in &hard {
+                add(&mut map, r.to_key(), 2, &msg);
+            }
+        }
+        if net.drivers.is_empty() {
+            let msg = format!("net '{}' has no driver", net.name);
+            for m in &net.members {
+                add(&mut map, m.to_key(), 1, &msg);
+            }
+        }
+    }
+    map
 }
 
 fn direction_code(d: &Direction) -> i32 {

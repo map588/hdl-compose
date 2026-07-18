@@ -154,15 +154,15 @@ fn is_ident(s: &str) -> bool {
 /// Validate one RHS. Accepted forms: `ident`, `inst.port`, either with a
 /// `[i]` / `[h:l]` suffix, or `open` (case-insensitive → empty string).
 /// Detect an HDL constant literal on a port-map RHS. Covers VHDL (`'0'`,
-/// `"0101"`, `x"AB"`, `123`) and SV (`1'b0`, `8'hFF`, `'0`, `123`) forms.
-/// Identifiers can never start with a digit or quote, so this cannot shadow
-/// a real port reference.
+/// `"0101"`, `x"AB"`, `(others => '0')`, `123`) and SV (`1'b0`, `8'hFF`,
+/// `'0`, `123`) forms. Identifiers can never start with a digit, quote, or
+/// paren, so this cannot shadow a real port reference.
 pub fn is_constant_literal(s: &str) -> bool {
     let mut chars = s.chars();
     let Some(first) = chars.next() else {
         return false;
     };
-    if first == '\'' || first == '"' || first.is_ascii_digit() {
+    if first == '\'' || first == '"' || first == '(' || first.is_ascii_digit() {
         return true;
     }
     // VHDL based bit-string literals: x"AB", B"1010", o"17" ...
@@ -454,7 +454,17 @@ mod tests {
 
     #[test]
     fn constant_literal_detection() {
-        for lit in ["'0'", "\"0101\"", "x\"AB\"", "X\"ff\"", "8'hFF", "1'b0", "42", "'0"] {
+        for lit in [
+            "'0'",
+            "\"0101\"",
+            "x\"AB\"",
+            "X\"ff\"",
+            "8'hFF",
+            "1'b0",
+            "42",
+            "'0",
+            "(others => '0')",
+        ] {
             assert!(is_constant_literal(lit), "{lit}");
         }
         for ident in ["clk", "u_a.dout", "bus[3]", "open_bar", "x_state", "b2b"] {

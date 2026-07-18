@@ -547,6 +547,9 @@ class TopPortItem : public PortPinItem {
             painter->drawEllipse(QPointF(0, 0), kPinShapeSize + 2, kPinShapeSize + 2);
         }
 
+        // Validation ring + tooltip, same scheme as PortPinItem::paint.
+        paintIssueRing(painter, QPointF(0, 0));
+
         if (armedState()) {
             painter->setBrush(Qt::NoBrush);
             painter->setPen(QPen(QColor(255, 215, 64), 2.5));
@@ -589,6 +592,12 @@ class TopPortItem : public PortPinItem {
         }
         return QRectF(0, -kPinSlotHeight / 2.0, kPinShapeSize + 6 + 180, kPinSlotHeight);
     }
+
+  private:
+    // Defined in items.cpp — needs the full CanvasLayer type for state().
+    void paintIssueRing(QPainter *painter, const QPointF &center);
+
+  public:
 
   protected:
     // Click arms/commits a wire (base behavior); drag repositions the port
