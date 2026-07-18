@@ -40,6 +40,12 @@ enum Command {
         /// Target HDL language
         #[arg(short, long)]
         language: LangArg,
+
+        /// Populate the project with a working example: two wired modules
+        /// (with HDL sources written alongside), a constant tie, a net
+        /// alias, and a top-generic passthrough
+        #[arg(long)]
+        example: bool,
     },
 
     /// Validate a .hdlc project and report diagnostics.
@@ -69,6 +75,13 @@ enum Command {
     Migrate {
         /// Paths to .hdlc project files
         projects: Vec<PathBuf>,
+    },
+
+    /// Print the JSON Schema for the .hdlc project file format
+    Schema {
+        /// Output file (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
 
     /// Launch the Qt GUI (default when no subcommand is given)
@@ -107,12 +120,161 @@ fn main() -> ExitCode {
     match cli.command {
         None | Some(Command::Gui) => cmd_gui(),
         Some(Command::Parse { file }) => cmd_parse(&file),
-        Some(Command::New { name, language }) => cmd_new(&name, language.into()),
+        Some(Command::New {
+            name,
+            language,
+            example,
+        }) => cmd_new(&name, language.into(), example),
         Some(Command::Validate { project }) => cmd_validate(&project),
         Some(Command::Codegen { project, output }) => cmd_codegen(&project, output.as_deref()),
         Some(Command::Inspect { project }) => cmd_inspect(&project),
         Some(Command::Migrate { projects }) => cmd_migrate(&projects),
+        Some(Command::Schema { output }) => cmd_schema(output.as_deref()),
     }
+}
+
+const EXAMPLE_PULSE_GEN_VHDL: &str = r#"library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity pulse_gen is
+  generic (
+    WIDTH : integer := 8;
+    DIV   : integer := 1000
+  );
+  port (
+    clk   : in  std_logic;
+    ena   : in  std_logic;
+    count : out std_logic_vector(WIDTH-1 downto 0)
+  );
+end entity pulse_gen;
+
+architecture rtl of pulse_gen is
+  signal cnt : unsigned(WIDTH-1 downto 0) := (others => '0');
+begin
+  process (clk)
+  begin
+    if rising_edge(clk) then
+      if ena = '1' then
+        cnt <= cnt + 1;
+      end if;
+    end if;
+  end process;
+  count <= std_logic_vector(cnt);
+end architecture rtl;
+"#;
+
+const EXAMPLE_LED_DRIVER_VHDL: &str = r#"library ieee;
+use ieee.std_logic_1164.all;
+
+entity led_driver is
+  port (
+    clk   : in  std_logic;
+    value : in  std_logic_vector(7 downto 0);
+    led   : out std_logic
+  );
+end entity led_driver;
+
+architecture rtl of led_driver is
+begin
+  led <= value(7);
+end architecture rtl;
+"#;
+
+const EXAMPLE_PULSE_GEN_SV: &str = r#"module pulse_gen #(
+  parameter int WIDTH = 8,
+  parameter int DIV   = 1000
+) (
+  input  logic             clk,
+  input  logic             ena,
+  output logic [WIDTH-1:0] count
+);
+  always_ff @(posedge clk)
+    if (ena) count <= count + 1'b1;
+endmodule
+"#;
+
+const EXAMPLE_LED_DRIVER_SV: &str = r#"module led_driver (
+  input  logic       clk,
+  input  logic [7:0] value,
+  output logic       led
+);
+  assign led = value[7];
+endmodule
+"#;
+
+/// Build the `new --example` project: writes the two library HDL sources
+/// next to the project file and returns a schematic that exercises the
+/// format — an instance-to-instance net with an alias, top-port routing, a
+/// constant tie, and a top-generic passthrough into a generic map.
+fn build_example_project(name: &str, language: &Language) -> Result<Schematic, String> {
+    use hdl_compose::types::{Direction, GenericDef, NetRef, PortDef, PortType};
+
+    let (ext, pulse_src, led_src, ena_const) = match language {
+        Language::Vhdl => ("vhd", EXAMPLE_PULSE_GEN_VHDL, EXAMPLE_LED_DRIVER_VHDL, "'1'"),
+        Language::SystemVerilog => ("sv", EXAMPLE_PULSE_GEN_SV, EXAMPLE_LED_DRIVER_SV, "1'b1"),
+    };
+    let pulse_path = PathBuf::from(format!("pulse_gen.{ext}"));
+    let led_path = PathBuf::from(format!("led_driver.{ext}"));
+    for p in [&pulse_path, &led_path] {
+        if p.exists() {
+            return Err(format!("'{}' already exists", p.display()));
+        }
+    }
+    std::fs::write(&pulse_path, pulse_src).map_err(|e| e.to_string())?;
+    std::fs::write(&led_path, led_src).map_err(|e| e.to_string())?;
+
+    let mut s = Schematic::new(name, language.clone());
+    s.top_generics.push(GenericDef {
+        name: "CLK_DIV".into(),
+        type_name: "integer".into(),
+        default_value: Some("1000".into()),
+    });
+    s.top_ports.push(PortDef {
+        name: "clk".into(),
+        direction: Direction::In,
+        port_type: PortType::StdLogic,
+        bundle: None,
+    });
+    s.top_ports.push(PortDef {
+        name: "led".into(),
+        direction: Direction::Out,
+        port_type: PortType::StdLogic,
+        bundle: None,
+    });
+    s.library_paths.push(pulse_path);
+    s.library_paths.push(led_path);
+
+    {
+        let inst = s.add_instance("u_pulse", "pulse_gen").map_err(|e| e.to_string())?;
+        inst.position = (80.0, 80.0);
+        // Top-generic passthrough: DIV follows the top-level CLK_DIV.
+        inst.generic_map.insert("DIV".into(), "CLK_DIV".into());
+        inst.port_map
+            .insert("clk".into(), Some(NetRef::TopPort("clk".into())));
+        // Constant tie instead of an illegal open input.
+        inst.port_map
+            .insert("ena".into(), Some(NetRef::Constant(ena_const.into())));
+    }
+    {
+        let inst = s.add_instance("u_led", "led_driver").map_err(|e| e.to_string())?;
+        inst.position = (360.0, 80.0);
+        inst.port_map
+            .insert("clk".into(), Some(NetRef::TopPort("clk".into())));
+        // Reference direction is free — this also connects u_pulse.count.
+        inst.port_map.insert(
+            "value".into(),
+            Some(NetRef::InstancePort("u_pulse".into(), "count".into())),
+        );
+        inst.port_map
+            .insert("led".into(), Some(NetRef::TopPort("led".into())));
+    }
+    // Net alias: the generated signal is named pulse_count, not u_pulse_count.
+    s.set_alias(
+        NetRef::InstancePort("u_pulse".into(), "count".into()),
+        "pulse_count",
+    );
+    Ok(s)
 }
 
 /// Load each project (load_project applies in-process migrations, e.g. v3 →
@@ -202,7 +364,27 @@ fn cmd_parse(file: &std::path::Path) -> ExitCode {
     }
 }
 
-fn cmd_new(name: &str, language: Language) -> ExitCode {
+fn cmd_schema(output: Option<&std::path::Path>) -> ExitCode {
+    let schema = project::hdlc_schema_json();
+    match output {
+        Some(path) => match std::fs::write(path, &schema) {
+            Ok(()) => {
+                println!("Written to {}", path.display());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::from(2)
+            }
+        },
+        None => {
+            println!("{schema}");
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+fn cmd_new(name: &str, language: Language, example: bool) -> ExitCode {
     let filename = format!("{name}.hdlc");
     let path = PathBuf::from(&filename);
 
@@ -216,7 +398,17 @@ fn cmd_new(name: &str, language: Language) -> ExitCode {
         Language::SystemVerilog => "SystemVerilog",
     };
 
-    let schematic = Schematic::new(name, language);
+    let schematic = if example {
+        match build_example_project(name, &language) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        Schematic::new(name, language)
+    };
 
     match project::save_project(&schematic, &path) {
         Ok(()) => {

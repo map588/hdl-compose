@@ -1,0 +1,438 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProjectFile",
+  "type": "object",
+  "properties": {
+    "aliases": {
+      "description": "Net alias map. Persisted as `{ \"<net key>\": \"<alias>\" }` where the\nkey is a `NetRef` in its string form (`inst.port`, `top:name`).",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "instances": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Instance"
+      }
+    },
+    "language": {
+      "$ref": "#/$defs/Language"
+    },
+    "library_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "top_generics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GenericDef"
+      }
+    },
+    "top_name": {
+      "type": "string"
+    },
+    "top_ports": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PortDef"
+      }
+    },
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "version",
+    "top_name",
+    "language",
+    "top_generics",
+    "top_ports",
+    "instances",
+    "aliases",
+    "library_paths"
+  ],
+  "$defs": {
+    "Direction": {
+      "type": "string",
+      "enum": [
+        "In",
+        "Out",
+        "InOut"
+      ]
+    },
+    "GenericDef": {
+      "type": "object",
+      "properties": {
+        "default_value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "type_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type_name"
+      ]
+    },
+    "Instance": {
+      "type": "object",
+      "properties": {
+        "consumer_slices": {
+          "description": "Optional slice of THIS instance's own port that's connected to the\ndriver. The driver-side slice (if any) is encoded in the\n`port_map` value's `NetRef::*Slice` variant — these two slices are\nindependent: a 32-bit `bus[7:0]` consumer slice can ride a 32-bit\ndriver, or be sliced again from a wider net. Keyed by port name.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/SliceExpr"
+          }
+        },
+        "dirty": {
+          "description": "Set when a library re-parse dropped a port_map entry that referenced\na now-missing port. Tells the user \"review this instance\". Clears on\nuser acknowledgement or when the missing ports reappear.",
+          "type": "boolean"
+        },
+        "generic_map": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "manual_bundles": {
+          "description": "User-authored bundle groupings that override (or add to) the module's\nauto-detected bundles. Keyed by bundle name → ordered list of port\nnames that belong to it. Empty for instances that don't use manual\ngrouping; absent from v2 `.hdlc` files and deserializes as default.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "default": {}
+        },
+        "module_ref": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "port_map": {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/NetRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "position": {
+          "type": "array",
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number",
+              "format": "float"
+            },
+            {
+              "type": "number",
+              "format": "float"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "module_ref",
+        "generic_map",
+        "port_map",
+        "position"
+      ]
+    },
+    "Language": {
+      "type": "string",
+      "enum": [
+        "Vhdl",
+        "SystemVerilog"
+      ]
+    },
+    "NetRef": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "TopPort": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "TopPort"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "InstancePort": {
+              "type": "array",
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "InstancePort"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "TopPortSlice": {
+              "type": "array",
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/SliceExpr"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "TopPortSlice"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "InstancePortSlice": {
+              "type": "array",
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/SliceExpr"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "InstancePortSlice"
+          ]
+        },
+        {
+          "description": "Literal tie, emitted verbatim in the target language\n(VHDL `'0'`, `\"0101\"`, `x\"AB\"`; SV `1'b0`, `8'hFF`).",
+          "type": "object",
+          "properties": {
+            "Constant": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "Constant"
+          ]
+        }
+      ]
+    },
+    "PortDef": {
+      "type": "object",
+      "properties": {
+        "bundle": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "direction": {
+          "$ref": "#/$defs/Direction"
+        },
+        "name": {
+          "type": "string"
+        },
+        "port_type": {
+          "$ref": "#/$defs/PortType"
+        }
+      },
+      "required": [
+        "name",
+        "direction",
+        "port_type"
+      ]
+    },
+    "PortType": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "StdLogic"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "StdLogicVector": {
+              "$ref": "#/$defs/Range"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "StdLogicVector"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Record": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "Record"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Other": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "Other"
+          ]
+        }
+      ]
+    },
+    "Range": {
+      "type": "object",
+      "properties": {
+        "dir": {
+          "$ref": "#/$defs/RangeDir"
+        },
+        "high": {
+          "$ref": "#/$defs/RangeExpr"
+        },
+        "low": {
+          "$ref": "#/$defs/RangeExpr"
+        }
+      },
+      "required": [
+        "high",
+        "low",
+        "dir"
+      ]
+    },
+    "RangeDir": {
+      "type": "string",
+      "enum": [
+        "Downto",
+        "To"
+      ]
+    },
+    "RangeExpr": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "Literal": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "Literal"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Expr": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "Expr"
+          ]
+        }
+      ]
+    },
+    "SliceExpr": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "Bit": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "Bit"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Range": {
+              "type": "object",
+              "properties": {
+                "high": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "low": {
+                  "type": "integer",
+                  "format": "int32"
+                }
+              },
+              "required": [
+                "high",
+                "low"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "Range"
+          ]
+        }
+      ]
+    }
+  }
+}

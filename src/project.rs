@@ -24,11 +24,17 @@ pub enum ProjectError {
     LibraryParse(#[from] crate::ParseError),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 struct ProjectFile {
     version: u32,
     #[serde(flatten)]
     schematic: Schematic,
+}
+
+/// JSON Schema for the on-disk `.hdlc` project format, pretty-printed.
+pub fn hdlc_schema_json() -> String {
+    let schema = schemars::schema_for!(ProjectFile);
+    serde_json::to_string_pretty(&schema).expect("schema serializes")
 }
 
 /// Save a schematic to a .hdlc project file.

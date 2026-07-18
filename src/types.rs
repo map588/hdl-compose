@@ -2,33 +2,33 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Direction {
     In,
     Out,
     InOut,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum RangeExpr {
     Literal(i64),
     Expr(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum RangeDir {
     Downto,
     To,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Range {
     pub high: RangeExpr,
     pub low: RangeExpr,
     pub dir: RangeDir,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum PortType {
     StdLogic,
     StdLogicVector(Range),
@@ -36,7 +36,7 @@ pub enum PortType {
     Other(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PortDef {
     pub name: String,
     pub direction: Direction,
@@ -44,14 +44,14 @@ pub struct PortDef {
     pub bundle: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GenericDef {
     pub name: String,
     pub type_name: String,
     pub default_value: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModuleDef {
     pub name: String,
     pub generics: Vec<GenericDef>,
@@ -66,19 +66,19 @@ pub struct ModuleDef {
 
 // --- Design-level types ---
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Language {
     Vhdl,
     SystemVerilog,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum SliceExpr {
     Bit(i32),
     Range { high: i32, low: i32 },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum NetRef {
     TopPort(String),
     InstancePort(String, String),
@@ -89,7 +89,7 @@ pub enum NetRef {
     Constant(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Instance {
     pub name: String,
     pub module_ref: String,
@@ -224,17 +224,20 @@ where
     Ok(result)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Schematic {
     pub top_name: String,
     pub language: Language,
     pub top_generics: Vec<GenericDef>,
     pub top_ports: Vec<PortDef>,
     pub instances: Vec<Instance>,
+    /// Net alias map. Persisted as `{ "<net key>": "<alias>" }` where the
+    /// key is a `NetRef` in its string form (`inst.port`, `top:name`).
     #[serde(
         serialize_with = "serialize_aliases",
         deserialize_with = "deserialize_aliases"
     )]
+    #[schemars(with = "HashMap<String, String>")]
     pub aliases: HashMap<NetId, String>,
     pub library_paths: Vec<PathBuf>,
 }
