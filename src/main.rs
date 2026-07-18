@@ -84,8 +84,71 @@ enum Command {
         output: Option<PathBuf>,
     },
 
+    /// Elaborate the generated HDL with a real frontend (ghdl / verilator).
+    /// Requires oss-cad-suite (or the tools) on PATH.
+    /// Exit code: 0 = clean, 1 = tool reported errors, 2 = tool missing or codegen failed.
+    Check {
+        /// Path to .hdlc project file
+        project: PathBuf,
+    },
+
+    /// Run a generic yosys synthesis of the generated design and print stats.
+    /// Requires oss-cad-suite (yosys, plus ghdl plugin for VHDL) on PATH.
+    Synth {
+        /// Path to .hdlc project file
+        project: PathBuf,
+    },
+
+    /// Simulate the design via <top>_tb (a skeleton is generated next to the
+    /// project if missing) using ghdl / iverilog. Requires oss-cad-suite on PATH.
+    Sim {
+        /// Path to .hdlc project file
+        project: PathBuf,
+
+        /// Open the wave file in surfer/gtkwave after the run
+        #[arg(long)]
+        wave: bool,
+    },
+
+    /// Emit an FPGA build Makefile + constraints skeleton
+    /// (yosys → nextpnr → pack → openFPGALoader) next to the project
+    Fpga {
+        /// Path to .hdlc project file
+        project: PathBuf,
+
+        /// Target FPGA family
+        #[arg(long)]
+        family: FamilyArg,
+
+        /// Output directory (default: the project's directory)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Overwrite an existing Makefile / constraints file
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Launch the Qt GUI (default when no subcommand is given)
     Gui,
+}
+
+#[derive(Clone, ValueEnum)]
+enum FamilyArg {
+    Ice40,
+    Ecp5,
+    Gowin,
+}
+
+impl From<FamilyArg> for hdl_compose::toolchain::FpgaFamily {
+    fn from(f: FamilyArg) -> Self {
+        use hdl_compose::toolchain::FpgaFamily;
+        match f {
+            FamilyArg::Ice40 => FpgaFamily::Ice40,
+            FamilyArg::Ecp5 => FpgaFamily::Ecp5,
+            FamilyArg::Gowin => FpgaFamily::Gowin,
+        }
+    }
 }
 
 #[derive(Clone, ValueEnum)]
@@ -130,6 +193,15 @@ fn main() -> ExitCode {
         Some(Command::Inspect { project }) => cmd_inspect(&project),
         Some(Command::Migrate { projects }) => cmd_migrate(&projects),
         Some(Command::Schema { output }) => cmd_schema(output.as_deref()),
+        Some(Command::Check { project }) => cmd_check(&project),
+        Some(Command::Synth { project }) => cmd_synth(&project),
+        Some(Command::Sim { project, wave }) => cmd_sim(&project, wave),
+        Some(Command::Fpga {
+            project,
+            family,
+            output,
+            force,
+        }) => cmd_fpga(&project, family.into(), output.as_deref(), force),
     }
 }
 
@@ -471,87 +543,47 @@ fn cmd_validate(project_path: &std::path::Path) -> ExitCode {
 /// Emit a grouped project: each group becomes its own source file next to
 /// the top module's output (`<group>.<ext>`); without `-o`, everything is
 /// concatenated to stdout with separator comments.
-fn codegen_hierarchical(
-    schematic: &Schematic,
-    library: &[hdl_compose::types::ModuleDef],
-    output: Option<&std::path::Path>,
-) -> ExitCode {
-    use hdl_compose::groups;
-
-    let group_diags = groups::validate_groups(schematic, library);
-    if group_diags.iter().any(|d| d.level == DiagnosticLevel::Error) {
-        for d in &group_diags {
-            eprintln!("error: {d}");
-        }
-        return ExitCode::from(2);
-    }
-
-    let plan = groups::expand_hierarchy(schematic, library);
-    let (ext, comment) = match schematic.language {
-        Language::Vhdl => ("vhd", "--"),
-        Language::SystemVerilog => ("sv", "//"),
-    };
-
-    let generate = |s: &Schematic| -> Result<String, hdl_compose::codegen::CodegenError> {
-        let diags = s.validate(&plan.library);
-        match s.language {
-            Language::Vhdl => codegen::vhdl::generate_vhdl(s, &plan.library, &diags),
-            Language::SystemVerilog => codegen::sv::generate_sv(s, &plan.library, &diags),
-        }
-    };
-
-    let mut files: Vec<(String, String)> = Vec::new();
-    for (name, gs) in &plan.groups {
-        match generate(gs) {
-            Ok(code) => files.push((format!("{name}.{ext}"), code)),
-            Err(e) => {
-                eprintln!("error: group '{name}': {e}");
-                return ExitCode::from(2);
+/// Print a `DesignError` and map it to the CLI exit code. Grouped-project
+/// failures exit 2; flat-project codegen failures keep the historical exit 1.
+fn report_design_error(e: codegen::DesignError, grouped: bool) -> ExitCode {
+    match e {
+        codegen::DesignError::GroupDiagnostics(diags) => {
+            for d in &diags {
+                eprintln!("error: {d}");
             }
+            ExitCode::from(2)
         }
-    }
-    let top_code = match generate(&plan.top) {
-        Ok(code) => code,
-        Err(e) => {
+        codegen::DesignError::Group { name, source } => {
+            eprintln!("error: group '{name}': {source}");
+            ExitCode::from(2)
+        }
+        codegen::DesignError::Top(e) if grouped => {
             eprintln!("error: {e}");
-            return ExitCode::from(2);
+            ExitCode::from(2)
         }
-    };
-
-    match output {
-        Some(out_path) => {
-            let dir = out_path.parent().unwrap_or_else(|| std::path::Path::new("."));
-            for (fname, code) in &files {
-                let p = dir.join(fname);
-                if let Err(e) = std::fs::write(&p, code) {
-                    eprintln!("error: {e}");
-                    return ExitCode::from(2);
-                }
-                println!("Written to {}", p.display());
+        codegen::DesignError::Top(codegen::CodegenError::ValidationErrors(errs)) => {
+            eprintln!("error: schematic has validation errors");
+            for d in &errs {
+                eprintln!("  {d}");
             }
-            if let Err(e) = std::fs::write(out_path, &top_code) {
-                eprintln!("error: {e}");
-                return ExitCode::from(2);
-            }
-            println!("Written to {}", out_path.display());
+            ExitCode::FAILURE
         }
-        None => {
-            for (fname, code) in &files {
-                println!("{comment} ==== {fname} ====");
-                print!("{code}");
-            }
-            println!("{comment} ==== top ====");
-            print!("{top_code}");
+        codegen::DesignError::Top(codegen::CodegenError::DirtyInstances(names)) => {
+            eprintln!(
+                "error: dirty instances present (source re-parse dropped \
+                 connections). Review and reconnect: {}",
+                names.join(", ")
+            );
+            ExitCode::FAILURE
         }
     }
-    ExitCode::SUCCESS
 }
 
-fn cmd_codegen(project_path: &std::path::Path, output: Option<&std::path::Path>) -> ExitCode {
-    let (schematic, load_warnings) = match load_project(project_path) {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+/// Load a project and resolve its module library, printing warnings/errors.
+fn load_project_and_library(
+    project_path: &std::path::Path,
+) -> Result<(Schematic, Vec<hdl_compose::types::ModuleDef>), ExitCode> {
+    let (schematic, load_warnings) = load_project(project_path)?;
 
     for w in &load_warnings {
         warn!("{w}");
@@ -563,55 +595,201 @@ fn cmd_codegen(project_path: &std::path::Path, output: Option<&std::path::Path>)
         for (path, e) in &lib_errors {
             eprintln!("error: failed to parse {}: {}", path.display(), e);
         }
+        return Err(ExitCode::from(2));
+    }
+    Ok((schematic, library))
+}
+
+fn cmd_codegen(project_path: &std::path::Path, output: Option<&std::path::Path>) -> ExitCode {
+    let (schematic, library) = match load_project_and_library(project_path) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+
+    let grouped = !schematic.groups.is_empty();
+    let design = match codegen::generate_design(&schematic, &library) {
+        Ok(d) => d,
+        Err(e) => return report_design_error(e, grouped),
+    };
+
+    match output {
+        Some(out_path) => {
+            let dir = out_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+            for (fname, code) in &design.files {
+                let p = dir.join(fname);
+                if let Err(e) = std::fs::write(&p, code) {
+                    eprintln!("error: {e}");
+                    return ExitCode::from(2);
+                }
+                println!("Written to {}", p.display());
+            }
+            if let Err(e) = std::fs::write(out_path, &design.top_code) {
+                eprintln!("error: {e}");
+                return ExitCode::from(2);
+            }
+            println!("Written to {}", out_path.display());
+        }
+        None => {
+            let comment = match schematic.language {
+                Language::Vhdl => "--",
+                Language::SystemVerilog => "//",
+            };
+            for (fname, code) in &design.files {
+                println!("{comment} ==== {fname} ====");
+                print!("{code}");
+            }
+            if grouped {
+                println!("{comment} ==== top ====");
+            }
+            print!("{}", design.top_code);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Load, resolve, codegen and stage a project into a scratch dir for an
+/// external-tool run. Any failure is printed and mapped to exit code 2.
+fn stage_project(
+    project_path: &std::path::Path,
+) -> Result<(Schematic, hdl_compose::toolchain::StagedBuild), ExitCode> {
+    let (schematic, library) = load_project_and_library(project_path)?;
+    let design = match codegen::generate_design(&schematic, &library) {
+        Ok(d) => d,
+        Err(e) => {
+            report_design_error(e, !schematic.groups.is_empty());
+            return Err(ExitCode::from(2));
+        }
+    };
+    let staged = hdl_compose::toolchain::stage(&schematic, &library, &design).map_err(|e| {
+        eprintln!("error: {e}");
+        ExitCode::from(2)
+    })?;
+    Ok((schematic, staged))
+}
+
+fn tool_result(result: Result<bool, String>, pass_msg: &str, fail_msg: &str) -> ExitCode {
+    match result {
+        Ok(true) => {
+            println!("{pass_msg}");
+            ExitCode::SUCCESS
+        }
+        Ok(false) => {
+            eprintln!("error: {fail_msg} (see tool output above)");
+            ExitCode::FAILURE
+        }
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn cmd_check(project_path: &std::path::Path) -> ExitCode {
+    let (schematic, staged) = match stage_project(project_path) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    tool_result(
+        hdl_compose::toolchain::run_check(&staged),
+        &format!("check passed: {} elaborates cleanly", schematic.top_name),
+        "check failed",
+    )
+}
+
+fn cmd_synth(project_path: &std::path::Path) -> ExitCode {
+    let (_, staged) = match stage_project(project_path) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    tool_result(
+        hdl_compose::toolchain::run_synth(&staged),
+        "synth passed",
+        "synth failed",
+    )
+}
+
+fn cmd_sim(project_path: &std::path::Path, wave: bool) -> ExitCode {
+    let (schematic, staged) = match stage_project(project_path) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let project_dir = project_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    match hdl_compose::toolchain::run_sim(&staged, &schematic, project_dir) {
+        Ok(Some(wave_file)) => {
+            println!("sim finished, wave written to {}", wave_file.display());
+            if wave
+                && let Err(msg) = hdl_compose::toolchain::open_wave_viewer(&wave_file)
+            {
+                eprintln!("error: {msg}");
+                return ExitCode::from(2);
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(None) => {
+            eprintln!("error: sim failed (see tool output above)");
+            ExitCode::FAILURE
+        }
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn cmd_fpga(
+    project_path: &std::path::Path,
+    family: hdl_compose::toolchain::FpgaFamily,
+    output: Option<&std::path::Path>,
+    force: bool,
+) -> ExitCode {
+    let (schematic, library) = match load_project_and_library(project_path) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let project_dir = project_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let out_dir = output.unwrap_or(project_dir);
+    if let Err(e) = std::fs::create_dir_all(out_dir) {
+        eprintln!("error: cannot create {}: {e}", out_dir.display());
         return ExitCode::from(2);
     }
 
-    // Grouped projects emit one file per group plus the top module.
-    if !schematic.groups.is_empty() {
-        return codegen_hierarchical(&schematic, &library, output);
+    let project_file_name = project_path
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| project_path.display().to_string());
+    let scaffold =
+        hdl_compose::toolchain::fpga_scaffold(&schematic, &library, family, &project_file_name);
+
+    let makefile_path = out_dir.join("Makefile");
+    if makefile_path.exists() && !force {
+        eprintln!(
+            "error: {} exists — pass --force to overwrite",
+            makefile_path.display()
+        );
+        return ExitCode::from(2);
     }
-
-    let diagnostics = schematic.validate(&library);
-
-    let result = match schematic.language {
-        Language::Vhdl => codegen::vhdl::generate_vhdl(&schematic, &library, &diagnostics),
-        Language::SystemVerilog => codegen::sv::generate_sv(&schematic, &library, &diagnostics),
-    };
-
-    match result {
-        Ok(code) => {
-            if let Some(out_path) = output {
-                match std::fs::write(out_path, &code) {
-                    Ok(()) => {
-                        println!("Written to {}", out_path.display());
-                        ExitCode::SUCCESS
-                    }
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        ExitCode::from(2)
-                    }
-                }
-            } else {
-                print!("{code}");
-                ExitCode::SUCCESS
-            }
-        }
-        Err(codegen::CodegenError::ValidationErrors(errs)) => {
-            eprintln!("error: schematic has validation errors");
-            for d in &errs {
-                eprintln!("  {d}");
-            }
-            ExitCode::FAILURE
-        }
-        Err(codegen::CodegenError::DirtyInstances(names)) => {
-            eprintln!(
-                "error: dirty instances present (source re-parse dropped \
-                 connections). Review and reconnect: {}",
-                names.join(", ")
-            );
-            ExitCode::FAILURE
-        }
+    let constraints_path = out_dir.join(&scaffold.constraints_name);
+    if let Err(e) = std::fs::write(&makefile_path, &scaffold.makefile) {
+        eprintln!("error: {e}");
+        return ExitCode::from(2);
     }
+    println!("Written to {}", makefile_path.display());
+    if constraints_path.exists() && !force {
+        println!("Kept existing {}", constraints_path.display());
+    } else {
+        if let Err(e) = std::fs::write(&constraints_path, &scaffold.constraints) {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+        println!("Written to {}", constraints_path.display());
+    }
+    ExitCode::SUCCESS
 }
 
 fn cmd_inspect(project_path: &std::path::Path) -> ExitCode {

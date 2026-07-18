@@ -39,6 +39,24 @@ hdl-compose inspect <project.hdlc>       # summary + library status
 hdl-compose migrate <a.hdlc> [b.hdlc ..] # rewrite older projects at the current version
 ```
 
+### oss-cad-suite integration
+
+These subcommands drive external tools against the generated HDL. They resolve
+tools from PATH only — activate your [oss-cad-suite](https://github.com/YosysHQ/oss-cad-suite-build)
+environment first (`source <oss-cad-suite>/environment`).
+
+```sh
+hdl-compose check <project.hdlc>         # elaborate generated HDL (ghdl / verilator --lint-only)
+hdl-compose synth <project.hdlc>         # generic yosys synth + stat (ghdl plugin for VHDL)
+hdl-compose sim <project.hdlc> [--wave]  # run <top>_tb via ghdl / iverilog; --wave opens surfer/gtkwave
+hdl-compose fpga <project.hdlc> --family ice40|ecp5|gowin  # emit Makefile + constraints skeleton
+```
+
+`sim` generates an editable `<top>_tb` skeleton next to the project on first
+run. `fpga` writes a `Makefile` (codegen → yosys → nextpnr → pack →
+openFPGALoader) and a per-port constraints placeholder; edit the `DEVICE` /
+`PACKAGE` variables for your board (`--force` overwrites).
+
 ## GUI in 30 seconds
 
 - **Left sidebar:** project tree (instances) + library pane (parsed modules).

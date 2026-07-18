@@ -13,6 +13,86 @@ pub enum CodegenError {
     DirtyInstances(Vec<String>),
 }
 
+/// Everything codegen produces for a project: per-group module files
+/// (children before parents, matching required analysis order) plus the
+/// top-level module. Filenames carry the language extension.
+pub struct GeneratedDesign {
+    pub files: Vec<(String, String)>,
+    pub top_filename: String,
+    pub top_code: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DesignError {
+    #[error("group validation failed")]
+    GroupDiagnostics(Vec<crate::schematic::Diagnostic>),
+
+    #[error("group '{name}': {source}")]
+    Group { name: String, source: CodegenError },
+
+    #[error(transparent)]
+    Top(#[from] CodegenError),
+}
+
+/// Generate every output file for a project — flat or grouped — without
+/// touching the filesystem. Single entry point shared by `codegen`, `check`,
+/// `synth` and `sim`.
+pub fn generate_design(
+    schematic: &Schematic,
+    library: &[ModuleDef],
+) -> Result<GeneratedDesign, DesignError> {
+    let ext = match schematic.language {
+        Language::Vhdl => "vhd",
+        Language::SystemVerilog => "sv",
+    };
+    let top_filename = format!("{}.{ext}", schematic.top_name);
+
+    if schematic.groups.is_empty() {
+        let diags = schematic.validate(library);
+        let top_code = match schematic.language {
+            Language::Vhdl => vhdl::generate_vhdl(schematic, library, &diags),
+            Language::SystemVerilog => sv::generate_sv(schematic, library, &diags),
+        }?;
+        return Ok(GeneratedDesign {
+            files: Vec::new(),
+            top_filename,
+            top_code,
+        });
+    }
+
+    let group_diags = crate::groups::validate_groups(schematic, library);
+    if group_diags
+        .iter()
+        .any(|d| d.level == DiagnosticLevel::Error)
+    {
+        return Err(DesignError::GroupDiagnostics(group_diags));
+    }
+
+    let plan = crate::groups::expand_hierarchy(schematic, library);
+    let generate = |s: &Schematic| -> Result<String, CodegenError> {
+        let diags = s.validate(&plan.library);
+        match s.language {
+            Language::Vhdl => vhdl::generate_vhdl(s, &plan.library, &diags),
+            Language::SystemVerilog => sv::generate_sv(s, &plan.library, &diags),
+        }
+    };
+
+    let mut files = Vec::new();
+    for (name, gs) in &plan.groups {
+        let code = generate(gs).map_err(|source| DesignError::Group {
+            name: name.clone(),
+            source,
+        })?;
+        files.push((format!("{name}.{ext}"), code));
+    }
+    let top_code = generate(&plan.top)?;
+    Ok(GeneratedDesign {
+        files,
+        top_filename,
+        top_code,
+    })
+}
+
 /// Refuse codegen when any instance carries an unresolved dirty flag from a
 /// prior library re-parse. Forces the user to review and acknowledge the
 /// dropped connections before they land in the generated HDL.

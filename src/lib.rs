@@ -5,6 +5,7 @@ pub mod nets;
 pub mod project;
 pub mod routing;
 pub mod schematic;
+pub mod toolchain;
 pub mod types;
 pub mod verilog;
 pub mod vhdl;
