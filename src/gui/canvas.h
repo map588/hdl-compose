@@ -548,6 +548,43 @@ class CanvasLayer {
         replanWires();
     }
 
+    // Normalize the whole canvas: snap every block onto the column grid,
+    // then per-column order-preserving legalization with nothing fixed —
+    // overlaps (stale saved positions, group expand restoring members into
+    // occupied space) resolve with minimal movement instead of cascading
+    // push-shove. One undo step alongside whatever mutation triggered it.
+    void settleAll() {
+        rust::Vec<FfiColItem> items;
+        QVector<InstanceItem *> by_id;
+        QHash<InstanceItem *, QPointF> before;
+        for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+            InstanceItem *ii = it.value();
+            before.insert(ii, ii->pos());
+            const qreal cx = ii->pos().x() + ii->width() / 2.0;
+            const int col = static_cast<int>(std::round(cx / static_cast<qreal>(kColumnPitch)));
+            const qreal x = col * static_cast<qreal>(kColumnPitch) - ii->width() / 2.0;
+            ii->setPos(x, ii->pos().y());
+            items.push_back(FfiColItem{static_cast<qint32>(by_id.size()), col, ii->pos().y(),
+                                       ii->rect().height(), false});
+            by_id.append(ii);
+        }
+        auto moves = legalize_columns_ffi(std::move(items), kMinModuleVerticalGap);
+        for (const auto &mv : moves) {
+            InstanceItem *ii = by_id[mv.id];
+            ii->setPos(ii->pos().x(), mv.new_top);
+        }
+        m_state->begin_batch();
+        for (auto it = before.constBegin(); it != before.constEnd(); ++it) {
+            InstanceItem *ii = it.key();
+            if (ii->pos() != it.value())
+                m_state->set_instance_position(ii->instanceName(), ii->pos().x(), ii->pos().y());
+        }
+        m_state->end_batch();
+        rebuildTopPorts();
+        replanWires();
+        updateGroupHulls();
+    }
+
     // "Optimize positions": relayer by signal flow (drivers left of loads),
     // minimize wire length, straighten runs. Rewrites every instance
     // position as one undo step.

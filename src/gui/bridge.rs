@@ -3351,10 +3351,70 @@ impl qobject::AppState {
             return false;
         }
         self.as_mut().snapshot_for_mutation();
-        if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut()
-            && let Some(g) = s.groups.iter_mut().find(|g| g.name == name_s)
-        {
-            g.collapsed = collapsed;
+        if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut() {
+            let members = crate::groups::transitive_members(s, &name_s);
+            let pts: Vec<(f32, f32)> = s
+                .instances
+                .iter()
+                .filter(|i| members.contains(&i.name))
+                .map(|i| i.position)
+                .collect();
+            let centroid = if pts.is_empty() {
+                (0.0, 0.0)
+            } else {
+                let n = pts.len() as f32;
+                (
+                    pts.iter().map(|p| p.0).sum::<f32>() / n,
+                    pts.iter().map(|p| p.1).sum::<f32>() / n,
+                )
+            };
+            if collapsed {
+                // The block appears where its members were.
+                if let Some(g) = s.groups.iter_mut().find(|g| g.name == name_s) {
+                    g.position = centroid;
+                    g.collapsed = true;
+                }
+            } else {
+                // Members follow wherever the collapsed block was dragged:
+                // translate them (and nested collapsed blocks) by the
+                // block's displacement from their stored centroid.
+                let g_pos = s
+                    .groups
+                    .iter()
+                    .find(|g| g.name == name_s)
+                    .map(|g| g.position)
+                    .unwrap_or(centroid);
+                let delta = (g_pos.0 - centroid.0, g_pos.1 - centroid.1);
+                if delta.0.abs() > 0.5 || delta.1.abs() > 0.5 {
+                    for inst in s
+                        .instances
+                        .iter_mut()
+                        .filter(|i| members.contains(&i.name))
+                    {
+                        inst.position.0 += delta.0;
+                        inst.position.1 += delta.1;
+                    }
+                    // Descendant group blocks ride along too.
+                    let mut desc: HashSet<String> = HashSet::new();
+                    let mut queue = vec![name_s.clone()];
+                    while let Some(cur) = queue.pop() {
+                        for g in &s.groups {
+                            if g.parent.as_deref() == Some(cur.as_str())
+                                && desc.insert(g.name.clone())
+                            {
+                                queue.push(g.name.clone());
+                            }
+                        }
+                    }
+                    for g in s.groups.iter_mut().filter(|g| desc.contains(&g.name)) {
+                        g.position.0 += delta.0;
+                        g.position.1 += delta.1;
+                    }
+                }
+                if let Some(g) = s.groups.iter_mut().find(|g| g.name == name_s) {
+                    g.collapsed = false;
+                }
+            }
         }
         self.as_mut().finish_group_mutation()
     }

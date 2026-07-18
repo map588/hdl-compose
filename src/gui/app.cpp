@@ -944,12 +944,23 @@ class MainWindow : public QMainWindow {
         connect(m_state, &AppState::project_loaded, this, [this]() {
             refreshSidebar();
             m_canvas_layer->rebuild();
+            // Grid migration: saves from older column-pitch values land
+            // off-grid and misroute wires. No-op when already on grid.
+            m_canvas_layer->settleAll();
         });
         // Group create/collapse/expand changes the visible block set — full
-        // canvas rebuild from the view model.
+        // canvas rebuild from the view model. Keep the viewport where it
+        // was, and settle the result: restored members can land off-grid
+        // (older saves) or inside neighbors.
         connect(m_state, &AppState::groups_changed, this, [this]() {
+            QPointF center;
+            if (m_canvas)
+                center = m_canvas->mapToScene(m_canvas->viewport()->rect().center());
             refreshSidebar();
             m_canvas_layer->rebuild();
+            m_canvas_layer->settleAll();
+            if (m_canvas)
+                m_canvas->centerOn(center);
         });
         connect(m_state, &AppState::instance_added, this, [this](const QString &name) {
             refreshSidebar();
