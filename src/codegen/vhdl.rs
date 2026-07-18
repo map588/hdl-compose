@@ -109,7 +109,7 @@ pub fn generate_vhdl(
     // Instance statements (alphabetical)
     for inst in &sorted_instances {
         if let Some(module) = lib_map.get(inst.module_ref.as_str()) {
-            emit_instance(&mut out, &nets, inst, module);
+            emit_instance(&mut out, schematic, &nets, inst, module);
             writeln!(out).unwrap();
         }
     }
@@ -215,7 +215,13 @@ fn emit_component(out: &mut String, module: &ModuleDef) {
     writeln!(out, "  end component {};", module.name).unwrap();
 }
 
-fn emit_instance(out: &mut String, nets: &Nets, inst: &Instance, module: &ModuleDef) {
+fn emit_instance(
+    out: &mut String,
+    schematic: &Schematic,
+    nets: &Nets,
+    inst: &Instance,
+    module: &ModuleDef,
+) {
     write!(out, "  {} : {}", inst.name, inst.module_ref).unwrap();
 
     // Generic map
@@ -233,6 +239,9 @@ fn emit_instance(out: &mut String, nets: &Nets, inst: &Instance, module: &Module
 
         for (i, (name, value)) in generics.iter().enumerate() {
             let sep = if i < generics.len() - 1 { "," } else { "" };
+            let gdef = module.generics.iter().find(|g| g.name == **name);
+            let value =
+                crate::codegen::format_generic_value(value, gdef, &schematic.top_generics);
             writeln!(out, "      {} => {}{}", name, value, sep).unwrap();
         }
         writeln!(out, "    )").unwrap();
@@ -474,6 +483,54 @@ mod tests {
 
         assert!(output.contains("signal data_bus : std_logic;"));
         assert!(output.contains("din => data_bus"));
+    }
+
+    #[test]
+    fn string_generic_auto_quoted_and_top_generic_passes_through() {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.top_generics.push(GenericDef {
+            name: "CLKS_PER_TICK".into(),
+            type_name: "integer".into(),
+            default_value: Some("50000".into()),
+        });
+        s.add_instance("u_alu", "alu").unwrap();
+        // Bare word for a string generic — codegen must quote it.
+        s.set_generic_map_entry("u_alu", "OP", "OR").unwrap();
+        // Already-quoted stays untouched.
+        s.set_generic_map_entry("u_alu", "MODE", "\"FAST\"").unwrap();
+        // Top-generic passthrough: an identifier naming a top generic is a
+        // reference, never a string literal.
+        s.set_generic_map_entry("u_alu", "TICKS", "CLKS_PER_TICK")
+            .unwrap();
+        let lib = vec![ModuleDef {
+            name: "alu".into(),
+            generics: vec![
+                GenericDef {
+                    name: "OP".into(),
+                    type_name: "string".into(),
+                    default_value: None,
+                },
+                GenericDef {
+                    name: "MODE".into(),
+                    type_name: "string".into(),
+                    default_value: None,
+                },
+                GenericDef {
+                    name: "TICKS".into(),
+                    type_name: "string".into(),
+                    default_value: None,
+                },
+            ],
+            ports: vec![],
+            source_path: "alu.vhd".into(),
+            source_hash: 0,
+            dependencies: Vec::new(),
+        }];
+        let diags: Vec<Diagnostic> = Vec::new();
+        let output = generate_vhdl(&s, &lib, &diags).unwrap();
+        assert!(output.contains("OP => \"OR\""), "{output}");
+        assert!(output.contains("MODE => \"FAST\""), "{output}");
+        assert!(output.contains("TICKS => CLKS_PER_TICK"), "{output}");
     }
 
     #[test]

@@ -80,7 +80,7 @@ pub fn generate_sv(
 
     for inst in &sorted_instances {
         if let Some(module) = lib_map.get(inst.module_ref.as_str()) {
-            emit_instance(&mut out, &nets, inst, module);
+            emit_instance(&mut out, schematic, &nets, inst, module);
             writeln!(out).unwrap();
         }
     }
@@ -143,7 +143,13 @@ fn emit_module_header(out: &mut String, schematic: &Schematic, library: &[Module
     }
 }
 
-fn emit_instance(out: &mut String, nets: &Nets, inst: &Instance, module: &ModuleDef) {
+fn emit_instance(
+    out: &mut String,
+    schematic: &Schematic,
+    nets: &Nets,
+    inst: &Instance,
+    module: &ModuleDef,
+) {
     write!(out, "  {}", inst.module_ref).unwrap();
 
     // Parameter overrides
@@ -160,6 +166,9 @@ fn emit_instance(out: &mut String, nets: &Nets, inst: &Instance, module: &Module
 
         for (i, (name, value)) in generics.iter().enumerate() {
             let sep = if i < generics.len() - 1 { "," } else { "" };
+            let gdef = module.generics.iter().find(|g| g.name == **name);
+            let value =
+                crate::codegen::format_generic_value(value, gdef, &schematic.top_generics);
             writeln!(out, "    .{name}({value}){sep}").unwrap();
         }
         write!(out, "  )").unwrap();

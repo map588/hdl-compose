@@ -42,7 +42,8 @@ enum Command {
         language: LangArg,
     },
 
-    /// Validate a .hdlc project and report diagnostics
+    /// Validate a .hdlc project and report diagnostics.
+    /// Exit code: 0 = clean, 1 = warnings only, 2 = errors.
     Validate {
         /// Path to .hdlc project file
         project: PathBuf,
@@ -266,10 +267,11 @@ fn cmd_validate(project_path: &std::path::Path) -> ExitCode {
         }
     }
 
+    // 0 = clean, 1 = warnings only, 2 = errors — scriptable severity split.
     if has_errors {
-        ExitCode::FAILURE
+        ExitCode::from(2)
     } else {
-        ExitCode::SUCCESS
+        ExitCode::from(1)
     }
 }
 

@@ -254,6 +254,25 @@ pub fn collect_internal_nets(nets: &crate::nets::Nets) -> Vec<(String, PortType)
         .collect()
 }
 
+/// Render a generic-map value. String-typed generics get quotes added when
+/// the user wrote a bare word (`OR` → `"OR"`) — hand-escaping is not needed.
+/// Values that are already quoted, or that name a top-level generic (a
+/// passthrough, not a literal), are emitted verbatim.
+pub fn format_generic_value(
+    value: &str,
+    generic_def: Option<&GenericDef>,
+    top_generics: &[GenericDef],
+) -> String {
+    let v = value.trim();
+    let is_string_type =
+        generic_def.is_some_and(|g| g.type_name.trim().eq_ignore_ascii_case("string"));
+    if is_string_type && !v.starts_with('"') && !top_generics.iter().any(|g| g.name == v) {
+        format!("\"{v}\"")
+    } else {
+        value.to_string()
+    }
+}
+
 /// Pre-validate and return errors if any exist.
 pub fn check_errors(diagnostics: &[Diagnostic]) -> Result<(), CodegenError> {
     let errors: Vec<Diagnostic> = diagnostics
