@@ -84,6 +84,9 @@ pub enum NetRef {
     InstancePort(String, String),
     TopPortSlice(String, SliceExpr),
     InstancePortSlice(String, String, SliceExpr),
+    /// Literal tie, emitted verbatim in the target language
+    /// (VHDL `'0'`, `"0101"`, `x"AB"`; SV `1'b0`, `8'hFF`).
+    Constant(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +148,7 @@ impl NetRef {
             NetRef::InstancePort(i, p) => NetRef::InstancePort(i.clone(), p.clone()),
             NetRef::TopPortSlice(n, _) => NetRef::TopPort(n.clone()),
             NetRef::InstancePortSlice(i, p, _) => NetRef::InstancePort(i.clone(), p.clone()),
+            NetRef::Constant(v) => NetRef::Constant(v.clone()),
         }
     }
 
@@ -165,11 +169,15 @@ impl NetRef {
             NetRef::InstancePortSlice(inst, port, slice) => {
                 format!("{inst}.{port}{}", slice.to_suffix())
             }
+            NetRef::Constant(v) => format!("const:{v}"),
         }
     }
 
     /// Deserialize from a string key.
     pub fn from_key(key: &str) -> Option<Self> {
+        if let Some(v) = key.strip_prefix("const:") {
+            return Some(NetRef::Constant(v.to_string()));
+        }
         let (body, slice) = match key.find('[') {
             Some(i) => (&key[..i], SliceExpr::parse_suffix(&key[i..])),
             None => (key, None),
@@ -264,6 +272,9 @@ mod tests {
             "count".into(),
             SliceExpr::Range { high: 7, low: 4 },
         ));
+        roundtrip_net_ref(NetRef::Constant("'0'".into()));
+        roundtrip_net_ref(NetRef::Constant("x\"AB\"".into()));
+        roundtrip_net_ref(NetRef::Constant("8'hFF".into()));
     }
 
     #[test]

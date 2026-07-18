@@ -180,6 +180,10 @@ pub fn resolve_nets(schematic: &Schematic, library: &[ModuleDef]) -> Nets {
     for inst in &schematic.instances {
         for (port_name, entry) in &inst.port_map {
             let Some(net_ref) = entry else { continue };
+            // Constant ties are direct literal associations, not nets.
+            if matches!(net_ref, NetRef::Constant(_)) {
+                continue;
+            }
             let owner = NetRef::InstancePort(inst.name.clone(), port_name.clone());
             let target = net_ref.base();
             let a = intern(owner, &mut atoms, &mut ids);

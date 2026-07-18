@@ -39,6 +39,7 @@ fn rhs_editor_form(net: &NetRef) -> String {
         NetRef::InstancePort(i, p) => format!("{i}.{p}"),
         NetRef::TopPortSlice(n, sl) => format!("{n}{}", sl.to_suffix()),
         NetRef::InstancePortSlice(i, p, sl) => format!("{i}.{p}{}", sl.to_suffix()),
+        NetRef::Constant(lit) => lit.clone(),
     }
 }
 
@@ -152,6 +153,23 @@ fn is_ident(s: &str) -> bool {
 
 /// Validate one RHS. Accepted forms: `ident`, `inst.port`, either with a
 /// `[i]` / `[h:l]` suffix, or `open` (case-insensitive → empty string).
+/// Detect an HDL constant literal on a port-map RHS. Covers VHDL (`'0'`,
+/// `"0101"`, `x"AB"`, `123`) and SV (`1'b0`, `8'hFF`, `'0`, `123`) forms.
+/// Identifiers can never start with a digit or quote, so this cannot shadow
+/// a real port reference.
+pub fn is_constant_literal(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if first == '\'' || first == '"' || first.is_ascii_digit() {
+        return true;
+    }
+    // VHDL based bit-string literals: x"AB", B"1010", o"17" ...
+    matches!(first.to_ascii_lowercase(), 'x' | 'b' | 'o' | 'd')
+        && chars.next() == Some('"')
+}
+
 fn validate_rhs(name: &str, rhs: &str) -> Result<String, String> {
     let mut r = rhs.trim();
     while let Some(stripped) = r.strip_suffix(',') {
@@ -162,6 +180,9 @@ fn validate_rhs(name: &str, rhs: &str) -> Result<String, String> {
     }
     if r.eq_ignore_ascii_case("open") {
         return Ok(String::new());
+    }
+    if is_constant_literal(r) {
+        return Ok(r.to_string());
     }
     let (head, slice) = match r.find('[') {
         Some(i) => (&r[..i], Some(&r[i..])),
@@ -412,6 +433,33 @@ mod tests {
         assert!(text.contains("clk => clk,"));
         assert!(text.contains("din => open,"));
         assert!(text.ends_with("  );\n"));
+    }
+
+    #[test]
+    fn constant_rhs_renders_and_parses() {
+        let (mut s, lib) = fixture();
+        s.set_port_map_entry("u_fifo", "din", Some(NetRef::Constant("'0'".into())))
+            .unwrap();
+        let text = render_instance_buffer(&s, &lib, "u_fifo");
+        assert!(text.contains("din => '0',"), "{text}");
+        let parsed = parse_instance_buffer(&text);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert!(
+            parsed
+                .port_commits
+                .iter()
+                .any(|(l, r)| l == "din" && r == "'0'")
+        );
+    }
+
+    #[test]
+    fn constant_literal_detection() {
+        for lit in ["'0'", "\"0101\"", "x\"AB\"", "X\"ff\"", "8'hFF", "1'b0", "42", "'0"] {
+            assert!(is_constant_literal(lit), "{lit}");
+        }
+        for ident in ["clk", "u_a.dout", "bus[3]", "open_bar", "x_state", "b2b"] {
+            assert!(!is_constant_literal(ident), "{ident}");
+        }
     }
 
     #[test]

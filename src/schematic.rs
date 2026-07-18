@@ -413,6 +413,10 @@ impl Schematic {
         let mut diags = Vec::new();
         let lib_map: HashMap<&str, &ModuleDef> =
             library.iter().map(|m| (m.name.as_str(), m)).collect();
+        // Resolved net view: connectivity is net membership, not entry
+        // presence — a port referenced by another pin is connected even
+        // with no port_map entry of its own.
+        let nets = crate::nets::resolve_nets(self, library);
 
         // Duplicate instance names
         {
@@ -454,14 +458,38 @@ impl Schematic {
             // Check each port map entry
             for (port_name, net_ref_opt) in &inst.port_map {
                 let Some(net_ref) = net_ref_opt else {
-                    // Unconnected port — warning
-                    diags.push(
-                        Diagnostic::warning(format!("port '{port_name}' is unconnected"))
+                    // Explicitly unconnected — but only warn when no other
+                    // pin pulled this port onto a net.
+                    let pin = NetRef::InstancePort(inst.name.clone(), port_name.clone());
+                    if nets.net_for(&pin).is_none() {
+                        diags.push(
+                            unconnected_diag(
+                                port_name,
+                                module_ports.get(port_name.as_str()).copied(),
+                            )
                             .with_instance(&inst.name)
                             .with_port(port_name),
-                    );
+                        );
+                    }
                     continue;
                 };
+
+                // Constant ties: legal on inputs, meaningless on outputs.
+                if let NetRef::Constant(lit) = net_ref {
+                    if module_ports
+                        .get(port_name.as_str())
+                        .is_some_and(|p| p.direction == Direction::Out)
+                    {
+                        diags.push(
+                            Diagnostic::error(format!(
+                                "output port '{port_name}' cannot be tied to constant {lit}"
+                            ))
+                            .with_instance(&inst.name)
+                            .with_port(port_name),
+                        );
+                    }
+                    continue;
+                }
 
                 // Normalize the driver reference to base (inst/port or top) plus an optional slice.
                 let (top_name_opt, inst_ref_opt, slice_opt) = match net_ref {
@@ -471,6 +499,7 @@ impl Schematic {
                     NetRef::InstancePortSlice(i, p, s) => {
                         (None, Some((i.clone(), p.clone())), Some(s))
                     }
+                    NetRef::Constant(_) => unreachable!("handled above"),
                 };
 
                 // The resolved driver port definition, if we can find one. Used for slice bounds.
@@ -566,9 +595,12 @@ impl Schematic {
             // Check for ports in module that aren't in port_map at all (implicit unconnected)
             if let Some(m) = module_def {
                 for port in &m.ports {
-                    if !inst.port_map.contains_key(&port.name) {
+                    let pin = NetRef::InstancePort(inst.name.clone(), port.name.clone());
+                    if !inst.port_map.contains_key(&port.name)
+                        && nets.net_for(&pin).is_none()
+                    {
                         diags.push(
-                            Diagnostic::warning(format!("port '{}' is unconnected", port.name))
+                            unconnected_diag(&port.name, Some(port))
                                 .with_instance(&inst.name)
                                 .with_port(&port.name),
                         );
@@ -595,9 +627,6 @@ impl Schematic {
 
         // Net-level driver checks over the resolved (merged) nets.
         {
-            let lib_map: HashMap<&str, &ModuleDef> =
-                library.iter().map(|m| (m.name.as_str(), m)).collect();
-            let nets = crate::nets::resolve_nets(self, library);
             for net in &nets.nets {
                 // InOut pins may legitimately share a net (tri-state bus);
                 // more than one hard driver is a conflict.
@@ -656,6 +685,18 @@ impl Schematic {
         }
 
         diags
+    }
+}
+
+/// Warning for an unconnected port; inputs get the sharper message because
+/// VHDL rejects `open` on inputs without default values.
+fn unconnected_diag(port_name: &str, port_def: Option<&PortDef>) -> Diagnostic {
+    match port_def.map(|p| &p.direction) {
+        Some(Direction::In) => Diagnostic::warning(format!(
+            "input port '{port_name}' is unconnected — VHDL rejects open inputs \
+             without defaults; connect it or tie it to a constant"
+        )),
+        _ => Diagnostic::warning(format!("port '{port_name}' is unconnected")),
     }
 }
 

@@ -193,6 +193,9 @@ fn emit_instance(out: &mut String, nets: &Nets, inst: &Instance, module: &Module
 /// Render a NetRef as a SystemVerilog expression. Slice variants use
 /// `[i]` for a single bit and `[high:low]` for a range.
 fn render_rhs_sv(nets: &Nets, net_ref: &NetRef) -> String {
+    if let NetRef::Constant(lit) = net_ref {
+        return lit.clone();
+    }
     let base_name = nets
         .name_for(net_ref)
         .expect("rendered ref is always a net member")
@@ -205,6 +208,7 @@ fn render_rhs_sv(nets: &Nets, net_ref: &NetRef) -> String {
                 SliceExpr::Range { high, low } => format!("{base_name}[{high}:{low}]"),
             }
         }
+        NetRef::Constant(_) => unreachable!("handled above"),
     }
 }
 

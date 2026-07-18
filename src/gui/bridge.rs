@@ -913,6 +913,10 @@ impl qobject::AppState {
                 let module = lib.iter().find(|m| m.name == inst.module_ref);
                 for (port, net) in &inst.port_map {
                     if let Some(driver) = net {
+                        // Constant ties render as a pin badge, not a wire.
+                        if matches!(driver, NetRef::Constant(_)) {
+                            continue;
+                        }
                         // Width of the wire = width of the slice if any, else
                         // width of the target port resolved via the instance's
                         // generic-map overrides.
@@ -2524,6 +2528,8 @@ impl qobject::AppState {
                     // work will round-trip via a different invokable.
                     NetRef::InstancePortSlice(_, _, _)
                     | NetRef::TopPortSlice(_, _) => QString::from(&net.to_key()),
+                    // Literal in the form parse_net_rhs accepts.
+                    NetRef::Constant(lit) => QString::from(lit),
                 }
             }
             _ => QString::default(),
@@ -2934,6 +2940,9 @@ fn parse_net_rhs(rhs: &str) -> Option<NetRef> {
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("open") {
         return None;
     }
+    if is_constant_literal(trimmed) {
+        return Some(NetRef::Constant(trimmed.to_string()));
+    }
     // Strip optional bracket suffix `[h:l]` or `[i]` and parse it.
     let (head, slice) = match trimmed.find('[') {
         Some(open) => {
@@ -2970,6 +2979,8 @@ fn parse_net_rhs(rhs: &str) -> Option<NetRef> {
         None => NetRef::TopPort(head.to_string()),
     })
 }
+
+use super::editor::is_constant_literal;
 
 pub(super) struct ParsedTopLevel {
     pub generics: Vec<crate::types::GenericDef>,

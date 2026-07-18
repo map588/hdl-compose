@@ -270,6 +270,9 @@ fn emit_instance(out: &mut String, nets: &Nets, inst: &Instance, module: &Module
 /// Render a NetRef as a VHDL association RHS. Slice variants use
 /// `(i)` for a single bit and `(high downto low)` for a range.
 fn render_rhs_vhdl(nets: &Nets, net_ref: &NetRef) -> String {
+    if let NetRef::Constant(lit) = net_ref {
+        return lit.clone();
+    }
     let base_name = nets
         .name_for(net_ref)
         .expect("rendered ref is always a net member")
@@ -284,6 +287,7 @@ fn render_rhs_vhdl(nets: &Nets, net_ref: &NetRef) -> String {
                 }
             }
         }
+        NetRef::Constant(_) => unreachable!("handled above"),
     }
 }
 
@@ -470,6 +474,33 @@ mod tests {
 
         assert!(output.contains("signal data_bus : std_logic;"));
         assert!(output.contains("din => data_bus"));
+    }
+
+    #[test]
+    fn constant_tie_renders_verbatim() {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.add_instance("u_b", "mod_b").unwrap();
+        s.set_port_map_entry("u_b", "din", Some(NetRef::Constant("'0'".into())))
+            .unwrap();
+        let lib = vec![ModuleDef {
+            name: "mod_b".into(),
+            generics: vec![],
+            ports: vec![PortDef {
+                name: "din".into(),
+                direction: Direction::In,
+                port_type: PortType::StdLogic,
+                bundle: None,
+            }],
+            source_path: "b.vhd".into(),
+            source_hash: 0,
+            dependencies: Vec::new(),
+        }];
+        let diags = s.validate(&lib);
+        assert!(diags.iter().all(|d| !d.is_error()), "{diags:?}");
+        let output = generate_vhdl(&s, &lib, &diags).unwrap();
+        assert!(output.contains("din => '0'"), "{output}");
+        // No net, no signal declaration for a constant tie.
+        assert!(!output.contains("signal"), "{output}");
     }
 
     #[test]
