@@ -463,54 +463,113 @@ pub struct PlaceNode {
     pub height: f64,
 }
 
-/// A wire from a driver pin to a load pin; `*_dy` is the pin's Y offset
-/// from its block's top edge, so straightening can align pins, not blocks.
+/// A wire between two pins; `*_dy` is the pin's Y offset from its block's
+/// top edge, so straightening can align pins, not blocks. `directed` means
+/// `from` electrically drives `to`; undirected edges (load-to-load nets)
+/// pull blocks together but never force a column ordering.
 #[derive(Clone, Copy, Debug)]
 pub struct PlaceEdge {
     pub from: i32,
     pub from_dy: f64,
     pub to: i32,
     pub to_dy: f64,
+    pub directed: bool,
 }
 
 /// Optimized placement: (id, column, top Y).
 ///
-/// 1. Columns by longest path from the sources (drivers left of loads),
-///    so signal flow reads left→right and wire spans are minimal.
+/// 1. Columns by longest path over the directed edges (drivers left of
+///    loads). Cycle back-edges are dropped via DFS first, so feedback
+///    loops can't inflate the column count; columns compress dense, and
+///    `max_cols` (when > 0) hard-caps the total — Tidy never spreads the
+///    design wider than it already is.
 /// 2. Barycenter sweeps pull each block toward the mean of its connected
 ///    pins, legalizing every column (order kept, gap restored) per sweep.
 /// 3. A final left→right straightening pass snaps each block so its
-///    heaviest input pin aligns exactly with the driving pin — straight
-///    wires wherever the column packing allows.
-pub fn optimize_positions(nodes: &[PlaceNode], edges: &[PlaceEdge], gap: f64) -> Vec<(i32, i32, f64)> {
+///    input pin aligns exactly with the driving pin — straight wires
+///    wherever the column packing allows.
+pub fn optimize_positions(
+    nodes: &[PlaceNode],
+    edges: &[PlaceEdge],
+    gap: f64,
+    max_cols: usize,
+) -> Vec<(i32, i32, f64)> {
     if nodes.is_empty() {
         return Vec::new();
     }
     let index: HashMap<i32, usize> = nodes.iter().enumerate().map(|(i, n)| (n.id, i)).collect();
     let n = nodes.len();
-    let edges: Vec<(usize, f64, usize, f64)> = edges
+    let edges: Vec<(usize, f64, usize, f64, bool)> = edges
         .iter()
         .filter_map(|e| {
             let (f, t) = (*index.get(&e.from)?, *index.get(&e.to)?);
             if f == t {
                 return None;
             }
-            Some((f, e.from_dy, t, e.to_dy))
+            Some((f, e.from_dy, t, e.to_dy, e.directed))
         })
         .collect();
 
-    // --- 1. Longest-path layering (relaxation, cycle-capped) ---
+    // --- 1a. Drop cycle back-edges (iterative DFS, three-color) ---
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n]; // edge indices, directed only
+    for (ei, &(f, _, _, _, directed)) in edges.iter().enumerate() {
+        if directed {
+            adj[f].push(ei);
+        }
+    }
+    let mut color = vec![0u8; n]; // 0 white, 1 on-stack, 2 done
+    let mut keep = vec![true; edges.len()];
+    for start in 0..n {
+        if color[start] != 0 {
+            continue;
+        }
+        // Stack of (node, next child index to visit).
+        let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
+        color[start] = 1;
+        while let Some(&mut (u, ref mut next)) = stack.last_mut() {
+            if *next < adj[u].len() {
+                let ei = adj[u][*next];
+                *next += 1;
+                let v = edges[ei].2;
+                match color[v] {
+                    0 => {
+                        color[v] = 1;
+                        stack.push((v, 0));
+                    }
+                    1 => keep[ei] = false, // back edge: closes a cycle
+                    _ => {}
+                }
+            } else {
+                color[u] = 2;
+                stack.pop();
+            }
+        }
+    }
+
+    // --- 1b. Longest-path layering over the remaining DAG ---
     let mut col: Vec<i32> = vec![0; n];
     for _ in 0..n {
         let mut changed = false;
-        for &(f, _, t, _) in &edges {
-            if col[t] < col[f] + 1 {
+        for (ei, &(f, _, t, _, directed)) in edges.iter().enumerate() {
+            if directed && keep[ei] && col[t] < col[f] + 1 {
                 col[t] = col[f] + 1;
                 changed = true;
             }
         }
         if !changed {
             break;
+        }
+    }
+
+    // --- 1c. Compress to dense columns, capped at max_cols ---
+    let mut used: Vec<i32> = col.clone();
+    used.sort_unstable();
+    used.dedup();
+    let rank: HashMap<i32, i32> = used.iter().enumerate().map(|(r, &c)| (c, r as i32)).collect();
+    for c in col.iter_mut() {
+        *c = rank[c];
+        if max_cols > 0 {
+            *c = (*c).min(max_cols as i32 - 1);
         }
     }
 
@@ -548,7 +607,7 @@ pub fn optimize_positions(nodes: &[PlaceNode], edges: &[PlaceEdge], gap: f64) ->
         for i in 0..n {
             let mut sum = 0.0;
             let mut cnt = 0.0;
-            for &(f, fdy, t, tdy) in &edges {
+            for &(f, fdy, t, tdy, _) in &edges {
                 if t == i {
                     sum += y[f] + fdy - tdy;
                     cnt += 1.0;
@@ -574,8 +633,9 @@ pub fn optimize_positions(nodes: &[PlaceNode], edges: &[PlaceEdge], gap: f64) ->
     for &c in &cols_sorted[1..] {
         let members = orders.get(&c).cloned().unwrap_or_default();
         for &i in &members {
-            if let Some(&(f, fdy, _, tdy)) =
-                edges.iter().find(|&&(_, _, t, _)| t == i).filter(|&&(f, ..)| col[f] < c)
+            if let Some(&(f, fdy, _, tdy, _)) = edges
+                .iter()
+                .find(|&&(f, _, t, _, _)| t == i && col[f] < c)
             {
                 y[i] = y[f] + fdy - tdy;
             }
@@ -839,7 +899,7 @@ mod tests {
         PlaceNode { id, height }
     }
     fn pe(from: i32, from_dy: f64, to: i32, to_dy: f64) -> PlaceEdge {
-        PlaceEdge { from, from_dy, to, to_dy }
+        PlaceEdge { from, from_dy, to, to_dy, directed: true }
     }
 
     #[test]
@@ -847,7 +907,7 @@ mod tests {
         // a -> b -> c chain: columns 0, 1, 2.
         let nodes = [pn(0, 100.0), pn(1, 100.0), pn(2, 100.0)];
         let edges = [pe(0, 50.0, 1, 50.0), pe(1, 50.0, 2, 50.0)];
-        let r = optimize_positions(&nodes, &edges, 60.0);
+        let r = optimize_positions(&nodes, &edges, 60.0, 0);
         let col_of = |id: i32| r.iter().find(|e| e.0 == id).unwrap().1;
         assert_eq!((col_of(0), col_of(1), col_of(2)), (0, 1, 2));
     }
@@ -857,7 +917,7 @@ mod tests {
         // Matching pin offsets → connected blocks align exactly.
         let nodes = [pn(0, 100.0), pn(1, 100.0), pn(2, 100.0)];
         let edges = [pe(0, 30.0, 1, 70.0), pe(1, 30.0, 2, 30.0)];
-        let r = optimize_positions(&nodes, &edges, 60.0);
+        let r = optimize_positions(&nodes, &edges, 60.0, 0);
         let y_of = |id: i32| r.iter().find(|e| e.0 == id).unwrap().2;
         // b's input pin (dy 70) aligns with a's output pin (dy 30).
         assert!((y_of(0) + 30.0 - (y_of(1) + 70.0)).abs() < 0.5, "{r:?}");
@@ -870,7 +930,7 @@ mod tests {
         // One driver, three loads in the same column: loads stacked, gapped.
         let nodes = [pn(0, 100.0), pn(1, 100.0), pn(2, 100.0), pn(3, 100.0)];
         let edges = [pe(0, 50.0, 1, 50.0), pe(0, 50.0, 2, 50.0), pe(0, 50.0, 3, 50.0)];
-        let r = optimize_positions(&nodes, &edges, 60.0);
+        let r = optimize_positions(&nodes, &edges, 60.0, 0);
         let mut load_ys: Vec<f64> = r.iter().filter(|e| e.0 != 0).map(|e| e.2).collect();
         load_ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert!((load_ys[1] - load_ys[0] - 160.0).abs() < 0.5, "{load_ys:?}");
@@ -879,11 +939,38 @@ mod tests {
 
     #[test]
     fn optimize_survives_cycles_and_disconnected() {
-        // a <-> b feedback plus an island: must terminate and place all.
+        // a <-> b feedback plus an island: back edge dropped, so the pair
+        // stays in two adjacent columns instead of inflating.
         let nodes = [pn(0, 100.0), pn(1, 100.0), pn(2, 80.0)];
         let edges = [pe(0, 50.0, 1, 50.0), pe(1, 20.0, 0, 20.0)];
-        let r = optimize_positions(&nodes, &edges, 60.0);
+        let r = optimize_positions(&nodes, &edges, 60.0, 0);
         assert_eq!(r.len(), 3);
+        let max_col = r.iter().map(|e| e.1).max().unwrap();
+        assert!(max_col <= 1, "cycle inflated columns: {r:?}");
+    }
+
+    #[test]
+    fn optimize_undirected_edges_do_not_layer() {
+        // Two loads sharing a net (no driver direction): stay in one column,
+        // pulled adjacent by the barycenter.
+        let nodes = [pn(0, 100.0), pn(1, 100.0)];
+        let edges = [PlaceEdge { from: 0, from_dy: 50.0, to: 1, to_dy: 50.0, directed: false }];
+        let r = optimize_positions(&nodes, &edges, 60.0, 0);
+        assert_eq!(r[0].1, r[1].1, "undirected edge must not split columns: {r:?}");
+    }
+
+    #[test]
+    fn optimize_respects_column_cap() {
+        // Chain of four would want columns 0..3; cap at 2 folds the tail.
+        let nodes = [pn(0, 100.0), pn(1, 100.0), pn(2, 100.0), pn(3, 100.0)];
+        let edges = [
+            pe(0, 50.0, 1, 50.0),
+            pe(1, 50.0, 2, 50.0),
+            pe(2, 50.0, 3, 50.0),
+        ];
+        let r = optimize_positions(&nodes, &edges, 60.0, 2);
+        let max_col = r.iter().map(|e| e.1).max().unwrap();
+        assert_eq!(max_col, 1, "cap ignored: {r:?}");
     }
 
     #[test]

@@ -565,22 +565,41 @@ class CanvasLayer {
             by_id.append(it.value());
         }
         for (auto *w : m_wires) {
-            auto pin_ref = [&](const QString &key, int &id, double &dy) -> bool {
+            auto pin_ref = [&](const QString &key, int &id, double &dy, int &dir) -> bool {
                 NetKey k = NetKey::parse(key);
                 if (!k.valid || k.is_top || !id_of.contains(k.instance))
                     return false;
                 id = id_of.value(k.instance);
                 InstanceItem *ii = by_id[id];
                 dy = ii->portAnchorScenePos(k.port).y() - ii->pos().y();
+                dir = m_state->pin_direction_code(NetKey::base(key));
                 return true;
             };
-            int fid = 0, tid = 0;
+            int fid = 0, tid = 0, fdir = -1, tdir = -1;
             double fdy = 0, tdy = 0;
-            if (pin_ref(w->sourceKey(), fid, fdy) && pin_ref(w->targetKey(), tid, tdy))
-                edges.push_back(FfiPlaceEdge{fid, fdy, tid, tdy});
+            if (!pin_ref(w->sourceKey(), fid, fdy, fdir) ||
+                !pin_ref(w->targetKey(), tid, tdy, tdir))
+                continue;
+            // Orient by the ELECTRICAL driver (the wire cache's "source" is
+            // just whichever pin the port_map referenced — backward refs
+            // would otherwise feed the layerer reversed edges). No clear
+            // driver (load-to-load nets) → undirected: pulls, never layers.
+            const bool src_drives = (fdir == 1 || fdir == 2);
+            const bool dst_drives = (tdir == 1 || tdir == 2);
+            if (dst_drives && !src_drives) {
+                std::swap(fid, tid);
+                std::swap(fdy, tdy);
+            }
+            const bool directed = src_drives != dst_drives;
+            edges.push_back(FfiPlaceEdge{fid, fdy, tid, tdy, directed});
         }
-        auto placed =
-            optimize_positions_ffi(std::move(nodes), std::move(edges), kMinModuleVerticalGap);
+        // Never spread wider than the design already is.
+        QSet<int> current_cols;
+        for (auto *ii : by_id)
+            current_cols.insert(instanceColumn(ii));
+        auto placed = optimize_positions_ffi(std::move(nodes), std::move(edges),
+                                             kMinModuleVerticalGap,
+                                             qMax(1, current_cols.size()));
         m_state->begin_batch();
         for (const auto &p : placed) {
             InstanceItem *ii = by_id[p.id];

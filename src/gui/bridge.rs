@@ -480,6 +480,10 @@ pub mod qobject {
         #[qinvokable]
         fn pin_origin_note(self: &AppState, key: &QString) -> QString;
 
+        /// Direction of any canvas pin key: 0 in, 1 out, 2 inout, -1 unknown.
+        #[qinvokable]
+        fn pin_direction_code(self: &AppState, key: &QString) -> i32;
+
         #[qsignal]
         fn project_loaded(self: Pin<&mut AppState>);
 
@@ -604,12 +608,14 @@ pub mod qobject {
         height: f64,
     }
 
-    /// A driver→load wire; `*_dy` = pin offset from its block's top.
+    /// A wire between pins; `*_dy` = pin offset from its block's top.
+    /// `directed` = `from` electrically drives `to`.
     struct FfiPlaceEdge {
         from: i32,
         from_dy: f64,
         to: i32,
         to_dy: f64,
+        directed: bool,
     }
 
     /// Optimized slot for one block.
@@ -638,10 +644,12 @@ pub mod qobject {
         fn legalize_columns_ffi(items: Vec<FfiColItem>, gap: f64) -> Vec<FfiColMove>;
 
         /// Wire-length-minimizing layout (see routing::optimize_positions).
+        /// `max_cols` > 0 caps the column count.
         fn optimize_positions_ffi(
             nodes: Vec<FfiPlaceNode>,
             edges: Vec<FfiPlaceEdge>,
             gap: f64,
+            max_cols: i32,
         ) -> Vec<FfiPlaceResult>;
 
         /// Mini-editor grammar (pure; see src/gui/editor.rs).
@@ -879,6 +887,7 @@ fn optimize_positions_ffi(
     nodes: Vec<qobject::FfiPlaceNode>,
     edges: Vec<qobject::FfiPlaceEdge>,
     gap: f64,
+    max_cols: i32,
 ) -> Vec<qobject::FfiPlaceResult> {
     let ns: Vec<routing::PlaceNode> = nodes
         .into_iter()
@@ -891,9 +900,10 @@ fn optimize_positions_ffi(
             from_dy: e.from_dy,
             to: e.to,
             to_dy: e.to_dy,
+            directed: e.directed,
         })
         .collect();
-    routing::optimize_positions(&ns, &es, gap)
+    routing::optimize_positions(&ns, &es, gap, max_cols.max(0) as usize)
         .into_iter()
         .map(|(id, col, y)| qobject::FfiPlaceResult { id, col, y })
         .collect()
@@ -3426,6 +3436,12 @@ impl qobject::AppState {
             .get(&key.to_string())
             .map(QString::from)
             .unwrap_or_default()
+    }
+
+    pub fn pin_direction_code(&self, key: &QString) -> i32 {
+        self.pin_info(&key.to_string())
+            .map(|p| p.direction)
+            .unwrap_or(-1)
     }
 }
 
