@@ -1,0 +1,19 @@
+{
+  "vhdl_libraries": [
+    {
+      "name": "loot",
+      "files": ["rtl/loot/midi_lut_pkg.vhd", "rtl/loot/cc_lut_pkg.vhd"]
+    }
+  ],
+  "extra_sources": [
+    "rtl/registers/ranger_mapper.vhd",
+    "rtl/registers/dflipflop.vhd",
+    "rtl/registers/n_parallel_register.vhd",
+    "rtl/registers/addressed_pl_reg.vhd",
+    "rtl/registers/map_reg.vhd",
+    "rtl/audio/i2s_tx.vhd",
+    "sim/selectio_sim.vhd"
+  ],
+  "exclude_sources": ["rtl/audio/clocked_data_out.v"],
+  "ghdl_synth_flags": ["--latches"]
+}

@@ -1,0 +1,661 @@
+{
+  "version": 4,
+  "top_name": "voice_chain",
+  "language": "Vhdl",
+  "top_generics": [],
+  "top_ports": [
+    {
+      "name": "clk",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "rstn",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "note_state",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "trigger",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "note_index",
+      "direction": "In",
+      "port_type": {
+        "StdLogicVector": {
+          "high": {
+            "Literal": 6
+          },
+          "low": {
+            "Literal": 0
+          },
+          "dir": "Downto"
+        }
+      },
+      "bundle": null
+    },
+    {
+      "name": "velocity",
+      "direction": "In",
+      "port_type": {
+        "StdLogicVector": {
+          "high": {
+            "Literal": 6
+          },
+          "low": {
+            "Literal": 0
+          },
+          "dir": "Downto"
+        }
+      },
+      "bundle": null
+    },
+    {
+      "name": "param_write",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "param_number",
+      "direction": "In",
+      "port_type": {
+        "StdLogicVector": {
+          "high": {
+            "Literal": 6
+          },
+          "low": {
+            "Literal": 0
+          },
+          "dir": "Downto"
+        }
+      },
+      "bundle": null
+    },
+    {
+      "name": "param_value",
+      "direction": "In",
+      "port_type": {
+        "StdLogicVector": {
+          "high": {
+            "Literal": 6
+          },
+          "low": {
+            "Literal": 0
+          },
+          "dir": "Downto"
+        }
+      },
+      "bundle": null
+    },
+    {
+      "name": "m_axis_out_tdata",
+      "direction": "Out",
+      "port_type": {
+        "StdLogicVector": {
+          "high": {
+            "Literal": 23
+          },
+          "low": {
+            "Literal": 0
+          },
+          "dir": "Downto"
+        }
+      },
+      "bundle": null
+    },
+    {
+      "name": "m_axis_out_tvalid",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "m_axis_out_tready",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "env_cv",
+      "direction": "Out",
+      "port_type": {
+        "StdLogicVector": {
+          "high": {
+            "Literal": 11
+          },
+          "low": {
+            "Literal": 0
+          },
+          "dir": "Downto"
+        }
+      },
+      "bundle": null
+    },
+    {
+      "name": "env_gate",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    }
+  ],
+  "instances": [
+    {
+      "name": "wave_reg",
+      "module_ref": "mapped_reg",
+      "generic_map": {
+        "n": "7",
+        "addr_size": "7",
+        "address": "84",
+        "output_width": "2"
+      },
+      "port_map": {
+        "D": {
+          "TopPort": "param_value"
+        },
+        "ADDR": {
+          "TopPort": "param_number"
+        },
+        "LOAD": {
+          "TopPort": "param_write"
+        },
+        "CLK": {
+          "TopPort": "clk"
+        },
+        "RSTN": {
+          "TopPort": "rstn"
+        },
+        "Q": {
+          "InstancePort": [
+            "wave_reg",
+            "Q"
+          ]
+        }
+      },
+      "position": [
+        0,
+        0
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "dir_or",
+      "module_ref": "bitwise_vec_op",
+      "generic_map": {
+        "OP": "\"OR\"",
+        "SIZE": "2"
+      },
+      "port_map": {
+        "input_vector": {
+          "InstancePort": [
+            "wave_reg",
+            "Q"
+          ]
+        },
+        "result": {
+          "InstancePort": [
+            "dir_or",
+            "result"
+          ]
+        }
+      },
+      "position": [
+        200,
+        0
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "phase_incre_0",
+      "module_ref": "phase_incre",
+      "generic_map": {},
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "resetn": {
+          "TopPort": "rstn"
+        },
+        "phase_pkg": {
+          "TopPort": "note_index"
+        },
+        "update_freq": {
+          "TopPort": "trigger"
+        },
+        "m_axis_phase_tdata": {
+          "InstancePort": [
+            "phase_incre_0",
+            "m_axis_phase_tdata"
+          ]
+        },
+        "m_axis_phase_tvalid": {
+          "InstancePort": [
+            "phase_incre_0",
+            "m_axis_phase_tvalid"
+          ]
+        },
+        "m_axis_phase_tready": {
+          "InstancePort": [
+            "square_0",
+            "s_axis_square_tready"
+          ]
+        }
+      },
+      "position": [
+        0,
+        200
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "square_0",
+      "module_ref": "square",
+      "generic_map": {},
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "resetn": {
+          "TopPort": "rstn"
+        },
+        "s_axis_square_tdata": {
+          "InstancePort": [
+            "phase_incre_0",
+            "m_axis_phase_tdata"
+          ]
+        },
+        "s_axis_square_tvalid": {
+          "InstancePort": [
+            "phase_incre_0",
+            "m_axis_phase_tvalid"
+          ]
+        },
+        "s_axis_square_tready": {
+          "InstancePort": [
+            "square_0",
+            "s_axis_square_tready"
+          ]
+        },
+        "m_axis_square_tdata": {
+          "InstancePort": [
+            "square_0",
+            "m_axis_square_tdata"
+          ]
+        },
+        "m_axis_square_tvalid": {
+          "InstancePort": [
+            "square_0",
+            "m_axis_square_tvalid"
+          ]
+        },
+        "m_axis_square_tready": {
+          "InstancePort": [
+            "mux_0",
+            "s_axis_square_tready"
+          ]
+        }
+      },
+      "position": [
+        200,
+        200
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "saw_0",
+      "module_ref": "sawtooth_i",
+      "generic_map": {
+        "sample_depth": "24"
+      },
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "resetn": {
+          "TopPort": "rstn"
+        },
+        "phase_idx": {
+          "TopPort": "note_index"
+        },
+        "phase_ready": {
+          "TopPort": "trigger"
+        },
+        "direction": {
+          "InstancePort": [
+            "dir_or",
+            "result"
+          ]
+        },
+        "m_axis_saw_tdata": {
+          "InstancePort": [
+            "saw_0",
+            "m_axis_saw_tdata"
+          ]
+        },
+        "m_axis_saw_tvalid": {
+          "InstancePort": [
+            "saw_0",
+            "m_axis_saw_tvalid"
+          ]
+        },
+        "m_axis_saw_tready": {
+          "InstancePort": [
+            "mux_0",
+            "s_axis_saw_tready"
+          ]
+        }
+      },
+      "position": [
+        200,
+        400
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "mux_0",
+      "module_ref": "mux",
+      "generic_map": {},
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "resetn": {
+          "TopPort": "rstn"
+        },
+        "sel": {
+          "InstancePort": [
+            "wave_reg",
+            "Q"
+          ]
+        },
+        "s_axis_saw_tdata": {
+          "InstancePort": [
+            "saw_0",
+            "m_axis_saw_tdata"
+          ]
+        },
+        "s_axis_saw_tvalid": {
+          "InstancePort": [
+            "saw_0",
+            "m_axis_saw_tvalid"
+          ]
+        },
+        "s_axis_saw_tready": {
+          "InstancePort": [
+            "mux_0",
+            "s_axis_saw_tready"
+          ]
+        },
+        "s_axis_square_tdata": {
+          "InstancePort": [
+            "square_0",
+            "m_axis_square_tdata"
+          ]
+        },
+        "s_axis_square_tvalid": {
+          "InstancePort": [
+            "square_0",
+            "m_axis_square_tvalid"
+          ]
+        },
+        "s_axis_square_tready": {
+          "InstancePort": [
+            "mux_0",
+            "s_axis_square_tready"
+          ]
+        },
+        "s_axis_sine_tdata": {
+          "InstancePort": [
+            "square_0",
+            "m_axis_square_tdata"
+          ]
+        },
+        "s_axis_sine_tvalid": {
+          "InstancePort": [
+            "square_0",
+            "m_axis_square_tvalid"
+          ]
+        },
+        "s_axis_sine_tready": null,
+        "m_axis_out_tdata": {
+          "InstancePort": [
+            "mux_0",
+            "m_axis_out_tdata"
+          ]
+        },
+        "m_axis_out_tvalid": {
+          "InstancePort": [
+            "mux_0",
+            "m_axis_out_tvalid"
+          ]
+        },
+        "m_axis_out_tready": {
+          "InstancePort": [
+            "mov_avg",
+            "s_axis_tready"
+          ]
+        }
+      },
+      "position": [
+        400,
+        200
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "vol_scaler",
+      "module_ref": "volume_scaler",
+      "generic_map": {},
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "rstn": {
+          "TopPort": "rstn"
+        },
+        "en": {
+          "TopPort": "note_state"
+        },
+        "velocity": {
+          "TopPort": "velocity"
+        },
+        "s_axis_sample_tdata": {
+          "InstancePort": [
+            "mux_0",
+            "m_axis_out_tdata"
+          ]
+        },
+        "s_axis_sample_tvalid": {
+          "InstancePort": [
+            "mux_0",
+            "m_axis_out_tvalid"
+          ]
+        },
+        "m_axis_data_tdata": {
+          "InstancePort": [
+            "vol_scaler",
+            "m_axis_data_tdata"
+          ]
+        },
+        "m_axis_data_tvalid": {
+          "InstancePort": [
+            "vol_scaler",
+            "m_axis_data_tvalid"
+          ]
+        }
+      },
+      "position": [
+        600,
+        200
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "mov_avg",
+      "module_ref": "moving_average",
+      "generic_map": {},
+      "port_map": {
+        "aclk": {
+          "TopPort": "clk"
+        },
+        "aresetn": {
+          "TopPort": "rstn"
+        },
+        "s_axis_tdata": {
+          "InstancePort": [
+            "vol_scaler",
+            "m_axis_data_tdata"
+          ]
+        },
+        "s_axis_tvalid": {
+          "InstancePort": [
+            "vol_scaler",
+            "m_axis_data_tvalid"
+          ]
+        },
+        "s_axis_tready": {
+          "InstancePort": [
+            "mov_avg",
+            "s_axis_tready"
+          ]
+        },
+        "m_axis_tdata": {
+          "InstancePort": [
+            "mov_avg",
+            "m_axis_tdata"
+          ]
+        },
+        "m_axis_tvalid": {
+          "InstancePort": [
+            "mov_avg",
+            "m_axis_tvalid"
+          ]
+        },
+        "m_axis_tready": {
+          "InstancePort": [
+            "out_stage",
+            "s_axis_audio_tready"
+          ]
+        }
+      },
+      "position": [
+        800,
+        200
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "out_stage",
+      "module_ref": "output_stage",
+      "generic_map": {},
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "enable": {
+          "TopPort": "note_state"
+        },
+        "s_axis_audio_tdata": {
+          "InstancePort": [
+            "mov_avg",
+            "m_axis_tdata"
+          ]
+        },
+        "s_axis_audio_tvalid": {
+          "InstancePort": [
+            "mov_avg",
+            "m_axis_tvalid"
+          ]
+        },
+        "s_axis_audio_tready": {
+          "InstancePort": [
+            "out_stage",
+            "s_axis_audio_tready"
+          ]
+        },
+        "m_axis_out_tdata": {
+          "TopPort": "m_axis_out_tdata"
+        },
+        "m_axis_out_tvalid": {
+          "TopPort": "m_axis_out_tvalid"
+        },
+        "m_axis_out_tready": {
+          "TopPort": "m_axis_out_tready"
+        }
+      },
+      "position": [
+        1000,
+        200
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "env_0",
+      "module_ref": "enveloper",
+      "generic_map": {
+        "ATTACK_ADDR": "73",
+        "DECAY_ADDR": "75",
+        "SUSTAIN_ADDR": "70",
+        "RELEASE_ADDR": "72",
+        "CLKS_PER_TICK": "104167"
+      },
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "rst_n": {
+          "TopPort": "rstn"
+        },
+        "gate": {
+          "TopPort": "note_state"
+        },
+        "trig": {
+          "TopPort": "trigger"
+        },
+        "param_write": {
+          "TopPort": "param_write"
+        },
+        "param_addr": {
+          "TopPort": "param_number"
+        },
+        "param_data": {
+          "TopPort": "param_value"
+        },
+        "gate_out": {
+          "TopPort": "env_gate"
+        },
+        "env_out": {
+          "TopPort": "env_cv"
+        }
+      },
+      "position": [
+        600,
+        500
+      ],
+      "manual_bundles": {}
+    }
+  ],
+  "aliases": {},
+  "library_paths": [
+    "rtl/registers/mapped_reg.vhd",
+    "rtl/audio/bitwise_vec_op.vhd",
+    "rtl/oscillator/phase_incre.vhd",
+    "rtl/oscillator/square_wave.vhd",
+    "rtl/oscillator/sawtooth.vhd",
+    "rtl/oscillator/mux.vhd",
+    "rtl/oscillator/volume_scaler.vhd",
+    "rtl/audio/moving_average.vhd",
+    "rtl/audio/output_stage.vhd",
+    "rtl/cv/enveloper.vhd"
+  ]
+}

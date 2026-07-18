@@ -1,0 +1,5 @@
+build/
+e~*.o
+*_tb
+*.ghw
+*.vcd

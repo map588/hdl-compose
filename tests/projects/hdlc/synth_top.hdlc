@@ -1,0 +1,1216 @@
+{
+  "version": 4,
+  "top_name": "synth_top",
+  "language": "Vhdl",
+  "top_generics": [],
+  "top_ports": [
+    {
+      "name": "clk",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "rstn",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "midi_clk",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "midi_data",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "midi_startn",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "mclk",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "io_reset",
+      "direction": "In",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "sdata0",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "bclk_out0",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "lrclk_out0",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "mclk_out0",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "sdata1",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "bclk_out1",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "lrclk_out1",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "mclk_out1",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "env_gate0",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "env_gate1",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "DAC_SCLK",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "DAC_MOSI",
+      "direction": "InOut",
+      "port_type": "StdLogic",
+      "bundle": null
+    },
+    {
+      "name": "DAC_SS",
+      "direction": "Out",
+      "port_type": "StdLogic",
+      "bundle": null
+    }
+  ],
+  "instances": [
+    {
+      "name": "midi_if",
+      "module_ref": "midi_interface",
+      "generic_map": {},
+      "port_map": {
+        "sys_clk": {
+          "TopPort": "clk"
+        },
+        "sys_rstn": {
+          "TopPort": "rstn"
+        },
+        "midi_clk": {
+          "TopPort": "midi_clk"
+        },
+        "midi_sdata": {
+          "TopPort": "midi_data"
+        },
+        "midi_startn": {
+          "TopPort": "midi_startn"
+        },
+        "cpu_ack": {
+          "InstancePort": [
+            "ed_update",
+            "sig_out"
+          ]
+        },
+        "midi_output": {
+          "InstancePort": [
+            "midi_if",
+            "midi_output"
+          ]
+        },
+        "interrupt": null,
+        "update": {
+          "InstancePort": [
+            "midi_if",
+            "update"
+          ]
+        }
+      },
+      "position": [
+        0,
+        0
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "ed_update",
+      "module_ref": "edge_detector",
+      "generic_map": {},
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "rstn": {
+          "TopPort": "rstn"
+        },
+        "sig_in": {
+          "InstancePort": [
+            "midi_if",
+            "update"
+          ]
+        },
+        "sig_out": {
+          "InstancePort": [
+            "ed_update",
+            "sig_out"
+          ]
+        }
+      },
+      "position": [
+        150,
+        0
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "midi_fifo",
+      "module_ref": "axis_cdc",
+      "generic_map": {
+        "WIDTH": "16"
+      },
+      "port_map": {
+        "src_clk": {
+          "TopPort": "clk"
+        },
+        "src_rstn": {
+          "TopPort": "rstn"
+        },
+        "s_tdata": {
+          "InstancePort": [
+            "midi_if",
+            "midi_output"
+          ]
+        },
+        "s_tvalid": {
+          "InstancePort": [
+            "ed_update",
+            "sig_out"
+          ]
+        },
+        "s_tready": null,
+        "dst_clk": {
+          "TopPort": "clk"
+        },
+        "dst_rstn": {
+          "TopPort": "rstn"
+        },
+        "m_tdata": {
+          "InstancePort": [
+            "midi_fifo",
+            "m_tdata"
+          ]
+        },
+        "m_tvalid": {
+          "InstancePort": [
+            "midi_fifo",
+            "m_tvalid"
+          ]
+        },
+        "m_tready": {
+          "InstancePort": [
+            "proc",
+            "read_midi"
+          ]
+        }
+      },
+      "position": [
+        300,
+        0
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "proc",
+      "module_ref": "midi_processor",
+      "generic_map": {
+        "VOICES": "2"
+      },
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "rstn": {
+          "TopPort": "rstn"
+        },
+        "update": {
+          "InstancePort": [
+            "midi_fifo",
+            "m_tvalid"
+          ]
+        },
+        "data_in": {
+          "InstancePort": [
+            "midi_fifo",
+            "m_tdata"
+          ]
+        },
+        "read_midi": {
+          "InstancePort": [
+            "proc",
+            "read_midi"
+          ]
+        },
+        "ack": null,
+        "triggers": {
+          "InstancePort": [
+            "proc",
+            "triggers"
+          ]
+        },
+        "note_stops": null,
+        "note_states": {
+          "InstancePort": [
+            "proc",
+            "note_states"
+          ]
+        },
+        "note_index": {
+          "InstancePort": [
+            "proc",
+            "note_index"
+          ]
+        },
+        "velocity": {
+          "InstancePort": [
+            "proc",
+            "velocity"
+          ]
+        },
+        "param_write": {
+          "InstancePort": [
+            "proc",
+            "param_write"
+          ]
+        },
+        "param_number": {
+          "InstancePort": [
+            "proc",
+            "param_number"
+          ]
+        },
+        "param_value": {
+          "InstancePort": [
+            "proc",
+            "param_value"
+          ]
+        }
+      },
+      "position": [
+        450,
+        0
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "voice0",
+      "module_ref": "voice_chain",
+      "generic_map": {},
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "rstn": {
+          "TopPort": "rstn"
+        },
+        "note_state": {
+          "InstancePortSlice": [
+            "proc",
+            "note_states",
+            {
+              "Bit": 0
+            }
+          ]
+        },
+        "trigger": {
+          "InstancePortSlice": [
+            "proc",
+            "triggers",
+            {
+              "Bit": 0
+            }
+          ]
+        },
+        "note_index": {
+          "InstancePort": [
+            "proc",
+            "note_index"
+          ]
+        },
+        "velocity": {
+          "InstancePort": [
+            "proc",
+            "velocity"
+          ]
+        },
+        "param_write": {
+          "InstancePort": [
+            "proc",
+            "param_write"
+          ]
+        },
+        "param_number": {
+          "InstancePort": [
+            "proc",
+            "param_number"
+          ]
+        },
+        "param_value": {
+          "InstancePort": [
+            "proc",
+            "param_value"
+          ]
+        },
+        "m_axis_out_tdata": {
+          "InstancePort": [
+            "voice0",
+            "m_axis_out_tdata"
+          ]
+        },
+        "m_axis_out_tvalid": {
+          "InstancePort": [
+            "voice0",
+            "m_axis_out_tvalid"
+          ]
+        },
+        "m_axis_out_tready": {
+          "InstancePort": [
+            "cdc0",
+            "s_tready"
+          ]
+        },
+        "env_cv": {
+          "InstancePort": [
+            "voice0",
+            "env_cv"
+          ]
+        },
+        "env_gate": {
+          "TopPort": "env_gate0"
+        }
+      },
+      "position": [
+        600,
+        100
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "voice1",
+      "module_ref": "voice_chain",
+      "generic_map": {},
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "rstn": {
+          "TopPort": "rstn"
+        },
+        "note_state": {
+          "InstancePortSlice": [
+            "proc",
+            "note_states",
+            {
+              "Bit": 1
+            }
+          ]
+        },
+        "trigger": {
+          "InstancePortSlice": [
+            "proc",
+            "triggers",
+            {
+              "Bit": 1
+            }
+          ]
+        },
+        "note_index": {
+          "InstancePort": [
+            "proc",
+            "note_index"
+          ]
+        },
+        "velocity": {
+          "InstancePort": [
+            "proc",
+            "velocity"
+          ]
+        },
+        "param_write": {
+          "InstancePort": [
+            "proc",
+            "param_write"
+          ]
+        },
+        "param_number": {
+          "InstancePort": [
+            "proc",
+            "param_number"
+          ]
+        },
+        "param_value": {
+          "InstancePort": [
+            "proc",
+            "param_value"
+          ]
+        },
+        "m_axis_out_tdata": {
+          "InstancePort": [
+            "voice1",
+            "m_axis_out_tdata"
+          ]
+        },
+        "m_axis_out_tvalid": {
+          "InstancePort": [
+            "voice1",
+            "m_axis_out_tvalid"
+          ]
+        },
+        "m_axis_out_tready": {
+          "InstancePort": [
+            "cdc1",
+            "s_tready"
+          ]
+        },
+        "env_cv": {
+          "InstancePort": [
+            "voice1",
+            "env_cv"
+          ]
+        },
+        "env_gate": {
+          "TopPort": "env_gate1"
+        }
+      },
+      "position": [
+        600,
+        500
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "cdc0",
+      "module_ref": "axis_cdc",
+      "generic_map": {
+        "WIDTH": "24"
+      },
+      "port_map": {
+        "src_clk": {
+          "TopPort": "clk"
+        },
+        "src_rstn": {
+          "TopPort": "rstn"
+        },
+        "s_tdata": {
+          "InstancePort": [
+            "voice0",
+            "m_axis_out_tdata"
+          ]
+        },
+        "s_tvalid": {
+          "InstancePort": [
+            "voice0",
+            "m_axis_out_tvalid"
+          ]
+        },
+        "s_tready": {
+          "InstancePort": [
+            "cdc0",
+            "s_tready"
+          ]
+        },
+        "dst_clk": {
+          "TopPort": "mclk"
+        },
+        "dst_rstn": {
+          "TopPort": "rstn"
+        },
+        "m_tdata": {
+          "InstancePort": [
+            "cdc0",
+            "m_tdata"
+          ]
+        },
+        "m_tvalid": {
+          "InstancePort": [
+            "cdc0",
+            "m_tvalid"
+          ]
+        },
+        "m_tready": {
+          "InstancePort": [
+            "i2s0",
+            "s_axis_in_tready"
+          ]
+        }
+      },
+      "position": [
+        1400,
+        100
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "i2s0",
+      "module_ref": "i2s_transmitter",
+      "generic_map": {
+        "DATA_WIDTH": "24"
+      },
+      "port_map": {
+        "s_axis_in_clk": {
+          "TopPort": "mclk"
+        },
+        "resetn": {
+          "TopPort": "rstn"
+        },
+        "s_axis_in_tdata": {
+          "InstancePort": [
+            "cdc0",
+            "m_tdata"
+          ]
+        },
+        "s_axis_in_tvalid": {
+          "InstancePort": [
+            "cdc0",
+            "m_tvalid"
+          ]
+        },
+        "s_axis_in_tready": {
+          "InstancePort": [
+            "i2s0",
+            "s_axis_in_tready"
+          ]
+        },
+        "bclk": {
+          "InstancePort": [
+            "i2s0",
+            "bclk"
+          ]
+        },
+        "sdata": {
+          "InstancePort": [
+            "i2s0",
+            "sdata"
+          ]
+        },
+        "lrclk": {
+          "InstancePort": [
+            "i2s0",
+            "lrclk"
+          ]
+        }
+      },
+      "position": [
+        1600,
+        100
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "selectio0",
+      "module_ref": "selectio",
+      "generic_map": {},
+      "port_map": {
+        "clk_in": {
+          "InstancePort": [
+            "i2s0",
+            "bclk"
+          ]
+        },
+        "data_out_from_device": {
+          "InstancePort": [
+            "i2s0",
+            "sdata"
+          ]
+        },
+        "data_out_to_pins": {
+          "TopPort": "sdata0"
+        },
+        "clk_to_pins": {
+          "TopPort": "bclk_out0"
+        },
+        "clk_reset": {
+          "TopPort": "io_reset"
+        },
+        "io_reset": {
+          "TopPort": "io_reset"
+        }
+      },
+      "position": [
+        1800,
+        100
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "obuf_lrclk0",
+      "module_ref": "clock_obuf",
+      "generic_map": {},
+      "port_map": {
+        "clk_in": {
+          "InstancePort": [
+            "i2s0",
+            "lrclk"
+          ]
+        },
+        "clk_to_pins": {
+          "TopPort": "lrclk_out0"
+        },
+        "clk_reset": {
+          "TopPort": "io_reset"
+        }
+      },
+      "position": [
+        1800,
+        200
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "obuf_mclk0",
+      "module_ref": "clock_obuf",
+      "generic_map": {},
+      "port_map": {
+        "clk_in": {
+          "TopPort": "mclk"
+        },
+        "clk_to_pins": {
+          "TopPort": "mclk_out0"
+        },
+        "clk_reset": {
+          "TopPort": "io_reset"
+        }
+      },
+      "position": [
+        1800,
+        300
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "cdc1",
+      "module_ref": "axis_cdc",
+      "generic_map": {
+        "WIDTH": "24"
+      },
+      "port_map": {
+        "src_clk": {
+          "TopPort": "clk"
+        },
+        "src_rstn": {
+          "TopPort": "rstn"
+        },
+        "s_tdata": {
+          "InstancePort": [
+            "voice1",
+            "m_axis_out_tdata"
+          ]
+        },
+        "s_tvalid": {
+          "InstancePort": [
+            "voice1",
+            "m_axis_out_tvalid"
+          ]
+        },
+        "s_tready": {
+          "InstancePort": [
+            "cdc1",
+            "s_tready"
+          ]
+        },
+        "dst_clk": {
+          "TopPort": "mclk"
+        },
+        "dst_rstn": {
+          "TopPort": "rstn"
+        },
+        "m_tdata": {
+          "InstancePort": [
+            "cdc1",
+            "m_tdata"
+          ]
+        },
+        "m_tvalid": {
+          "InstancePort": [
+            "cdc1",
+            "m_tvalid"
+          ]
+        },
+        "m_tready": {
+          "InstancePort": [
+            "i2s1",
+            "s_axis_in_tready"
+          ]
+        }
+      },
+      "position": [
+        1400,
+        500
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "i2s1",
+      "module_ref": "i2s_transmitter",
+      "generic_map": {
+        "DATA_WIDTH": "24"
+      },
+      "port_map": {
+        "s_axis_in_clk": {
+          "TopPort": "mclk"
+        },
+        "resetn": {
+          "TopPort": "rstn"
+        },
+        "s_axis_in_tdata": {
+          "InstancePort": [
+            "cdc1",
+            "m_tdata"
+          ]
+        },
+        "s_axis_in_tvalid": {
+          "InstancePort": [
+            "cdc1",
+            "m_tvalid"
+          ]
+        },
+        "s_axis_in_tready": {
+          "InstancePort": [
+            "i2s1",
+            "s_axis_in_tready"
+          ]
+        },
+        "bclk": {
+          "InstancePort": [
+            "i2s1",
+            "bclk"
+          ]
+        },
+        "sdata": {
+          "InstancePort": [
+            "i2s1",
+            "sdata"
+          ]
+        },
+        "lrclk": {
+          "InstancePort": [
+            "i2s1",
+            "lrclk"
+          ]
+        }
+      },
+      "position": [
+        1600,
+        500
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "selectio1",
+      "module_ref": "selectio",
+      "generic_map": {},
+      "port_map": {
+        "clk_in": {
+          "InstancePort": [
+            "i2s1",
+            "bclk"
+          ]
+        },
+        "data_out_from_device": {
+          "InstancePort": [
+            "i2s1",
+            "sdata"
+          ]
+        },
+        "data_out_to_pins": {
+          "TopPort": "sdata1"
+        },
+        "clk_to_pins": {
+          "TopPort": "bclk_out1"
+        },
+        "clk_reset": {
+          "TopPort": "io_reset"
+        },
+        "io_reset": {
+          "TopPort": "io_reset"
+        }
+      },
+      "position": [
+        1800,
+        500
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "obuf_lrclk1",
+      "module_ref": "clock_obuf",
+      "generic_map": {},
+      "port_map": {
+        "clk_in": {
+          "InstancePort": [
+            "i2s1",
+            "lrclk"
+          ]
+        },
+        "clk_to_pins": {
+          "TopPort": "lrclk_out1"
+        },
+        "clk_reset": {
+          "TopPort": "io_reset"
+        }
+      },
+      "position": [
+        1800,
+        600
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "obuf_mclk1",
+      "module_ref": "clock_obuf",
+      "generic_map": {},
+      "port_map": {
+        "clk_in": {
+          "TopPort": "mclk"
+        },
+        "clk_to_pins": {
+          "TopPort": "mclk_out1"
+        },
+        "clk_reset": {
+          "TopPort": "io_reset"
+        }
+      },
+      "position": [
+        1800,
+        700
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "vcf_gate_or",
+      "module_ref": "bitwise_vec_op",
+      "generic_map": {
+        "OP": "\"OR\"",
+        "SIZE": "2"
+      },
+      "port_map": {
+        "input_vector": {
+          "InstancePort": [
+            "proc",
+            "note_states"
+          ]
+        },
+        "result": {
+          "InstancePort": [
+            "vcf_gate_or",
+            "result"
+          ]
+        }
+      },
+      "position": [
+        600,
+        900
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "vcf_trig_or",
+      "module_ref": "bitwise_vec_op",
+      "generic_map": {
+        "OP": "\"OR\"",
+        "SIZE": "2"
+      },
+      "port_map": {
+        "input_vector": {
+          "InstancePort": [
+            "proc",
+            "triggers"
+          ]
+        },
+        "result": {
+          "InstancePort": [
+            "vcf_trig_or",
+            "result"
+          ]
+        }
+      },
+      "position": [
+        600,
+        1000
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "env_vcf",
+      "module_ref": "enveloper",
+      "generic_map": {
+        "ATTACK_ADDR": "80",
+        "DECAY_ADDR": "81",
+        "SUSTAIN_ADDR": "82",
+        "RELEASE_ADDR": "83",
+        "CLKS_PER_TICK": "104167"
+      },
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "rst_n": {
+          "TopPort": "rstn"
+        },
+        "gate": {
+          "InstancePort": [
+            "vcf_gate_or",
+            "result"
+          ]
+        },
+        "trig": {
+          "InstancePort": [
+            "vcf_trig_or",
+            "result"
+          ]
+        },
+        "param_write": {
+          "InstancePort": [
+            "proc",
+            "param_write"
+          ]
+        },
+        "param_addr": {
+          "InstancePort": [
+            "proc",
+            "param_number"
+          ]
+        },
+        "param_data": {
+          "InstancePort": [
+            "proc",
+            "param_value"
+          ]
+        },
+        "gate_out": null,
+        "env_out": {
+          "InstancePort": [
+            "env_vcf",
+            "env_out"
+          ]
+        }
+      },
+      "position": [
+        800,
+        900
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "lfo_0",
+      "module_ref": "lfo",
+      "generic_map": {
+        "RATE_ADDR": "85",
+        "CLKS_PER_TICK": "10417"
+      },
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "rst_n": {
+          "TopPort": "rstn"
+        },
+        "param_write": {
+          "InstancePort": [
+            "proc",
+            "param_write"
+          ]
+        },
+        "param_addr": {
+          "InstancePort": [
+            "proc",
+            "param_number"
+          ]
+        },
+        "param_data": {
+          "InstancePort": [
+            "proc",
+            "param_value"
+          ]
+        },
+        "lfo_out": {
+          "InstancePort": [
+            "lfo_0",
+            "lfo_out"
+          ]
+        }
+      },
+      "position": [
+        800,
+        1100
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "mix",
+      "module_ref": "cv_mix",
+      "generic_map": {
+        "DEPTH_ADDR": "86"
+      },
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "rst_n": {
+          "TopPort": "rstn"
+        },
+        "param_write": {
+          "InstancePort": [
+            "proc",
+            "param_write"
+          ]
+        },
+        "param_addr": {
+          "InstancePort": [
+            "proc",
+            "param_number"
+          ]
+        },
+        "param_data": {
+          "InstancePort": [
+            "proc",
+            "param_value"
+          ]
+        },
+        "env_in": {
+          "InstancePort": [
+            "env_vcf",
+            "env_out"
+          ]
+        },
+        "lfo_in": {
+          "InstancePort": [
+            "lfo_0",
+            "lfo_out"
+          ]
+        },
+        "cv_out": {
+          "InstancePort": [
+            "mix",
+            "cv_out"
+          ]
+        }
+      },
+      "position": [
+        1000,
+        1000
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "dac",
+      "module_ref": "i2c_cv_dac",
+      "generic_map": {
+        "CLK_DIV": "260"
+      },
+      "port_map": {
+        "clk": {
+          "TopPort": "clk"
+        },
+        "rst_n": {
+          "TopPort": "rstn"
+        },
+        "ch_a": {
+          "InstancePort": [
+            "voice0",
+            "env_cv"
+          ]
+        },
+        "ch_b": {
+          "InstancePort": [
+            "voice1",
+            "env_cv"
+          ]
+        },
+        "ch_c": {
+          "InstancePort": [
+            "mix",
+            "cv_out"
+          ]
+        },
+        "scl": {
+          "TopPort": "DAC_SCLK"
+        },
+        "sda": {
+          "TopPort": "DAC_MOSI"
+        },
+        "ldac": {
+          "TopPort": "DAC_SS"
+        }
+      },
+      "position": [
+        1200,
+        1000
+      ],
+      "manual_bundles": {}
+    }
+  ],
+  "aliases": {},
+  "library_paths": [
+    "rtl/registers/mapped_reg.vhd",
+    "rtl/audio/bitwise_vec_op.vhd",
+    "rtl/oscillator/phase_incre.vhd",
+    "rtl/oscillator/square_wave.vhd",
+    "rtl/oscillator/sawtooth.vhd",
+    "rtl/oscillator/mux.vhd",
+    "rtl/oscillator/volume_scaler.vhd",
+    "rtl/audio/moving_average.vhd",
+    "rtl/audio/output_stage.vhd",
+    "rtl/cv/enveloper.vhd",
+    "rtl/midi/midi_interface.vhd",
+    "rtl/midi/midi_processor.vhd",
+    "rtl/midi/edge_detect.vhd",
+    "rtl/cv/lfo.vhd",
+    "rtl/cv/cv_mix.vhd",
+    "rtl/cv/i2c_cv_dac.vhd",
+    "rtl/gen/voice_chain.vhd",
+    "rtl/cv/axis_cdc.vhd",
+    "rtl/audio/i2s_manager.vhd",
+    "rtl/audio/clocked_data_out.v",
+    "rtl/audio/clock_obuf.vhd"
+  ]
+}
