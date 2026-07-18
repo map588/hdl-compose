@@ -110,6 +110,36 @@ enum Command {
         wave: bool,
     },
 
+    /// Build a bitstream for a specific board (yosys → nextpnr → pack).
+    /// Requires oss-cad-suite on PATH.
+    Build {
+        /// Path to .hdlc project file
+        project: PathBuf,
+
+        /// Path to a .board.json file (family, device, package, constraints)
+        #[arg(long)]
+        board: PathBuf,
+
+        /// Output bitstream (default: <projectdir>/<top>.bit)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Program a board with the project's bitstream via openFPGALoader
+    /// (builds it first if missing). SRAM load by default.
+    Flash {
+        /// Path to .hdlc project file
+        project: PathBuf,
+
+        /// Path to a .board.json file
+        #[arg(long)]
+        board: PathBuf,
+
+        /// Write to config flash (persistent) instead of SRAM
+        #[arg(long)]
+        flash: bool,
+    },
+
     /// Emit an FPGA build Makefile + constraints skeleton
     /// (yosys → nextpnr → pack → openFPGALoader) next to the project
     Fpga {
@@ -194,6 +224,16 @@ fn main() -> ExitCode {
         Some(Command::Migrate { projects }) => cmd_migrate(&projects),
         Some(Command::Schema { output }) => cmd_schema(output.as_deref()),
         Some(Command::Check { project }) => cmd_check(&project),
+        Some(Command::Build {
+            project,
+            board,
+            output,
+        }) => cmd_build(&project, &board, output.as_deref()),
+        Some(Command::Flash {
+            project,
+            board,
+            flash,
+        }) => cmd_flash(&project, &board, flash),
         Some(Command::Synth { project }) => cmd_synth(&project),
         Some(Command::Sim { project, wave }) => cmd_sim(&project, wave),
         Some(Command::Fpga {
@@ -222,13 +262,19 @@ entity pulse_gen is
 end entity pulse_gen;
 
 architecture rtl of pulse_gen is
-  signal cnt : unsigned(WIDTH-1 downto 0) := (others => '0');
+  signal div_cnt : integer range 0 to DIV-1 := 0;
+  signal cnt     : unsigned(WIDTH-1 downto 0) := (others => '0');
 begin
   process (clk)
   begin
     if rising_edge(clk) then
       if ena = '1' then
-        cnt <= cnt + 1;
+        if div_cnt = DIV-1 then
+          div_cnt <= 0;
+          cnt <= cnt + 1;
+        else
+          div_cnt <= div_cnt + 1;
+        end if;
       end if;
     end if;
   end process;
@@ -261,8 +307,15 @@ const EXAMPLE_PULSE_GEN_SV: &str = r#"module pulse_gen #(
   input  logic             ena,
   output logic [WIDTH-1:0] count
 );
+  logic [$clog2(DIV)-1:0] div_cnt;
   always_ff @(posedge clk)
-    if (ena) count <= count + 1'b1;
+    if (ena) begin
+      if (div_cnt == ($clog2(DIV))'(DIV-1)) begin
+        div_cnt <= '0;
+        count   <= count + 1'b1;
+      end else
+        div_cnt <= div_cnt + 1'b1;
+    end
 endmodule
 "#;
 
@@ -660,7 +713,18 @@ fn stage_project(
             return Err(ExitCode::from(2));
         }
     };
-    let staged = hdl_compose::toolchain::stage(&schematic, &library, &design).map_err(|e| {
+    let config = hdl_compose::toolchain::ToolchainConfig::load_for(project_path).map_err(|e| {
+        eprintln!("error: {e}");
+        ExitCode::from(2)
+    })?;
+    let staged = hdl_compose::toolchain::stage(
+        &schematic,
+        &library,
+        &design,
+        &config,
+        project_dir(project_path),
+    )
+    .map_err(|e| {
         eprintln!("error: {e}");
         ExitCode::from(2)
     })?;
@@ -713,11 +777,7 @@ fn cmd_sim(project_path: &std::path::Path, wave: bool) -> ExitCode {
         Ok(v) => v,
         Err(code) => return code,
     };
-    let project_dir = project_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| std::path::Path::new("."));
-    match hdl_compose::toolchain::run_sim(&staged, &schematic, project_dir) {
+    match hdl_compose::toolchain::run_sim(&staged, &schematic, project_dir(project_path)) {
         Ok(Some(wave_file)) => {
             println!("sim finished, wave written to {}", wave_file.display());
             if wave
@@ -739,6 +799,118 @@ fn cmd_sim(project_path: &std::path::Path, wave: bool) -> ExitCode {
     }
 }
 
+fn project_dir(project_path: &std::path::Path) -> &std::path::Path {
+    project_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."))
+}
+
+/// Stage, pin-check against the board constraints, and run the full
+/// bitstream flow. Returns the bitstream path (default:
+/// `<projectdir>/<top>.bit`). Shared by `build` and `flash`.
+fn build_bitstream(
+    project_path: &std::path::Path,
+    board: &hdl_compose::board::Board,
+    output: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, ExitCode> {
+    let (schematic, staged) = stage_project(project_path)?;
+
+    let text = std::fs::read_to_string(&board.constraints).map_err(|e| {
+        eprintln!("error: cannot read {}: {e}", board.constraints.display());
+        ExitCode::from(2)
+    })?;
+    let names = hdl_compose::board::constraint_port_names(&text, board.family);
+    for w in hdl_compose::board::pin_check(&schematic, &names) {
+        eprintln!("warning: {w}");
+    }
+
+    let out_bit = match output {
+        Some(p) => p.to_path_buf(),
+        None => project_dir(project_path).join(format!("{}.bit", schematic.top_name)),
+    };
+    match hdl_compose::toolchain::run_build(&staged, board, &out_bit) {
+        Ok(true) => {
+            println!("bitstream written to {}", out_bit.display());
+            Ok(out_bit)
+        }
+        Ok(false) => {
+            eprintln!("error: build failed (see tool output above)");
+            Err(ExitCode::FAILURE)
+        }
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            Err(ExitCode::from(2))
+        }
+    }
+}
+
+fn load_board(board_path: &std::path::Path) -> Result<hdl_compose::board::Board, ExitCode> {
+    hdl_compose::board::Board::load(board_path).map_err(|e| {
+        eprintln!("error: {e}");
+        ExitCode::from(2)
+    })
+}
+
+fn cmd_build(
+    project_path: &std::path::Path,
+    board_path: &std::path::Path,
+    output: Option<&std::path::Path>,
+) -> ExitCode {
+    let board = match load_board(board_path) {
+        Ok(b) => b,
+        Err(code) => return code,
+    };
+    match build_bitstream(project_path, &board, output) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(code) => code,
+    }
+}
+
+fn cmd_flash(
+    project_path: &std::path::Path,
+    board_path: &std::path::Path,
+    persistent: bool,
+) -> ExitCode {
+    let board = match load_board(board_path) {
+        Ok(b) => b,
+        Err(code) => return code,
+    };
+    let bit = match load_project(project_path) {
+        Ok((schematic, _)) => {
+            project_dir(project_path).join(format!("{}.bit", schematic.top_name))
+        }
+        Err(code) => return code,
+    };
+    let bit = if bit.exists() {
+        bit
+    } else {
+        println!("no bitstream at {}, building first", bit.display());
+        match build_bitstream(project_path, &board, None) {
+            Ok(p) => p,
+            Err(code) => return code,
+        }
+    };
+    match hdl_compose::toolchain::run_flash(&bit, &board, persistent) {
+        Ok(true) => {
+            println!(
+                "programmed {} ({})",
+                board.name,
+                if persistent { "flash" } else { "SRAM" }
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(false) => {
+            eprintln!("error: openFPGALoader failed (see output above)");
+            ExitCode::FAILURE
+        }
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            ExitCode::from(2)
+        }
+    }
+}
+
 fn cmd_fpga(
     project_path: &std::path::Path,
     family: hdl_compose::toolchain::FpgaFamily,
@@ -749,11 +921,7 @@ fn cmd_fpga(
         Ok(v) => v,
         Err(code) => return code,
     };
-    let project_dir = project_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let out_dir = output.unwrap_or(project_dir);
+    let out_dir = output.unwrap_or_else(|| project_dir(project_path));
     if let Err(e) = std::fs::create_dir_all(out_dir) {
         eprintln!("error: cannot create {}: {e}", out_dir.display());
         return ExitCode::from(2);

@@ -50,14 +50,63 @@ where
     Ok(status.success())
 }
 
+/// Optional per-project tool settings, loaded from
+/// `<project>.toolchain.json` next to the `.hdlc` file. Covers what the
+/// schematic itself cannot know: VHDL sources that must be analyzed into a
+/// named library (packages, vendor stubs) and extra analysis units (e.g.
+/// sim-only implementations of a module). Paths are relative to the project
+/// directory.
+#[derive(Default, serde::Deserialize)]
+pub struct ToolchainConfig {
+    #[serde(default)]
+    pub vhdl_libraries: Vec<VhdlLibrary>,
+    /// Analyzed into `work` BEFORE the project's library sources — leaf
+    /// dependencies of library modules and sim-only implementations.
+    #[serde(default)]
+    pub extra_sources: Vec<PathBuf>,
+    /// Project library paths to leave out of tool runs (e.g. a
+    /// vendor-flow-only file another `extra_sources` entry stands in for).
+    #[serde(default)]
+    pub exclude_sources: Vec<PathBuf>,
+    /// Extra flags for the ghdl-yosys-plugin during `synth`/`build`
+    /// (e.g. "--latches" for designs with intentional latches).
+    #[serde(default)]
+    pub ghdl_synth_flags: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct VhdlLibrary {
+    pub name: String,
+    pub files: Vec<PathBuf>,
+}
+
+impl ToolchainConfig {
+    /// Load `<stem>.toolchain.json` for a project path; absent file → default.
+    pub fn load_for(project_path: &Path) -> Result<ToolchainConfig, String> {
+        let path = project_path.with_extension("toolchain.json");
+        if !path.exists() {
+            return Ok(ToolchainConfig::default());
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        serde_json::from_str(&text).map_err(|e| format!("invalid {}: {e}", path.display()))
+    }
+}
+
 /// A project's complete HDL staged into a scratch directory: library sources
 /// copied in, generated files written out, everything addressed by relative
 /// filename so tool command lines stay simple.
 pub struct StagedBuild {
     pub dir: PathBuf,
-    /// Filenames (relative to `dir`) in analysis order: library sources with
-    /// dependencies first, then generated group files, then the top file.
+    /// Filenames (relative to `dir`) in analysis order: config extra sources,
+    /// then library sources with dependencies first, then generated group
+    /// files, then the top file.
     pub sources: Vec<String>,
+    /// Named-library prelude: (library name, staged filenames), analyzed
+    /// before `sources` (ghdl `--work=<name>`).
+    pub libraries: Vec<(String, Vec<String>)>,
+    /// Config's extra ghdl flags for the yosys plugin.
+    pub ghdl_synth_flags: Vec<String>,
     pub top_name: String,
     pub language: Language,
 }
@@ -115,29 +164,58 @@ pub fn dependency_ordered_sources(library: &[ModuleDef]) -> Vec<PathBuf> {
 }
 
 /// Codegen the project and lay everything out in a scratch dir.
+/// `project_dir` anchors the config's relative paths.
 pub fn stage(
     schematic: &Schematic,
     library: &[ModuleDef],
     design: &GeneratedDesign,
+    config: &ToolchainConfig,
+    project_dir: &Path,
 ) -> Result<StagedBuild, String> {
     let dir = std::env::temp_dir().join(format!("hdl-compose-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
 
-    let mut sources = Vec::new();
-    for src in dependency_ordered_sources(library) {
+    let mut used: Vec<String> = Vec::new();
+    let mut copy_in = |src: &Path| -> Result<String, String> {
+        let src = if src.is_relative() {
+            project_dir.join(src)
+        } else {
+            src.to_path_buf()
+        };
         let mut fname = src
             .file_name()
             .and_then(|f| f.to_str())
-            .ok_or_else(|| format!("bad library path: {}", src.display()))?
+            .ok_or_else(|| format!("bad source path: {}", src.display()))?
             .to_string();
-        // Two different library files with the same basename: disambiguate.
-        while sources.contains(&fname) {
+        // Two different files with the same basename: disambiguate.
+        while used.contains(&fname) {
             fname = format!("_{fname}");
         }
         std::fs::copy(&src, dir.join(&fname))
             .map_err(|e| format!("cannot copy {}: {e}", src.display()))?;
-        sources.push(fname);
+        used.push(fname.clone());
+        Ok(fname)
+    };
+
+    let mut libraries = Vec::new();
+    for lib in &config.vhdl_libraries {
+        let mut files = Vec::new();
+        for f in &lib.files {
+            files.push(copy_in(f)?);
+        }
+        libraries.push((lib.name.clone(), files));
+    }
+
+    let mut sources = Vec::new();
+    for src in &config.extra_sources {
+        sources.push(copy_in(src)?);
+    }
+    for src in dependency_ordered_sources(library) {
+        if config.exclude_sources.iter().any(|e| e == &src) {
+            continue;
+        }
+        sources.push(copy_in(&src)?);
     }
     for (fname, code) in design
         .files
@@ -152,9 +230,31 @@ pub fn stage(
     Ok(StagedBuild {
         dir,
         sources,
+        libraries,
+        ghdl_synth_flags: config.ghdl_synth_flags.clone(),
         top_name: schematic.top_name.clone(),
         language: schematic.language.clone(),
     })
+}
+
+/// Analyze the config's named-library sources (`--work=<name>`) ahead of the
+/// work-library files. No-op without a toolchain config.
+fn ghdl_analyze_libraries(staged: &StagedBuild) -> Result<bool, String> {
+    if !staged.libraries.is_empty() {
+        require_tools(&["ghdl"])?;
+    }
+    for (name, files) in &staged.libraries {
+        let mut args = vec![
+            "-a".to_string(),
+            "--std=08".to_string(),
+            format!("--work={name}"),
+        ];
+        args.extend(files.iter().cloned());
+        if !run_tool("ghdl", &args, &staged.dir)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Elaborate the staged design with a real frontend: ghdl for VHDL,
@@ -163,6 +263,9 @@ pub fn run_check(staged: &StagedBuild) -> Result<bool, String> {
     match staged.language {
         Language::Vhdl => {
             require_tools(&["ghdl"])?;
+            if !ghdl_analyze_libraries(staged)? {
+                return Ok(false);
+            }
             let mut args = vec!["-a".to_string(), "--std=08".to_string()];
             args.extend(staged.sources.iter().cloned());
             if !run_tool("ghdl", &args, &staged.dir)? {
@@ -200,21 +303,94 @@ fn ghdl_prefix() -> Option<String> {
         .or_else(|| std::env::var("GHDL_PREFIX").ok())
 }
 
+/// Run a tool capturing stdout (stderr still streams to the user). Returns
+/// None when the tool exits nonzero.
+fn run_tool_capture<I, S>(name: &str, args: I, cwd: &Path) -> Result<Option<Vec<u8>>, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let out = Command::new(name)
+        .args(args)
+        .current_dir(cwd)
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(|e| format!("failed to run {name}: {e}"))?;
+    Ok(out.status.success().then_some(out.stdout))
+}
+
+/// Fallback VHDL synthesis frontend for when the ghdl-yosys-plugin chokes on
+/// a design (it has known gaps: out-port defaults, some ROM shapes): analyze
+/// with standalone ghdl, emit a Verilog netlist via `ghdl synth`, and leave
+/// it at `design_net.v` in the staging dir for yosys to read.
+fn ghdl_netlist_fallback(staged: &StagedBuild) -> Result<bool, String> {
+    require_tools(&["ghdl"])?;
+    let mut args = vec!["-a".to_string(), "--std=08".to_string()];
+    args.extend(staged.sources.iter().cloned());
+    if !run_tool("ghdl", &args, &staged.dir)? {
+        return Ok(false);
+    }
+    let mut args = vec!["synth".to_string(), "--std=08".to_string()];
+    if !staged.libraries.is_empty() {
+        args.push("-P.".to_string());
+    }
+    args.extend(staged.ghdl_synth_flags.iter().cloned());
+    args.push("--out=verilog".to_string());
+    args.push(staged.top_name.clone());
+    match run_tool_capture("ghdl", &args, &staged.dir)? {
+        Some(netlist) => {
+            std::fs::write(staged.dir.join("design_net.v"), netlist)
+                .map_err(|e| format!("cannot write design_net.v: {e}"))?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Argument string for the ghdl-yosys-plugin: std, library prefix, search
+/// path for pre-analyzed named libraries, then every work source.
+fn ghdl_plugin_flags(staged: &StagedBuild) -> String {
+    let mut flags = String::from("--std=08 ");
+    if let Some(p) = ghdl_prefix() {
+        flags.push_str(&format!("--PREFIX={p} "));
+    }
+    if !staged.libraries.is_empty() {
+        flags.push_str("-P. ");
+    }
+    for f in &staged.ghdl_synth_flags {
+        flags.push_str(f);
+        flags.push(' ');
+    }
+    flags.push_str(&staged.sources.join(" "));
+    flags
+}
+
 /// Generic yosys synthesis of the staged design; prints yosys output
 /// (warnings + `stat`) directly. Proves synthesizability, nothing more.
 pub fn run_synth(staged: &StagedBuild) -> Result<bool, String> {
     require_tools(&["yosys"])?;
     match staged.language {
         Language::Vhdl => {
-            let prefix = ghdl_prefix()
-                .map(|p| format!("--PREFIX={p} "))
-                .unwrap_or_default();
+            if !ghdl_analyze_libraries(staged)? {
+                return Ok(false);
+            }
             let script = format!(
-                "ghdl --std=08 {prefix}{} -e {}; synth; stat",
-                staged.sources.join(" "),
+                "ghdl {} -e {}; synth; stat",
+                ghdl_plugin_flags(staged),
                 staged.top_name
             );
-            run_tool("yosys", ["-m", "ghdl", "-p", &script], &staged.dir)
+            if run_tool("yosys", ["-m", "ghdl", "-p", &script], &staged.dir)? {
+                return Ok(true);
+            }
+            println!("note: ghdl-yosys-plugin failed, retrying via ghdl synth -> verilog netlist");
+            if !ghdl_netlist_fallback(staged)? {
+                return Ok(false);
+            }
+            let script = format!(
+                "read_verilog design_net.v; hierarchy -top {}; synth; stat",
+                staged.top_name
+            );
+            run_tool("yosys", ["-p", &script], &staged.dir)
         }
         Language::SystemVerilog => {
             let script = format!(
@@ -225,6 +401,153 @@ pub fn run_synth(staged: &StagedBuild) -> Result<bool, String> {
             run_tool("yosys", ["-p", &script], &staged.dir)
         }
     }
+}
+
+/// Full bitstream build for a specific board: yosys `synth_<family>` →
+/// nextpnr → pack, all inside the staging dir, then copy the bitstream to
+/// `out_bit`. nextpnr's timing report streams to the user directly.
+pub fn run_build(
+    staged: &StagedBuild,
+    board: &crate::board::Board,
+    out_bit: &Path,
+) -> Result<bool, String> {
+    let synth_cmd = match board.family {
+        FpgaFamily::Ice40 => "synth_ice40",
+        FpgaFamily::Ecp5 => "synth_ecp5",
+        FpgaFamily::Gowin => "synth_gowin",
+    };
+
+    require_tools(&["yosys"])?;
+    if matches!(staged.language, Language::Vhdl) && !ghdl_analyze_libraries(staged)? {
+        return Ok(false);
+    }
+    let script = match staged.language {
+        Language::Vhdl => format!(
+            "ghdl {} -e {}; {synth_cmd} -json design.json",
+            ghdl_plugin_flags(staged),
+            staged.top_name
+        ),
+        Language::SystemVerilog => format!(
+            "read_verilog -sv {}; {synth_cmd} -top {} -json design.json",
+            staged.sources.join(" "),
+            staged.top_name
+        ),
+    };
+    let yosys_args: Vec<&str> = match staged.language {
+        Language::Vhdl => vec!["-m", "ghdl", "-p", &script],
+        Language::SystemVerilog => vec!["-p", &script],
+    };
+    let mut synth_ok = run_tool("yosys", yosys_args, &staged.dir)?;
+    if !synth_ok && matches!(staged.language, Language::Vhdl) {
+        println!("note: ghdl-yosys-plugin failed, retrying via ghdl synth -> verilog netlist");
+        if ghdl_netlist_fallback(staged)? {
+            let script = format!(
+                "read_verilog design_net.v; hierarchy -top {}; {synth_cmd} -top {} -json design.json",
+                staged.top_name, staged.top_name
+            );
+            synth_ok = run_tool("yosys", ["-p", &script], &staged.dir)?;
+        }
+    }
+    if !synth_ok {
+        return Ok(false);
+    }
+
+    let constraints = board
+        .constraints
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", board.constraints.display()))?;
+    let constraints = constraints.to_string_lossy().into_owned();
+    let (pnr_tool, pnr_args, packed_input) = match board.family {
+        FpgaFamily::Ice40 => (
+            "nextpnr-ice40",
+            vec![
+                format!("--{}", board.device),
+                "--package".into(),
+                board.package.clone(),
+                "--json".into(),
+                "design.json".into(),
+                "--pcf".into(),
+                constraints,
+                "--asc".into(),
+                "pnr.asc".into(),
+            ],
+            "pnr.asc",
+        ),
+        FpgaFamily::Ecp5 => (
+            "nextpnr-ecp5",
+            vec![
+                format!("--{}", board.device),
+                "--package".into(),
+                board.package.clone(),
+                "--json".into(),
+                "design.json".into(),
+                "--lpf".into(),
+                constraints,
+                "--textcfg".into(),
+                "pnr.config".into(),
+            ],
+            "pnr.config",
+        ),
+        FpgaFamily::Gowin => (
+            "nextpnr-himbaechel",
+            vec![
+                "--device".into(),
+                board.device.clone(),
+                "--vopt".into(),
+                format!("cst={constraints}"),
+                "--json".into(),
+                "design.json".into(),
+                "--write".into(),
+                "pnr.json".into(),
+            ],
+            "pnr.json",
+        ),
+    };
+    require_tools(&[pnr_tool])?;
+    if !run_tool(pnr_tool, &pnr_args, &staged.dir)? {
+        return Ok(false);
+    }
+
+    let bit_name = "out.bit";
+    let (pack_tool, pack_args) = match board.family {
+        FpgaFamily::Ice40 => ("icepack", vec![packed_input.to_string(), bit_name.into()]),
+        FpgaFamily::Ecp5 => {
+            let mut a = board.pack_args.clone();
+            a.push(packed_input.to_string());
+            a.push(bit_name.into());
+            ("ecppack", a)
+        }
+        FpgaFamily::Gowin => {
+            let mut a = board.pack_args.clone();
+            a.extend(["-o".into(), bit_name.into(), packed_input.to_string()]);
+            ("gowin_pack", a)
+        }
+    };
+    require_tools(&[pack_tool])?;
+    if !run_tool(pack_tool, &pack_args, &staged.dir)? {
+        return Ok(false);
+    }
+
+    std::fs::copy(staged.dir.join(bit_name), out_bit)
+        .map_err(|e| format!("cannot write {}: {e}", out_bit.display()))?;
+    Ok(true)
+}
+
+/// Program a bitstream with openFPGALoader. SRAM load by default (volatile);
+/// `persistent` writes config flash.
+pub fn run_flash(
+    bitstream: &Path,
+    board: &crate::board::Board,
+    persistent: bool,
+) -> Result<bool, String> {
+    require_tools(&["openFPGALoader"])?;
+    let mut args: Vec<String> = board.prog_args.clone();
+    if persistent {
+        args.push("--write-flash".into());
+    }
+    args.push(bitstream.to_string_lossy().into_owned());
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    run_tool("openFPGALoader", &args, &cwd)
 }
 
 /// Simulate `<top>_tb` (generated on demand next to the project) with ghdl or
@@ -256,6 +579,9 @@ pub fn run_sim(
     match staged.language {
         Language::Vhdl => {
             require_tools(&["ghdl"])?;
+            if !ghdl_analyze_libraries(staged)? {
+                return Ok(None);
+            }
             let wave = project_dir.join(format!("{tb_name}.ghw"));
             let mut args = vec!["-a".to_string(), "--std=08".to_string()];
             args.extend(staged.sources.iter().cloned());
@@ -321,7 +647,8 @@ pub fn open_wave_viewer(wave: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum FpgaFamily {
     Ice40,
     Ecp5,
@@ -694,5 +1021,65 @@ mod tests {
         assert!(sc.makefile.contains("read_verilog -sv"));
         assert!(sc.makefile.contains("ecppack"));
         assert!(!sc.makefile.contains("ghdl"));
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+    use crate::codegen::GeneratedDesign;
+
+    #[test]
+    fn stage_honors_config_order_libraries_and_excludes() {
+        let tmp = std::env::temp_dir().join(format!("hdlc-cfgtest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("rtl")).unwrap();
+        for f in ["rtl/pkg.vhd", "rtl/leaf.vhd", "rtl/mod_a.vhd", "rtl/vendor.v"] {
+            std::fs::write(tmp.join(f), "-- test").unwrap();
+        }
+
+        let schematic = Schematic::new("top", Language::Vhdl);
+        let library = vec![
+            ModuleDef {
+                name: "mod_a".into(),
+                generics: vec![],
+                ports: vec![],
+                source_path: "rtl/mod_a.vhd".into(),
+                source_hash: 0,
+                dependencies: vec![],
+            },
+            ModuleDef {
+                name: "vendor".into(),
+                generics: vec![],
+                ports: vec![],
+                source_path: "rtl/vendor.v".into(),
+                source_hash: 0,
+                dependencies: vec![],
+            },
+        ];
+        let design = GeneratedDesign {
+            files: vec![],
+            top_filename: "top.vhd".into(),
+            top_code: "-- top".into(),
+        };
+        let config: ToolchainConfig = serde_json::from_str(
+            r#"{
+                "vhdl_libraries": [{"name": "loot", "files": ["rtl/pkg.vhd"]}],
+                "extra_sources": ["rtl/leaf.vhd"],
+                "exclude_sources": ["rtl/vendor.v"]
+            }"#,
+        )
+        .unwrap();
+
+        let staged = stage(&schematic, &library, &design, &config, &tmp).unwrap();
+        assert_eq!(staged.libraries, vec![("loot".to_string(), vec!["pkg.vhd".to_string()])]);
+        assert_eq!(staged.sources, vec!["leaf.vhd", "mod_a.vhd", "top.vhd"]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn missing_config_is_default() {
+        let cfg = ToolchainConfig::load_for(Path::new("/nonexistent/proj.hdlc")).unwrap();
+        assert!(cfg.vhdl_libraries.is_empty() && cfg.extra_sources.is_empty());
     }
 }

@@ -1,3 +1,4 @@
+pub mod board;
 pub mod codegen;
 pub mod groups;
 pub mod gui;

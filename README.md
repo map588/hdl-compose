@@ -50,7 +50,49 @@ hdl-compose check <project.hdlc>         # elaborate generated HDL (ghdl / veril
 hdl-compose synth <project.hdlc>         # generic yosys synth + stat (ghdl plugin for VHDL)
 hdl-compose sim <project.hdlc> [--wave]  # run <top>_tb via ghdl / iverilog; --wave opens surfer/gtkwave
 hdl-compose fpga <project.hdlc> --family ice40|ecp5|gowin  # emit Makefile + constraints skeleton
+hdl-compose build <project.hdlc> --board <x.board.json>    # bitstream: yosys → nextpnr → pack
+hdl-compose flash <project.hdlc> --board <x.board.json>    # program via openFPGALoader (SRAM; --flash = persistent)
 ```
+
+`build` / `flash` take a board definition file — plain JSON, kept wherever you
+like (e.g. next to the board's own repo):
+
+```json
+{
+  "name": "icepi-zero",
+  "family": "ecp5",
+  "device": "25k",
+  "package": "CABGA256",
+  "constraints": "icepi-zero/gateware/icepi-zero.lpf",
+  "pack_args": ["--compress"],
+  "prog_args": ["-b", "icepi-zero"]
+}
+```
+
+`constraints` (.lpf/.pcf/.cst) resolves relative to the board file;
+`pack_args` go to ecppack/icepack/gowin_pack, `prog_args` to openFPGALoader.
+Before place-and-route, `build` checks every top-level port against the
+constraints file and warns about ports the board has no pin for. An example
+definition for the [Icepi Zero](https://github.com/cheyao/icepi-zero) lives at
+`tests/hardware/icepi-zero.board.json`.
+
+`check`/`synth`/`sim`/`build` stage the project's HDL into a scratch dir. A
+project needing more than its module list can add `<name>.toolchain.json`
+next to `<name>.hdlc`:
+
+```json
+{
+  "vhdl_libraries": [{ "name": "loot", "files": ["rtl/loot/midi_lut_pkg.vhd"] }],
+  "extra_sources": ["rtl/registers/dflipflop.vhd", "sim/selectio_sim.vhd"],
+  "exclude_sources": ["rtl/audio/clocked_data_out.v"]
+}
+```
+
+`vhdl_libraries` are analyzed first under `--work=<name>` (packages, vendor
+stubs); `extra_sources` are leaf dependencies / sim-only implementations
+analyzed before the module sources; `exclude_sources` drops library entries
+that only make sense in a vendor flow. See
+`tests/projects/hdlc/synth_top.toolchain.json` for a real example.
 
 `sim` generates an editable `<top>_tb` skeleton next to the project on first
 run. `fpga` writes a `Makefile` (codegen → yosys → nextpnr → pack →

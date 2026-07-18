@@ -1,0 +1,9 @@
+{
+  "name": "icepi-zero",
+  "family": "ecp5",
+  "device": "25k",
+  "package": "CABGA256",
+  "constraints": "icepi-zero/gateware/icepi-zero.lpf",
+  "pack_args": ["--compress"],
+  "prog_args": ["-b", "icepi-zero"]
+}
