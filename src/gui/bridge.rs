@@ -475,6 +475,11 @@ pub mod qobject {
         #[qinvokable]
         fn pin_exposed_note(self: &AppState, key: &QString) -> QString;
 
+        /// For a collapsed group block's pin ("group.port"): the internal
+        /// pins behind the boundary port, e.g. "from u_pulse.count".
+        #[qinvokable]
+        fn pin_origin_note(self: &AppState, key: &QString) -> QString;
+
         #[qsignal]
         fn project_loaded(self: Pin<&mut AppState>);
 
@@ -686,6 +691,10 @@ pub struct AppStateRust {
     // Pins on nets exposed as a group boundary port, keyed "inst.port" →
     // human note. Rebuilt with every validate; innermost group wins.
     pin_exposed: HashMap<String, String>,
+    // Collapsed-group block ports, keyed "group.port" → "from <inside pins>"
+    // so the block's tooltips name the internal origin. Rebuilt with
+    // pin_exposed.
+    pin_origin: HashMap<String, String>,
     // Undo/redo: JSON snapshots of `schematic` taken before each mutation.
     // Capped at UNDO_STACK_LIMIT entries.
     undo_stack: Vec<String>,
@@ -1073,19 +1082,21 @@ impl qobject::AppState {
             let msg = d.message.clone();
             self.as_mut().record_error(msg);
         }
-        let (pin_issues, pin_exposed) = match self.as_ref().rust().schematic.as_ref() {
-            Some(s) => (
-                compute_pin_issues(s, &library, &diagnostics),
-                compute_pin_exposed(s, &library),
-            ),
-            None => (HashMap::new(), HashMap::new()),
-        };
+        let (pin_issues, (pin_exposed, pin_origin)) =
+            match self.as_ref().rust().schematic.as_ref() {
+                Some(s) => (
+                    compute_pin_issues(s, &library, &diagnostics),
+                    compute_pin_exposed(s, &library),
+                ),
+                None => (HashMap::new(), (HashMap::new(), HashMap::new())),
+            };
         {
             let m = self.as_mut().rust_mut().get_mut();
             m.library = library;
             m.diagnostics = diagnostics;
             m.pin_issues = pin_issues;
             m.pin_exposed = pin_exposed;
+            m.pin_origin = pin_origin;
         }
         self.as_mut().rebuild_wires();
         self.as_mut().library_changed();
@@ -3356,6 +3367,14 @@ impl qobject::AppState {
             .map(QString::from)
             .unwrap_or_default()
     }
+
+    pub fn pin_origin_note(&self, key: &QString) -> QString {
+        self.rust()
+            .pin_origin
+            .get(&key.to_string())
+            .map(QString::from)
+            .unwrap_or_default()
+    }
 }
 
 /// Map diagnostics onto canvas pin keys for inline highlighting. Instance-
@@ -3404,10 +3423,15 @@ fn compute_pin_issues(
     map
 }
 
-/// Map member pins onto the group boundary ports they're exposed through,
-/// so the canvas can show where a group's external signals originate.
-/// Groups processed shallow→deep; the innermost group's note wins.
-fn compute_pin_exposed(s: &Schematic, library: &[ModuleDef]) -> HashMap<String, String> {
+/// Map member pins onto the group boundary ports they're exposed through
+/// (for expanded-view badges) and, inversely, each group port onto the
+/// internal pins behind it (for collapsed-block tooltips). Groups processed
+/// shallow→deep; the innermost group's note wins on the pin side.
+fn compute_pin_exposed(
+    s: &Schematic,
+    library: &[ModuleDef],
+) -> (HashMap<String, String>, HashMap<String, String>) {
+    let mut origins: HashMap<String, Vec<String>> = HashMap::new();
     let mut out: HashMap<String, String> = HashMap::new();
     let mut groups: Vec<&Group> = s.groups.iter().collect();
     let by_name: HashMap<&str, &Group> = s.groups.iter().map(|g| (g.name.as_str(), g)).collect();
@@ -3435,10 +3459,27 @@ fn compute_pin_exposed(s: &Schematic, library: &[ModuleDef]) -> HashMap<String, 
                     pin.to_key(),
                     format!("exposed as '{port}' on group '{}'", g.name),
                 );
+                origins
+                    .entry(format!("{}.{port}", g.name))
+                    .or_default()
+                    .push(pin.to_key());
             }
         }
     }
-    out
+    let origin_notes = origins
+        .into_iter()
+        .map(|(k, mut pins)| {
+            pins.sort();
+            pins.dedup();
+            let shown = pins.len().min(3);
+            let mut note = format!("from {}", pins[..shown].join(", "));
+            if pins.len() > shown {
+                note.push_str(&format!(" (+{} more)", pins.len() - shown));
+            }
+            (k, note)
+        })
+        .collect();
+    (out, origin_notes)
 }
 
 fn direction_code(d: &Direction) -> i32 {

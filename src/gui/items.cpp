@@ -126,6 +126,11 @@ void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWi
             painter->drawEllipse(QPointF(tip_x, y), kPinShapeSize + 3, kPinShapeSize + 3);
             tip = base_tip + QStringLiteral("\n") + state->pin_issue_message(m_key);
         }
+        // Collapsed group block: tooltip names the internal origin pin(s).
+        QString origin = state->pin_origin_note(m_key);
+        if (!origin.isEmpty()) {
+            tip += QStringLiteral("\n") + origin;
+        }
         QString exposed = state->pin_exposed_note(m_key);
         if (!exposed.isEmpty()) {
             qreal bx = (m_side == PinSide::Left) ? tip_x - kPinShapeSize - 8

@@ -287,6 +287,20 @@ static QString default_open_dir() {
     return dir;
 }
 
+// Where file dialogs open: the loaded project's own directory beats the
+// configured default — "near my .hdlc" is almost always the right start.
+static QString dialog_start_dir(AppState *state) {
+    if (state) {
+        QString p = state->current_project_path();
+        if (!p.isEmpty()) {
+            QString dir = QFileInfo(p).absolutePath();
+            if (!dir.isEmpty() && QDir(dir).exists())
+                return dir;
+        }
+    }
+    return default_open_dir();
+}
+
 // --- Recent projects (QSettings-backed MRU list) -----------------------------
 
 constexpr int kMaxRecentProjects = 8;
@@ -1283,7 +1297,7 @@ class MainWindow : public QMainWindow {
         if (!maybeSaveDirty()) {
             return;
         }
-        QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Open Project"), default_open_dir(),
+        QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Open Project"), dialog_start_dir(m_state),
                                                     QStringLiteral("HDL Compose Projects (*.hdlc)"));
         if (path.isEmpty()) {
             return;
@@ -1321,7 +1335,7 @@ class MainWindow : public QMainWindow {
             return;
         }
         QStringList paths =
-            QFileDialog::getOpenFileNames(this, QStringLiteral("Add HDL Source(s)"), default_open_dir(),
+            QFileDialog::getOpenFileNames(this, QStringLiteral("Add HDL Source(s)"), dialog_start_dir(m_state),
                                           QStringLiteral("HDL sources (*.vhd *.vhdl *.v *.sv);;All files (*)"));
         if (paths.isEmpty()) {
             return;
@@ -1344,7 +1358,7 @@ class MainWindow : public QMainWindow {
     }
 
     bool saveAsProject() {
-        QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save Project As"), default_open_dir(),
+        QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save Project As"), dialog_start_dir(m_state),
                                                     QStringLiteral("HDL Compose Projects (*.hdlc)"));
         if (path.isEmpty()) {
             return false;
