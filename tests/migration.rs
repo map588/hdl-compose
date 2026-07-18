@@ -64,7 +64,7 @@ fn migrate_rewrites_at_current_version() {
 
     let json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(json["version"], 4, "save must stamp CURRENT_VERSION");
+    assert_eq!(json["version"], 5, "save must stamp CURRENT_VERSION");
 
     // Idempotent: a second migration produces byte-identical output.
     let first = std::fs::read_to_string(&path).unwrap();
@@ -114,5 +114,5 @@ fn v3_fixture_migrates_to_v4() {
     save_project(&schematic, &out).unwrap();
     let json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
-    assert_eq!(json["version"], 4);
+    assert_eq!(json["version"], 5);
 }

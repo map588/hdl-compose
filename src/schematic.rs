@@ -92,6 +92,7 @@ impl Schematic {
             instances: Vec::new(),
             aliases: HashMap::new(),
             library_paths: Vec::new(),
+            groups: Vec::new(),
         }
     }
 

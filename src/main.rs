@@ -444,7 +444,8 @@ fn cmd_validate(project_path: &std::path::Path) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let diagnostics = schematic.validate(&library);
+    let mut diagnostics = schematic.validate(&library);
+    diagnostics.extend(hdl_compose::groups::validate_groups(&schematic, &library));
 
     if diagnostics.is_empty() {
         println!("No errors.");
@@ -467,6 +468,85 @@ fn cmd_validate(project_path: &std::path::Path) -> ExitCode {
     }
 }
 
+/// Emit a grouped project: each group becomes its own source file next to
+/// the top module's output (`<group>.<ext>`); without `-o`, everything is
+/// concatenated to stdout with separator comments.
+fn codegen_hierarchical(
+    schematic: &Schematic,
+    library: &[hdl_compose::types::ModuleDef],
+    output: Option<&std::path::Path>,
+) -> ExitCode {
+    use hdl_compose::groups;
+
+    let group_diags = groups::validate_groups(schematic, library);
+    if group_diags.iter().any(|d| d.level == DiagnosticLevel::Error) {
+        for d in &group_diags {
+            eprintln!("error: {d}");
+        }
+        return ExitCode::from(2);
+    }
+
+    let plan = groups::expand_hierarchy(schematic, library);
+    let (ext, comment) = match schematic.language {
+        Language::Vhdl => ("vhd", "--"),
+        Language::SystemVerilog => ("sv", "//"),
+    };
+
+    let generate = |s: &Schematic| -> Result<String, hdl_compose::codegen::CodegenError> {
+        let diags = s.validate(&plan.library);
+        match s.language {
+            Language::Vhdl => codegen::vhdl::generate_vhdl(s, &plan.library, &diags),
+            Language::SystemVerilog => codegen::sv::generate_sv(s, &plan.library, &diags),
+        }
+    };
+
+    let mut files: Vec<(String, String)> = Vec::new();
+    for (name, gs) in &plan.groups {
+        match generate(gs) {
+            Ok(code) => files.push((format!("{name}.{ext}"), code)),
+            Err(e) => {
+                eprintln!("error: group '{name}': {e}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let top_code = match generate(&plan.top) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    match output {
+        Some(out_path) => {
+            let dir = out_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+            for (fname, code) in &files {
+                let p = dir.join(fname);
+                if let Err(e) = std::fs::write(&p, code) {
+                    eprintln!("error: {e}");
+                    return ExitCode::from(2);
+                }
+                println!("Written to {}", p.display());
+            }
+            if let Err(e) = std::fs::write(out_path, &top_code) {
+                eprintln!("error: {e}");
+                return ExitCode::from(2);
+            }
+            println!("Written to {}", out_path.display());
+        }
+        None => {
+            for (fname, code) in &files {
+                println!("{comment} ==== {fname} ====");
+                print!("{code}");
+            }
+            println!("{comment} ==== top ====");
+            print!("{top_code}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn cmd_codegen(project_path: &std::path::Path, output: Option<&std::path::Path>) -> ExitCode {
     let (schematic, load_warnings) = match load_project(project_path) {
         Ok(v) => v,
@@ -484,6 +564,11 @@ fn cmd_codegen(project_path: &std::path::Path, output: Option<&std::path::Path>)
             eprintln!("error: failed to parse {}: {}", path.display(), e);
         }
         return ExitCode::from(2);
+    }
+
+    // Grouped projects emit one file per group plus the top module.
+    if !schematic.groups.is_empty() {
+        return codegen_hierarchical(&schematic, &library, output);
     }
 
     let diagnostics = schematic.validate(&library);

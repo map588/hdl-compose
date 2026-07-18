@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::Schematic;
 
-const CURRENT_VERSION: u32 = 4;
+const CURRENT_VERSION: u32 = 5;
 const MIN_SUPPORTED_VERSION: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
@@ -274,10 +274,10 @@ mod tests {
         let (loaded, _warnings) = load_project(&path).unwrap();
         assert_eq!(loaded.instances.len(), 1);
         assert!(loaded.instances[0].consumer_slices.is_empty());
-        // Re-saves as v4.
+        // Re-saves at the current version.
         save_project(&loaded, &path).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("\"version\": 4"));
+        assert!(content.contains(&format!("\"version\": {CURRENT_VERSION}")));
     }
 
     #[test]

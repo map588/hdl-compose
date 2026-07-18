@@ -116,6 +116,26 @@ pub struct Instance {
     pub dirty: bool,
 }
 
+/// A named grouping of instances that codegen emits as its own
+/// entity/module. Nets crossing the group boundary become the group
+/// module's ports; the parent level instantiates the group as a single
+/// component. Groups nest via `parent`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Group {
+    pub name: String,
+    /// Instance names directly inside this group.
+    pub members: Vec<String>,
+    /// Enclosing group, for nesting. None = top level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// GUI state: collapsed groups render as a single block.
+    #[serde(default)]
+    pub collapsed: bool,
+    /// Canvas position of the collapsed block.
+    #[serde(default)]
+    pub position: (f32, f32),
+}
+
 /// Net identity key — used as the key in the alias map.
 /// A net is identified by its driver (always the non-sliced form).
 pub type NetId = NetRef;
@@ -240,6 +260,9 @@ pub struct Schematic {
     #[schemars(with = "HashMap<String, String>")]
     pub aliases: HashMap<NetId, String>,
     pub library_paths: Vec<PathBuf>,
+    /// Hierarchical groupings; absent in pre-v5 files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<Group>,
 }
 
 #[cfg(test)]

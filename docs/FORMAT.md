@@ -61,6 +61,24 @@ without a default value — tie it or connect it.
   (`"DIV": "CLK_DIV"`) is a reference and is never quoted — use this to
   forward top generics into instances.
 
+## Groups (hierarchy)
+
+`groups` is a list of named instance sets:
+
+```json
+"groups": [
+  { "name": "core", "members": ["u_pulse", "u_led"], "parent": null }
+]
+```
+
+Each group codegens to its own entity/module in its own file: nets crossing
+the group boundary become the group's ports (named after the parent top
+port where one is involved, else after the net), and the parent level
+instantiates the group as `u_<name>`. Top generics referenced inside a
+group travel with it automatically. Groups nest via `parent`; children
+emit first. With `-o <top file>`, group files are written next to it as
+`<group>.<ext>`.
+
 ## CLI exit codes
 
 `hdl-compose validate` exits 0 when clean, 1 with warnings only, 2 with
