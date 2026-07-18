@@ -270,6 +270,21 @@ class CanvasView : public QGraphicsView {
 
     void drawBackground(QPainter *painter, const QRectF &rect) override {
         QGraphicsView::drawBackground(painter, rect);
+        // Subtle dot grid on the wire-lane pitch — enough texture to judge
+        // alignment, dim enough to disappear behind content. Skipped when
+        // zoomed out far enough that dots would blur into noise.
+        if (m_zoom >= 0.55) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(255, 255, 255, 14));
+            const qreal step = 4.0 * kWireLaneStep;
+            qreal x0 = std::floor(rect.left() / step) * step;
+            qreal y0 = std::floor(rect.top() / step) * step;
+            for (qreal x = x0; x <= rect.right(); x += step) {
+                for (qreal y = y0; y <= rect.bottom(); y += step) {
+                    painter->drawRect(QRectF(x - 0.75, y - 0.75, 1.5, 1.5));
+                }
+            }
+        }
         // Faint guides at column centers so the snap target is visible.
         QPen pen(QColor(255, 255, 255, 10));
         pen.setCosmetic(true);

@@ -184,7 +184,10 @@ class WireItem : public QGraphicsPathItem {
     }
 
     void setAppState(AppState *s) { m_state = s; }
-    void setWidth(int w) { m_width = w; }
+    void setWidth(int w) {
+        m_width = w;
+        refreshPen();
+    }
     void setCanvasLayer(CanvasLayer *layer) { m_layer = layer; }
 
     // Net hover: brighter, thicker pen on every wire of the hovered net so
@@ -193,10 +196,18 @@ class WireItem : public QGraphicsPathItem {
         if (m_net_hover == hover)
             return;
         m_net_hover = hover;
+        refreshPen();
+    }
+
+    // Base weight scales with bus width so buses read heavier than scalars.
+    void refreshPen() {
         QColor c = colorForNet(m_source_key);
-        if (hover)
+        qreal base = m_width > 1 ? 2.2 : 1.5;
+        if (m_net_hover) {
             c = QColor::fromHsv(c.hue(), 160, 255);
-        QPen p(c, hover ? 2.5 : 1.5);
+            base += 1.0;
+        }
+        QPen p(c, base);
         p.setCosmetic(true);
         setPen(p);
     }
