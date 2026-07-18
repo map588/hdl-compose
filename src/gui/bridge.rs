@@ -382,6 +382,11 @@ pub mod qobject {
             alias: &QString,
         ) -> bool;
 
+        /// Current alias for a net key (empty if none). Slice suffixes are
+        /// normalized away, matching set_alias.
+        #[qinvokable]
+        fn net_alias(self: &AppState, net_key: &QString) -> QString;
+
         #[qinvokable]
         fn library_module_count(self: &AppState) -> i32;
 
@@ -408,6 +413,10 @@ pub mod qobject {
 
         #[qinvokable]
         fn validation_warning_count(self: &AppState) -> i32;
+
+        /// All current diagnostics, formatted, errors first.
+        #[qinvokable]
+        fn validation_messages(self: &AppState) -> Vec<String>;
 
         #[qsignal]
         fn project_loaded(self: Pin<&mut AppState>);
@@ -748,6 +757,16 @@ impl qobject::AppState {
         if self.as_ref().rust().batch_depth == 0 {
             self.as_mut().push_snapshot();
         }
+    }
+
+    /// Existence pre-check so mutators can refuse BEFORE snapshotting —
+    /// a snapshot taken for an op that then fails leaves a junk undo entry
+    /// (Cmd+Z appears to do nothing).
+    fn has_instance(&self, name: &str) -> bool {
+        self.rust()
+            .schematic
+            .as_ref()
+            .is_some_and(|s| s.instances.iter().any(|i| i.name == name))
     }
 
     /// Post-mutation bookkeeping. Inside a batch just mark changed —
@@ -1238,6 +1257,11 @@ impl qobject::AppState {
     pub fn add_instance(mut self: Pin<&mut Self>, name: &QString, module: &QString) -> bool {
         let name_s = name.to_string();
         let module_s = module.to_string();
+        if self.has_instance(&name_s) {
+            self.as_mut()
+                .record_error(format!("duplicate instance name: {name_s}"));
+            return false;
+        }
         // Batch-aware so drop (add + initial position) is one undo step.
         // Signals still fire immediately — the canvas must create the item
         // before the position arrives.
@@ -1271,6 +1295,17 @@ impl qobject::AppState {
     ) -> bool {
         let old_s = old_name.to_string();
         let new_s = new_name.to_string();
+        if !self.has_instance(&old_s) {
+            self.as_mut()
+                .record_error(format!("instance not found: {old_s}"));
+            return false;
+        }
+        if self.has_instance(&new_s) {
+            self.as_mut()
+                .record_error(format!("duplicate instance name: {new_s}"));
+            return false;
+        }
+        self.as_mut().push_snapshot();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s.rename_instance(&old_s, &new_s),
             None => {
@@ -1410,6 +1445,11 @@ impl qobject::AppState {
 
     pub fn remove_instance(mut self: Pin<&mut Self>, name: &QString) -> bool {
         let name_s = name.to_string();
+        if !self.has_instance(&name_s) {
+            self.as_mut()
+                .record_error(format!("instance not found: {name_s}"));
+            return false;
+        }
         self.as_mut().push_snapshot();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s.remove_instance(&name_s).map(|_| ()),
@@ -1705,6 +1745,11 @@ impl qobject::AppState {
         let inst = instance.to_string();
         let port_s = port.to_string();
         let parsed = parse_net_rhs(&rhs.to_string());
+        if !self.has_instance(&inst) {
+            self.as_mut()
+                .record_error(format!("instance not found: {inst}"));
+            return false;
+        }
         self.as_mut().snapshot_for_mutation();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s.set_port_map_entry(&inst, port_s.clone(), parsed).map(|_| ()),
@@ -1752,6 +1797,11 @@ impl qobject::AppState {
         } else {
             NetRef::InstancePortSlice(di, dp.clone(), slice)
         };
+        if !self.has_instance(&inst) {
+            self.as_mut()
+                .record_error(format!("instance not found: {inst}"));
+            return false;
+        }
         self.as_mut().snapshot_for_mutation();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s
@@ -1791,24 +1841,21 @@ impl qobject::AppState {
                 low: slice_low,
             }
         };
-        self.as_mut().snapshot_for_mutation();
-        let updated = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
-            Some(s) => match s.instances.iter_mut().find(|i| i.name == inst) {
-                Some(i) => {
-                    i.consumer_slices.insert(port_s.clone(), slice);
-                    true
-                }
-                None => false,
-            },
-            None => {
-                self.as_mut().record_error("no project loaded");
-                return false;
-            }
-        };
-        if !updated {
+        if !self.has_instance(&inst) {
             self.as_mut()
                 .record_error(format!("instance not found: {inst}"));
             return false;
+        }
+        self.as_mut().snapshot_for_mutation();
+        if let Some(i) = self
+            .as_mut()
+            .rust_mut()
+            .get_mut()
+            .schematic
+            .as_mut()
+            .and_then(|s| s.get_instance_mut(&inst))
+        {
+            i.consumer_slices.insert(port_s.clone(), slice);
         }
         self.as_mut().finish_mutation(Some((&inst, &port_s)));
         true
@@ -1821,17 +1868,29 @@ impl qobject::AppState {
     ) -> bool {
         let inst = instance.to_string();
         let port_s = port.to_string();
-        self.as_mut().snapshot_for_mutation();
-        let removed = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
-            Some(s) => match s.instances.iter_mut().find(|i| i.name == inst) {
-                Some(i) => i.consumer_slices.remove(&port_s).is_some(),
-                None => false,
-            },
-            None => return false,
-        };
-        if removed {
-            self.as_mut().finish_mutation(Some((&inst, &port_s)));
+        // Refuse before snapshotting: clearing a slice that isn't set must
+        // not eat an undo step.
+        let has_slice = self
+            .rust()
+            .schematic
+            .as_ref()
+            .and_then(|s| s.instances.iter().find(|i| i.name == inst))
+            .is_some_and(|i| i.consumer_slices.contains_key(&port_s));
+        if !has_slice {
+            return true;
         }
+        self.as_mut().snapshot_for_mutation();
+        if let Some(i) = self
+            .as_mut()
+            .rust_mut()
+            .get_mut()
+            .schematic
+            .as_mut()
+            .and_then(|s| s.get_instance_mut(&inst))
+        {
+            i.consumer_slices.remove(&port_s);
+        }
+        self.as_mut().finish_mutation(Some((&inst, &port_s)));
         true
     }
 
@@ -1857,11 +1916,11 @@ impl qobject::AppState {
     ) -> QString {
         let inst_s = instance.to_string();
         let port_s = port.to_string();
-        self.as_mut().push_snapshot();
 
         // Phase 1: gather the source port def and compute the resolved top-port
         // name. Collect any error as a string first so we release the immutable
-        // borrow on `self` before calling `record_error`.
+        // borrow on `self` before calling `record_error`. Snapshot only after
+        // this succeeds so a refused promote leaves no junk undo entry.
         let lookup: Result<(PortDef, String, bool), String> = {
             let this = self.as_ref();
             let r = this.rust();
@@ -1893,6 +1952,7 @@ impl qobject::AppState {
                 return QString::default();
             }
         };
+        self.as_mut().push_snapshot();
 
         // Phase 2: mutate.
         {
@@ -2015,26 +2075,20 @@ impl qobject::AppState {
             self.as_mut().record_error("no ports specified for bundle");
             return false;
         }
+        if !self.has_instance(&inst_s) {
+            self.as_mut()
+                .record_error(format!("instance not found: {inst_s}"));
+            return false;
+        }
         self.as_mut().push_snapshot();
+        if let Some(inst) = self
+            .as_mut()
+            .rust_mut()
+            .get_mut()
+            .schematic
+            .as_mut()
+            .and_then(|s| s.get_instance_mut(&inst_s))
         {
-            let s = match self
-                .as_mut()
-                .rust_mut()
-                .get_mut()
-                .schematic
-                .as_mut()
-            {
-                Some(s) => s,
-                None => {
-                    self.as_mut().record_error("no project loaded");
-                    return false;
-                }
-            };
-            let Some(inst) = s.instances.iter_mut().find(|i| i.name == inst_s) else {
-                self.as_mut()
-                    .record_error(format!("instance not found: {inst_s}"));
-                return false;
-            };
             inst.manual_bundles.insert(name_s, ports);
         }
         self.as_mut().rust_mut().get_mut().dirty = true;
@@ -2051,28 +2105,27 @@ impl qobject::AppState {
     ) -> bool {
         let inst_s = instance.to_string();
         let name_s = name.to_string();
+        // Refuse before snapshotting so a miss leaves no junk undo entry.
+        let exists = self
+            .rust()
+            .schematic
+            .as_ref()
+            .and_then(|s| s.instances.iter().find(|i| i.name == inst_s))
+            .is_some_and(|i| i.manual_bundles.contains_key(&name_s));
+        if !exists {
+            self.as_mut()
+                .record_error(format!("bundle not found: {inst_s}/{name_s}"));
+            return false;
+        }
         self.as_mut().push_snapshot();
-        let removed = {
-            let s = match self
-                .as_mut()
-                .rust_mut()
-                .get_mut()
-                .schematic
-                .as_mut()
-            {
-                Some(s) => s,
-                None => {
-                    self.as_mut().record_error("no project loaded");
-                    return false;
-                }
-            };
-            let Some(inst) = s.instances.iter_mut().find(|i| i.name == inst_s) else {
-                self.as_mut()
-                    .record_error(format!("instance not found: {inst_s}"));
-                return false;
-            };
-            inst.manual_bundles.remove(&name_s).is_some()
-        };
+        let removed = self
+            .as_mut()
+            .rust_mut()
+            .get_mut()
+            .schematic
+            .as_mut()
+            .and_then(|s| s.get_instance_mut(&inst_s))
+            .is_some_and(|inst| inst.manual_bundles.remove(&name_s).is_some());
         if removed {
             self.as_mut().rust_mut().get_mut().dirty = true;
             self.as_mut().set_dirty(true);
@@ -2144,10 +2197,10 @@ impl qobject::AppState {
     /// guess at wiring on drop" rule.
     pub fn match_by_name(mut self: Pin<&mut Self>, instance: &QString) -> i32 {
         let inst_s = instance.to_string();
-        self.as_mut().push_snapshot();
 
         // Phase 1: gather the set of (port_name, top_port_name) pairs to wire,
-        // reading from the current schematic + library. All reads.
+        // reading from the current schematic + library. All reads; snapshot
+        // waits until we know there is something to apply.
         let pairs: Vec<(String, String)> = {
             let this = self.as_ref();
             let r = this.rust();
@@ -2180,6 +2233,7 @@ impl qobject::AppState {
         if pairs.is_empty() {
             return 0;
         }
+        self.as_mut().push_snapshot();
 
         // Phase 2: apply all at once.
         let mut count: i32 = 0;
@@ -2468,6 +2522,11 @@ impl qobject::AppState {
     ) -> bool {
         let inst = instance.to_string();
         let port_s = port.to_string();
+        if !self.has_instance(&inst) {
+            self.as_mut()
+                .record_error(format!("instance not found: {inst}"));
+            return false;
+        }
         self.as_mut().snapshot_for_mutation();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s.set_port_map_entry(&inst, port_s.clone(), None).map(|_| ()),
@@ -2497,6 +2556,11 @@ impl qobject::AppState {
         let inst = instance.to_string();
         let gen_s = generic.to_string();
         let expr_s = expr.to_string();
+        if !self.has_instance(&inst) {
+            self.as_mut()
+                .record_error(format!("instance not found: {inst}"));
+            return false;
+        }
         self.as_mut().snapshot_for_mutation();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s.set_generic_map_entry(&inst, gen_s, expr_s).map(|_| ()),
@@ -2643,7 +2707,9 @@ impl qobject::AppState {
     ) -> bool {
         let key_s = net_key.to_string();
         let alias_s = alias.to_string();
-        let Some(net_ref) = NetRef::from_key(&key_s) else {
+        // Wire keys off the canvas can carry a slice suffix, but aliases are
+        // keyed by the base driver net (signal_name looks up base()).
+        let Some(net_ref) = NetRef::from_key(&key_s).map(|n| n.base()) else {
             self.as_mut().record_error("invalid net key");
             return false;
         };
@@ -2667,6 +2733,19 @@ impl qobject::AppState {
         self.as_mut().set_dirty(true);
         self.as_mut().alias_changed(QString::from(&key_s));
         true
+    }
+
+    pub fn net_alias(&self, net_key: &QString) -> QString {
+        let key_s = net_key.to_string();
+        let Some(net_ref) = NetRef::from_key(&key_s).map(|n| n.base()) else {
+            return QString::default();
+        };
+        self.rust()
+            .schematic
+            .as_ref()
+            .and_then(|s| s.aliases.get(&net_ref))
+            .map(QString::from)
+            .unwrap_or_default()
     }
 
     // --- Library ---
@@ -2755,6 +2834,17 @@ impl qobject::AppState {
             .iter()
             .filter(|d| !d.is_error())
             .count() as i32
+    }
+
+    pub fn validation_messages(&self) -> Vec<String> {
+        let diags = &self.rust().diagnostics;
+        let mut out: Vec<String> = diags
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.to_string())
+            .collect();
+        out.extend(diags.iter().filter(|d| !d.is_error()).map(|d| d.to_string()));
+        out
     }
 }
 

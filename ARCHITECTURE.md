@@ -242,8 +242,9 @@ unconnected. Header comment:
 
 `Schematic.language` switches between `codegen::vhdl::generate_vhdl` and
 `codegen::sv::generate_sv`. SV uses `wire`/`assign`/`logic`/`[h:l]`/`#(.PARAM(v))`
-shapes. The mini editor stays VHDL-shaped regardless — punctuation
-(commas/semicolons) is uniform in the editor regardless of project language.
+shapes. The per-instance mini editor renders language-shaped buffers
+(`name => value` for VHDL projects, `.name(value)` for SV) and the parser
+accepts both forms without a language hint.
 
 ## Project file format
 
@@ -338,8 +339,9 @@ src/
     items.h/.cpp       — scene items: InstanceItem, PortPinItem,
                           BundlePinItem, TopPortItem, WireItem, junction
                           dots; NetKey codec
-    editor_buffer.h/.cpp — mini-editor buffer: render/parse/commit,
-                          completion context, inline error highlighter
+    editor.rs          — mini-editor buffer grammar: render/parse/commit,
+                          completion context (pure Rust; the QPlainTextEdit
+                          mechanics + inline highlighter live in app.cpp)
     canvas_constants.h — layout/routing constants (column pitch, pin
                           geometry, zoom bounds)
     mod.rs             — gui::run() entry

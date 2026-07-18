@@ -1,6 +1,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QCompleter>
 #include <QDialog>
@@ -284,6 +285,26 @@ static QString default_open_dir() {
         dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     }
     return dir;
+}
+
+// --- Recent projects (QSettings-backed MRU list) -----------------------------
+
+constexpr int kMaxRecentProjects = 8;
+
+QStringList recent_projects() {
+    QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+    return settings.value(QStringLiteral("recent_projects")).toStringList();
+}
+
+void add_recent_project(const QString &path) {
+    QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+    QStringList list = settings.value(QStringLiteral("recent_projects")).toStringList();
+    list.removeAll(path);
+    list.prepend(path);
+    while (list.size() > kMaxRecentProjects) {
+        list.removeLast();
+    }
+    settings.setValue(QStringLiteral("recent_projects"), list);
 }
 
 static QString sh_quote(const QString &s) {
@@ -651,6 +672,7 @@ class MainWindow : public QMainWindow {
         m_canvas_layer = std::make_unique<CanvasLayer>(scene, m_state);
         canvas->setWireTool(m_canvas_layer->wireTool());
         canvas->setCanvasLayer(m_canvas_layer.get());
+        m_canvas = canvas;
 
         // Mini editor panel: toggle row above the buffer. Toggle flips
         // between per-instance editing (default) and top-level entity
@@ -698,6 +720,8 @@ class MainWindow : public QMainWindow {
         newAct->setShortcut(QKeySequence::New);
         auto *openAct = fileMenu->addAction(QStringLiteral("&Open..."));
         openAct->setShortcut(QKeySequence::Open);
+        m_recent_menu = fileMenu->addMenu(QStringLiteral("Open &Recent"));
+        connect(m_recent_menu, &QMenu::aboutToShow, this, &MainWindow::rebuildRecentMenu);
         auto *addSourceAct = fileMenu->addAction(QStringLiteral("&Add HDL Source..."));
         addSourceAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
         auto *reloadAct = fileMenu->addAction(QStringLiteral("&Refresh Library"));
@@ -724,11 +748,24 @@ class MainWindow : public QMainWindow {
         m_redo_act = editMenu->addAction(QStringLiteral("&Redo"));
         m_redo_act->setShortcut(QKeySequence::Redo);
         editMenu->addSeparator();
+        auto *renameInstAct = editMenu->addAction(QStringLiteral("Re&name Instance..."));
+        auto *deleteInstAct = editMenu->addAction(QStringLiteral("&Delete Instance"));
+        editMenu->addSeparator();
         auto *matchByNameAct = editMenu->addAction(QStringLiteral("&Match Ports by Name"));
         matchByNameAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_M));
         matchByNameAct->setToolTip(
             QStringLiteral("Connect unmapped ports on the selected instance to matching top-level "
                            "ports (same name + direction + type)"));
+
+        // View menu — canvas navigation + diagnostics.
+        auto *viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
+        auto *zoomFitAct = viewMenu->addAction(QStringLiteral("Zoom to &Fit"));
+        zoomFitAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
+        auto *issuesAct = viewMenu->addAction(QStringLiteral("Validation &Issues..."));
+
+        // Help menu — the canvas is gesture-heavy; give the gestures a home.
+        auto *helpMenu = menuBar()->addMenu(QStringLiteral("&Help"));
+        auto *controlsAct = helpMenu->addAction(QStringLiteral("&Canvas Controls"));
 
         // Toolbar shares QAction pointers with the File menu so shortcuts,
         // enable-state, and icons stay in sync.
@@ -764,9 +801,18 @@ class MainWindow : public QMainWindow {
         connect(reloadAct, &QAction::triggered, this, &MainWindow::onReloadLibrary);
         connect(copySourcesAct, &QAction::triggered, this, &MainWindow::onCopySources);
         connect(prefsAct, &QAction::triggered, this, [this]() { prompt_preferences(this); });
-        connect(exitAct, &QAction::triggered, qApp, &QApplication::quit);
+        // close() (not qApp->quit()) so closeEvent can catch unsaved changes.
+        connect(exitAct, &QAction::triggered, this, &MainWindow::close);
         connect(matchByNameAct, &QAction::triggered, this, &MainWindow::onMatchByName);
+        connect(renameInstAct, &QAction::triggered, this, &MainWindow::onRenameSelected);
+        connect(deleteInstAct, &QAction::triggered, this, &MainWindow::onDeleteSelected);
         connect(showEditorAct, &QAction::triggered, this, &MainWindow::showEditorPanel);
+        connect(zoomFitAct, &QAction::triggered, this, [this]() {
+            if (m_canvas)
+                m_canvas->zoomToFit();
+        });
+        connect(issuesAct, &QAction::triggered, this, &MainWindow::onShowValidationIssues);
+        connect(controlsAct, &QAction::triggered, this, &MainWindow::onShowCanvasControls);
         connect(m_undo_act, &QAction::triggered, this, [this]() {
             if (m_state->undo()) {
                 statusBar()->showMessage(QStringLiteral("Undo"), 1500);
@@ -1126,30 +1172,81 @@ class MainWindow : public QMainWindow {
         QAction *deleteAct = menu.addAction(QStringLiteral("Delete"));
         QAction *chosen = menu.exec(m_tree_view->viewport()->mapToGlobal(pos));
         if (chosen == renameAct) {
-            bool ok = false;
-            QString new_name = QInputDialog::getText(this, QStringLiteral("Rename Instance"),
-                                                     QStringLiteral("New name:"), QLineEdit::Normal, inst_name, &ok);
-            if (!ok || new_name.trimmed().isEmpty() || new_name == inst_name) {
-                return;
-            }
-            if (!m_state->rename_instance(inst_name, new_name.trimmed())) {
-                show_state_error(this, m_state, QStringLiteral("Rename"));
-            }
+            promptRenameInstance(inst_name);
         } else if (chosen == deleteAct) {
-            auto btn = QMessageBox::question(this, QStringLiteral("Delete Instance"),
-                                             QStringLiteral("Delete instance %1?").arg(inst_name));
-            if (btn != QMessageBox::Yes) {
-                return;
-            }
-            if (!m_state->remove_instance(inst_name)) {
-                show_state_error(this, m_state, QStringLiteral("Delete"));
-            }
+            promptDeleteInstance(inst_name);
         }
+    }
+
+    void promptRenameInstance(const QString &inst_name) {
+        bool ok = false;
+        QString new_name = QInputDialog::getText(this, QStringLiteral("Rename Instance"),
+                                                 QStringLiteral("New name:"), QLineEdit::Normal, inst_name, &ok);
+        if (!ok || new_name.trimmed().isEmpty() || new_name == inst_name) {
+            return;
+        }
+        if (!m_state->rename_instance(inst_name, new_name.trimmed())) {
+            show_state_error(this, m_state, QStringLiteral("Rename"));
+        }
+    }
+
+    void promptDeleteInstance(const QString &inst_name) {
+        auto btn = QMessageBox::question(this, QStringLiteral("Delete Instance"),
+                                         QStringLiteral("Delete instance %1?").arg(inst_name));
+        if (btn != QMessageBox::Yes) {
+            return;
+        }
+        if (!m_state->remove_instance(inst_name)) {
+            show_state_error(this, m_state, QStringLiteral("Delete"));
+        }
+    }
+
+    // Edit-menu variants act on the current selection.
+    void onRenameSelected() {
+        QString sel = m_state->selected_instance();
+        if (sel.isEmpty()) {
+            statusBar()->showMessage(QStringLiteral("Rename: select an instance first"), 3000);
+            return;
+        }
+        promptRenameInstance(sel);
+    }
+
+    void onDeleteSelected() {
+        QString sel = m_state->selected_instance();
+        if (sel.isEmpty()) {
+            statusBar()->showMessage(QStringLiteral("Delete: select an instance first"), 3000);
+            return;
+        }
+        promptDeleteInstance(sel);
     }
 
     // --- File / project actions ---------------------------------------------
 
+    /// Offer to save unsaved changes before a project-discarding action.
+    /// Returns true to proceed, false if the user cancelled (or a chosen
+    /// save failed).
+    bool maybeSaveDirty() {
+        if (!m_state->has_project() || !m_state->getDirty()) {
+            return true;
+        }
+        auto btn = QMessageBox::warning(
+            this, QStringLiteral("Unsaved Changes"),
+            QStringLiteral("Project \"%1\" has unsaved changes.").arg(m_state->getProject_name()),
+            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+        if (btn == QMessageBox::Cancel) {
+            return false;
+        }
+        if (btn == QMessageBox::Discard) {
+            return true;
+        }
+        // Save: fall back to Save As when there's no path yet (or save failed).
+        return m_state->save_project() || saveAsProject();
+    }
+
     void onNewProject() {
+        if (!maybeSaveDirty()) {
+            return;
+        }
         QString name;
         int lang = 0;
         if (!prompt_new_project(this, name, lang)) {
@@ -1162,17 +1259,48 @@ class MainWindow : public QMainWindow {
         statusBar()->showMessage(QStringLiteral("Created new project: %1").arg(name), 3000);
     }
 
+    void openProjectPath(const QString &path) {
+        if (!m_state->open_project(path)) {
+            show_state_error(this, m_state, QStringLiteral("Open Project"));
+            return;
+        }
+        add_recent_project(path);
+        statusBar()->showMessage(QStringLiteral("Opened %1").arg(path), 3000);
+    }
+
     void onOpenProject() {
+        if (!maybeSaveDirty()) {
+            return;
+        }
         QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Open Project"), default_open_dir(),
                                                     QStringLiteral("HDL Compose Projects (*.hdlc)"));
         if (path.isEmpty()) {
             return;
         }
-        if (!m_state->open_project(path)) {
-            show_state_error(this, m_state, QStringLiteral("Open Project"));
+        openProjectPath(path);
+    }
+
+    void rebuildRecentMenu() {
+        m_recent_menu->clear();
+        const QStringList recents = recent_projects();
+        for (const QString &p : recents) {
+            QAction *act = m_recent_menu->addAction(p);
+            connect(act, &QAction::triggered, this, [this, p]() {
+                if (maybeSaveDirty()) {
+                    openProjectPath(p);
+                }
+            });
+        }
+        if (recents.isEmpty()) {
+            m_recent_menu->addAction(QStringLiteral("(empty)"))->setEnabled(false);
             return;
         }
-        statusBar()->showMessage(QStringLiteral("Opened %1").arg(path), 3000);
+        m_recent_menu->addSeparator();
+        QAction *clearAct = m_recent_menu->addAction(QStringLiteral("Clear Menu"));
+        connect(clearAct, &QAction::triggered, this, []() {
+            QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+            settings.remove(QStringLiteral("recent_projects"));
+        });
     }
 
     void onAddSource() {
@@ -1217,6 +1345,7 @@ class MainWindow : public QMainWindow {
             show_state_error(this, m_state, QStringLiteral("Save Project"));
             return false;
         }
+        add_recent_project(path);
         statusBar()->showMessage(QStringLiteral("Saved to %1").arg(path), 3000);
         return true;
     }
@@ -1372,6 +1501,70 @@ class MainWindow : public QMainWindow {
         m_root_splitter->setSizes({sidebar_w, canvas_w, editor_w});
     }
 
+    // Full diagnostic text behind the status bar's error/warning counts.
+    void onShowValidationIssues() {
+        rust::Vec<rust::String> msgs = m_state->validation_messages();
+        QString text;
+        for (const rust::String &m : msgs) {
+            text += QString::fromUtf8(m.data(), static_cast<int>(m.size()));
+            text += QChar('\n');
+        }
+        if (text.isEmpty()) {
+            text = QStringLiteral("No validation issues.");
+        }
+        QDialog dlg(this);
+        dlg.setWindowTitle(QStringLiteral("Validation Issues"));
+        auto *view = new QPlainTextEdit(&dlg);
+        view->setReadOnly(true);
+        view->setPlainText(text);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+        auto *layout = new QVBoxLayout(&dlg);
+        layout->addWidget(view);
+        layout->addWidget(buttons);
+        dlg.resize(640, 360);
+        dlg.exec();
+    }
+
+    void onShowCanvasControls() {
+        QMessageBox box(this);
+        box.setWindowTitle(QStringLiteral("Canvas Controls"));
+        box.setTextFormat(Qt::RichText);
+        box.setText(QStringLiteral(
+            "<b>Wiring</b><br>"
+            "Click a pin, then click another pin — or drag pin to pin. Esc cancels.<br>"
+            "Input-to-input wiring joins loads on one net (tool stays armed for fan-out).<br>"
+            "Hover a wire to highlight its whole net.<br><br>"
+            "<b>Right-click</b><br>"
+            "Wire &rarr; set net alias (signal name in generated HDL).<br>"
+            "Pin &rarr; promote to top-level port, connect slice, clear connection.<br>"
+            "Module body &rarr; group ports into an interface bundle.<br>"
+            "Bundle row: click folds/unfolds, right-click ungroups.<br><br>"
+            "<b>Selection &amp; delete</b><br>"
+            "Click selects; empty-canvas click deselects. Shift+click a top port to multi-select.<br>"
+            "Delete / Backspace removes selected wires, instances, and top ports.<br><br>"
+            "<b>Navigation</b><br>"
+            "Middle-drag pans. Ctrl+scroll zooms. F or Ctrl+0 zooms to fit.<br>"
+            "Drag a top port vertically to reposition it along the edge.<br><br>"
+            "<b>Mini editor</b> (right pane)<br>"
+            "Ctrl+Return or focus-out commits. Tab accepts a completion.<br>"
+            "\"Top Level\" button edits the top entity's ports and generics.<br><br>"
+            "<b>Sidebar</b><br>"
+            "Drag a library module onto the canvas to place it.<br>"
+            "Double-click an instance to open its source (File &rarr; Preferences sets the editor)."));
+        box.exec();
+    }
+
+  protected:
+    void closeEvent(QCloseEvent *event) override {
+        if (maybeSaveDirty()) {
+            event->accept();
+        } else {
+            event->ignore();
+        }
+    }
+
+  private:
     // --- Members --------------------------------------------------------
 
     AppState *m_state = nullptr;
@@ -1380,6 +1573,8 @@ class MainWindow : public QMainWindow {
     QStandardItemModel *m_tree_model = nullptr;
     QTreeView *m_tree_view = nullptr;
     QStringListModel *m_library_model = nullptr;
+    CanvasView *m_canvas = nullptr;
+    QMenu *m_recent_menu = nullptr;
     std::unique_ptr<CanvasLayer> m_canvas_layer;
     QPushButton *m_editor_top_level_btn = nullptr;
     QPlainTextEdit *m_editor = nullptr;

@@ -277,14 +277,15 @@ class WireItem : public QGraphicsPathItem {
         if (!m_state)
             return;
         QMenu menu;
-        QAction *renameAct = menu.addAction(QStringLiteral("Rename..."));
+        QAction *aliasAct = menu.addAction(QStringLiteral("Set Net Alias..."));
         QAction *chosen = menu.exec(event->screenPos());
-        if (chosen == renameAct) {
+        if (chosen == aliasAct) {
             bool ok = false;
-            QString current;
+            QString current = m_state->net_alias(m_source_key);
             QString text =
-                QInputDialog::getText(nullptr, QStringLiteral("Rename Wire"),
-                                      QStringLiteral("Alias for %1:").arg(m_source_key),
+                QInputDialog::getText(nullptr, QStringLiteral("Net Alias"),
+                                      QStringLiteral("Signal name for %1 (empty resets to default):")
+                                          .arg(m_source_key),
                                       QLineEdit::Normal, current, &ok);
             if (ok) {
                 m_state->set_alias(m_source_key, text.trimmed());

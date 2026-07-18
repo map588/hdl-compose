@@ -32,10 +32,22 @@ struct ProjectFile {
 }
 
 /// Save a schematic to a .hdlc project file.
+///
+/// Library paths under the project's directory are written relative to it so
+/// the project stays portable (load_project resolves them back against the
+/// project dir). Paths elsewhere stay absolute.
 pub fn save_project(schematic: &Schematic, path: &Path) -> Result<(), ProjectError> {
+    let mut schematic = schematic.clone();
+    if let Some(project_dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        for lib_path in schematic.library_paths.iter_mut() {
+            if let Ok(rel) = lib_path.strip_prefix(project_dir) {
+                *lib_path = rel.to_path_buf();
+            }
+        }
+    }
     let project = ProjectFile {
         version: CURRENT_VERSION,
-        schematic: schematic.clone(),
+        schematic,
     };
     let json = serde_json::to_string_pretty(&project)?;
     std::fs::write(path, json)?;
@@ -284,6 +296,30 @@ mod tests {
             cs,
             crate::types::SliceExpr::Range { high: 3, low: 0 }
         ));
+    }
+
+    #[test]
+    fn library_paths_saved_relative_to_project_dir() {
+        let dir = TempDir::new().unwrap();
+        let lib = dir.path().join("rtl").join("counter.vhd");
+        std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
+        std::fs::copy("tests/fixtures/counter.vhd", &lib).unwrap();
+
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.library_paths.push(lib.clone());
+        let path = dir.path().join("proj.hdlc");
+        save_project(&s, &path).unwrap();
+
+        // On disk: relative, so the project dir can move wholesale.
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("rtl/counter.vhd") && !content.contains(dir.path().to_str().unwrap()),
+            "{content}"
+        );
+        // On load: resolved back to absolute.
+        let (loaded, warnings) = load_project(&path).unwrap();
+        assert_eq!(loaded.library_paths, vec![lib]);
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]

@@ -332,12 +332,20 @@ pub fn split_consumer_slice(lhs: &str) -> Option<(String, Option<(i32, i32)>)> {
 }
 
 /// Detect the completion context from the text left of the cursor.
+/// Handles both binding shapes: VHDL `name => <cursor>` and SV
+/// `.name(<cursor>`.
 pub fn completion_context(line_before_cursor: &str) -> CompletionCtx {
     let none = CompletionCtx { kind: 0, prefix: String::new(), instance: String::new() };
-    let Some(arrow) = line_before_cursor.find("=>") else {
+    let rhs = if let Some(arrow) = line_before_cursor.find("=>") {
+        &line_before_cursor[arrow + 2..]
+    } else if line_before_cursor.trim_start().starts_with('.')
+        && let Some(open) = line_before_cursor.rfind('(')
+        && !line_before_cursor[open..].contains(')')
+    {
+        &line_before_cursor[open + 1..]
+    } else {
         return none;
     };
-    let rhs = &line_before_cursor[arrow + 2..];
     // Trailing run of identifier chars (letters, digits, _, .).
     let mut start = 0;
     for (i, c) in rhs.char_indices() {
@@ -494,6 +502,19 @@ mod tests {
         assert_eq!(completion_context("no arrow here").kind, 0);
         let c = completion_context("  x => u_cnt");
         assert_eq!((c.kind, c.prefix.as_str()), (1, "u_cnt"));
+    }
+
+    #[test]
+    fn completion_contexts_sv_form() {
+        assert_eq!(completion_context("  .clk(").kind, 1);
+        let c = completion_context("  .din(u_a.do");
+        assert_eq!((c.kind, c.instance.as_str(), c.prefix.as_str()), (2, "u_a", "do"));
+        let c = completion_context("  .clk(clk_s");
+        assert_eq!((c.kind, c.prefix.as_str()), (1, "clk_s"));
+        // A closed binding on the same line offers nothing.
+        assert_eq!(completion_context("  .clk(clk_sys),").kind, 0);
+        // Bare paren without the SV `.name(` shape offers nothing.
+        assert_eq!(completion_context("  foo (").kind, 0);
     }
 
     #[test]
