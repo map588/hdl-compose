@@ -42,6 +42,11 @@
 #include <QMouseEvent>
 #include <QObject>
 #include <QPainter>
+#include <QCoreApplication>
+#include <QDockWidget>
+#include <QFontDatabase>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPalette>
 #include <QPen>
 #include <QPixmap>
@@ -781,6 +786,29 @@ class MainWindow : public QMainWindow {
             "Re-place all blocks: drivers left of loads, wire length minimized, runs straightened"));
         auto *issuesAct = viewMenu->addAction(QStringLiteral("Validation &Issues..."));
 
+        // Toolchain menu — drives the CLI subcommands (check/synth/build/
+        // flash) against the saved project via QProcess; output streams into
+        // the Tool Output dock. Requires oss-cad-suite on PATH.
+        auto *toolMenu = menuBar()->addMenu(QStringLiteral("&Toolchain"));
+        auto *checkAct = toolMenu->addAction(QStringLiteral("&Check (elaborate)"));
+        checkAct->setToolTip(QStringLiteral("Elaborate the generated HDL with ghdl / verilator"));
+        auto *synthAct = toolMenu->addAction(QStringLiteral("&Synth (yosys)"));
+        synthAct->setToolTip(QStringLiteral("Generic yosys synthesis + cell stats"));
+        toolMenu->addSeparator();
+        auto *buildAct = toolMenu->addAction(QStringLiteral("&Build Bitstream"));
+        auto *flashAct = toolMenu->addAction(QStringLiteral("&Flash (SRAM)"));
+        auto *flashPersistAct = toolMenu->addAction(QStringLiteral("Flash (&Persistent)"));
+        toolMenu->addSeparator();
+        m_select_board_act = toolMenu->addAction(QStringLiteral("Select Boar&d..."));
+        m_toolchain_actions = {checkAct, synthAct, buildAct, flashAct, flashPersistAct};
+        connect(checkAct, &QAction::triggered, this, [this]() { runTool(QStringLiteral("check"), {}, false); });
+        connect(synthAct, &QAction::triggered, this, [this]() { runTool(QStringLiteral("synth"), {}, false); });
+        connect(buildAct, &QAction::triggered, this, [this]() { runTool(QStringLiteral("build"), {}, true); });
+        connect(flashAct, &QAction::triggered, this, [this]() { runTool(QStringLiteral("flash"), {}, true); });
+        connect(flashPersistAct, &QAction::triggered, this,
+                [this]() { runTool(QStringLiteral("flash"), {QStringLiteral("--flash")}, true); });
+        connect(m_select_board_act, &QAction::triggered, this, [this]() { selectBoard(); });
+
         // Help menu — the canvas is gesture-heavy; give the gestures a home.
         auto *helpMenu = menuBar()->addMenu(QStringLiteral("&Help"));
         auto *controlsAct = helpMenu->addAction(QStringLiteral("&Canvas Controls"));
@@ -922,6 +950,16 @@ class MainWindow : public QMainWindow {
         connect(m_state, &AppState::project_nameChanged, this,
                 [this]() { update_window_title(this, m_state); });
         connect(m_state, &AppState::dirtyChanged, this, [this]() { update_window_title(this, m_state); });
+        // Board selection is per project path — refresh the menu label when
+        // the loaded project changes.
+        connect(m_state, &AppState::project_loaded, this, [this]() {
+            const QString board = boardForProject();
+            if (board.isEmpty()) {
+                m_select_board_act->setText(QStringLiteral("Select Boar&d..."));
+            } else {
+                updateBoardActionText(board);
+            }
+        });
         connect(m_state, &AppState::validation_changed, this, [this]() {
             int errs = m_state->validation_error_count();
             int warns = m_state->validation_warning_count();
@@ -1614,6 +1652,161 @@ class MainWindow : public QMainWindow {
         }
     }
 
+    // --- Toolchain runner -----------------------------------------------
+
+    // Bottom dock the tool runs stream into. Created on first use.
+    void ensureToolDock() {
+        if (m_tool_dock) {
+            return;
+        }
+        m_tool_dock = new QDockWidget(QStringLiteral("Tool Output"), this);
+        m_tool_dock->setObjectName(QStringLiteral("ToolOutputDock"));
+        auto *body = new QWidget(m_tool_dock);
+        auto *layout = new QVBoxLayout(body);
+        layout->setContentsMargins(4, 4, 4, 4);
+        m_tool_output = new QPlainTextEdit(body);
+        m_tool_output->setReadOnly(true);
+        m_tool_output->setMaximumBlockCount(20000);
+        QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+        m_tool_output->setFont(mono);
+        auto *buttons = new QHBoxLayout();
+        m_tool_cancel = new QPushButton(QStringLiteral("Cancel"), body);
+        m_tool_cancel->setEnabled(false);
+        auto *clear = new QPushButton(QStringLiteral("Clear"), body);
+        buttons->addWidget(m_tool_cancel);
+        buttons->addWidget(clear);
+        buttons->addStretch();
+        layout->addLayout(buttons);
+        layout->addWidget(m_tool_output);
+        m_tool_dock->setWidget(body);
+        addDockWidget(Qt::BottomDockWidgetArea, m_tool_dock);
+
+        m_tool_proc = new QProcess(this);
+        m_tool_proc->setProcessChannelMode(QProcess::MergedChannels);
+        connect(m_tool_proc, &QProcess::readyReadStandardOutput, this, [this]() {
+            m_tool_output->moveCursor(QTextCursor::End);
+            m_tool_output->insertPlainText(QString::fromLocal8Bit(m_tool_proc->readAllStandardOutput()));
+            m_tool_output->moveCursor(QTextCursor::End);
+        });
+        connect(m_tool_proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+                [this](int code, QProcess::ExitStatus st) {
+                    const bool ok = st == QProcess::NormalExit && code == 0;
+                    m_tool_output->appendPlainText(
+                        ok ? QStringLiteral("== %1 passed ==").arg(m_tool_verb)
+                           : QStringLiteral("== %1 failed (exit %2) ==").arg(m_tool_verb).arg(code));
+                    statusBar()->showMessage(ok ? QStringLiteral("%1 passed").arg(m_tool_verb)
+                                                : QStringLiteral("%1 failed — see Tool Output").arg(m_tool_verb),
+                                             8000);
+                    m_tool_cancel->setEnabled(false);
+                    for (QAction *a : std::as_const(m_toolchain_actions)) {
+                        a->setEnabled(true);
+                    }
+                });
+        connect(m_tool_cancel, &QPushButton::clicked, this, [this]() { m_tool_proc->kill(); });
+        connect(clear, &QPushButton::clicked, this, [this]() { m_tool_output->clear(); });
+    }
+
+    // The CLI reads the project from disk — an unsaved buffer would silently
+    // run against stale state, so force a save first.
+    bool ensureSavedForTool() {
+        if (!m_state->has_project()) {
+            QMessageBox::information(this, QStringLiteral("Toolchain"), QStringLiteral("No project loaded."));
+            return false;
+        }
+        if (m_state->current_project_path().isEmpty()) {
+            QMessageBox::information(this, QStringLiteral("Toolchain"),
+                                     QStringLiteral("Save the project first — toolchain runs read it from disk."));
+            return saveAsProject();
+        }
+        if (m_state->getDirty()) {
+            auto btn = QMessageBox::question(
+                this, QStringLiteral("Toolchain"),
+                QStringLiteral("The project has unsaved changes. Save and run?"),
+                QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Save);
+            if (btn != QMessageBox::Save) {
+                return false;
+            }
+            return m_state->save_project() || saveAsProject();
+        }
+        return true;
+    }
+
+    static QString board_settings_key(const QString &project_path) {
+        return QStringLiteral("toolchain/board/%1").arg(project_path);
+    }
+
+    QString boardForProject() {
+        QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+        return settings.value(board_settings_key(m_state->current_project_path())).toString();
+    }
+
+    // Pick a *.board.json for this project; remembered in QSettings.
+    // Returns the chosen path, empty on cancel.
+    QString selectBoard() {
+        QString start = boardForProject();
+        if (start.isEmpty()) {
+            start = dialog_start_dir(m_state);
+        }
+        QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Select Board Definition"), start,
+                                                    QStringLiteral("Board definition (*.board.json)"));
+        if (path.isEmpty()) {
+            return {};
+        }
+        QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+        settings.setValue(board_settings_key(m_state->current_project_path()), path);
+        updateBoardActionText(path);
+        return path;
+    }
+
+    void updateBoardActionText(const QString &board_path) {
+        QString label = QFileInfo(board_path).fileName();
+        QFile f(board_path);
+        if (f.open(QIODevice::ReadOnly)) {
+            const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+            const QString name = doc.object().value(QStringLiteral("name")).toString();
+            if (!name.isEmpty()) {
+                label = name;
+            }
+        }
+        m_select_board_act->setText(QStringLiteral("Select Boar&d... (%1)").arg(label));
+    }
+
+    // Run one CLI subcommand against the saved project; one run at a time.
+    void runTool(const QString &verb, const QStringList &extra_args, bool needs_board) {
+        if (!ensureSavedForTool()) {
+            return;
+        }
+        ensureToolDock();
+        if (m_tool_proc->state() != QProcess::NotRunning) {
+            statusBar()->showMessage(QStringLiteral("A toolchain run is already in progress"), 4000);
+            return;
+        }
+        const QString project = m_state->current_project_path();
+        QStringList args{verb, project};
+        if (needs_board) {
+            QString board = boardForProject();
+            if (board.isEmpty()) {
+                board = selectBoard();
+            }
+            if (board.isEmpty()) {
+                return;
+            }
+            args << QStringLiteral("--board") << board;
+        }
+        args << extra_args;
+
+        m_tool_verb = verb;
+        m_tool_dock->show();
+        m_tool_output->appendPlainText(
+            QStringLiteral("== hdl-compose %1 ==").arg(args.join(QStringLiteral(" "))));
+        for (QAction *a : std::as_const(m_toolchain_actions)) {
+            a->setEnabled(false);
+        }
+        m_tool_cancel->setEnabled(true);
+        m_tool_proc->setWorkingDirectory(QFileInfo(project).absolutePath());
+        m_tool_proc->start(QCoreApplication::applicationFilePath(), args);
+    }
+
   private:
     // --- Members --------------------------------------------------------
 
@@ -1635,6 +1828,15 @@ class MainWindow : public QMainWindow {
     QFileSystemWatcher *m_fs_watcher = nullptr;
     QAction *m_undo_act = nullptr;
     QAction *m_redo_act = nullptr;
+
+    // Toolchain runner state.
+    QDockWidget *m_tool_dock = nullptr;
+    QPlainTextEdit *m_tool_output = nullptr;
+    QPushButton *m_tool_cancel = nullptr;
+    QProcess *m_tool_proc = nullptr;
+    QList<QAction *> m_toolchain_actions;
+    QAction *m_select_board_act = nullptr;
+    QString m_tool_verb;
 
     // Mini-editor state.
     bool m_top_level_mode = false;
