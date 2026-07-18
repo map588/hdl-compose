@@ -38,7 +38,8 @@ QPointF PortPinItem::tipScenePos() const {
 QRectF PortPinItem::boundingRect() const {
     qreal pw = m_parent ? m_parent->width() : kMinInstanceWidth;
     qreal w = pw + 40;
-    qreal x = (m_side == PinSide::Left) ? -kPinShapeSize - 4 : 0;
+    // Left margin covers the exposed-signal diamond drawn outside the tip.
+    qreal x = (m_side == PinSide::Left) ? -kPinShapeSize - 14 : 0;
     // The armed-state halo (drawn at the pin tip with radius kPinShapeSize+2)
     // extends a few pixels above/below the slot rect. Without this Y margin,
     // those pixels fall outside boundingRect and Qt skips repainting them on
@@ -111,7 +112,9 @@ void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWi
     painter->setRenderHint(QPainter::Antialiasing);
 
     // Validation ring: red = error (multi-driver etc.), amber = warning
-    // (undriven / unconnected input). Tooltip carries the message.
+    // (undriven / unconnected input). Tooltip carries the message. Pins on
+    // nets exposed as a group boundary port get a small violet diamond just
+    // outside the tip — that's where the group's external signal originates.
     if (AppState *state = m_parent ? m_parent->state() : nullptr) {
         int issue = state->pin_issue_level(m_key);
         QString base_tip = m_name + format_width(m_width);
@@ -122,6 +125,18 @@ void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWi
             painter->setPen(ring);
             painter->drawEllipse(QPointF(tip_x, y), kPinShapeSize + 3, kPinShapeSize + 3);
             tip = base_tip + QStringLiteral("\n") + state->pin_issue_message(m_key);
+        }
+        QString exposed = state->pin_exposed_note(m_key);
+        if (!exposed.isEmpty()) {
+            qreal bx = (m_side == PinSide::Left) ? tip_x - kPinShapeSize - 8
+                                                 : tip_x + kPinShapeSize + 8;
+            QPolygonF diamond;
+            diamond << QPointF(bx - 4, y) << QPointF(bx, y - 4) << QPointF(bx + 4, y)
+                    << QPointF(bx, y + 4);
+            painter->setPen(QPen(QColor(120, 90, 170), 1.0));
+            painter->setBrush(QColor(196, 160, 255));
+            painter->drawPolygon(diamond);
+            tip += QStringLiteral("\n") + exposed;
         }
         if (tip != toolTip())
             setToolTip(tip);
@@ -547,18 +562,15 @@ void InstanceItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *opti
                       Qt::AlignLeft | Qt::AlignVCenter,
                       painter->fontMetrics().elidedText(m_module, Qt::ElideRight, static_cast<int>(r.width()) - 24));
 
-    // Group affordances: collapsed group blocks get an accent border and a
-    // '+' (expand); members of an expanded group get a '−' (collapse).
-    bool group_block = m_state->is_group_block(m_name);
-    QString grp = group_block ? m_name : m_state->instance_group(m_name);
-    if (!grp.isEmpty()) {
-        if (group_block) {
-            QPen accent(QColor(170, 140, 220), selected ? 2.0 : 1.4);
-            accent.setCosmetic(true);
-            painter->setPen(accent);
-            painter->setBrush(Qt::NoBrush);
-            painter->drawRoundedRect(r.adjusted(2, 2, -2, -2), 6, 6);
-        }
+    // Collapsed group blocks: accent border + '+' button to expand back
+    // into the hull view. (Expanded groups draw their '−' on the hull.)
+    if (m_state->is_group_block(m_name)) {
+        QPen accent(QColor(170, 140, 220), selected ? 2.0 : 1.4);
+        accent.setCosmetic(true);
+        painter->setPen(accent);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawRoundedRect(r.adjusted(2, 2, -2, -2), 6, 6);
+
         QRectF g = toggleGlyphRect();
         painter->setPen(QPen(QColor(150, 154, 162), 1.0));
         painter->setBrush(QColor(52, 56, 62));
@@ -567,8 +579,7 @@ void InstanceItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *opti
         QFont gf = painter->font();
         gf.setBold(true);
         painter->setFont(gf);
-        painter->drawText(g, Qt::AlignCenter,
-                          group_block ? QStringLiteral("+") : QStringLiteral("−"));
+        painter->drawText(g, Qt::AlignCenter, QStringLiteral("+"));
     }
 }
 

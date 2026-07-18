@@ -453,6 +453,28 @@ pub mod qobject {
         #[qsignal]
         fn groups_changed(self: Pin<&mut AppState>);
 
+        /// Number of groups (collapsed or not).
+        #[qinvokable]
+        fn group_count(self: &AppState) -> i32;
+
+        #[qinvokable]
+        fn group_name(self: &AppState, index: i32) -> QString;
+
+        /// True when the group renders as an expanded hull (not collapsed,
+        /// no collapsed ancestor).
+        #[qinvokable]
+        fn group_expanded_visible(self: &AppState, index: i32) -> bool;
+
+        /// Newline-joined canvas item names inside an expanded group's hull:
+        /// visible member instances plus collapsed descendant group blocks.
+        #[qinvokable]
+        fn group_hull_items(self: &AppState, name: &QString) -> QString;
+
+        /// Non-empty when this pin is on a net exposed as a group boundary
+        /// port: "exposed as '<port>' on group '<group>'".
+        #[qinvokable]
+        fn pin_exposed_note(self: &AppState, key: &QString) -> QString;
+
         #[qsignal]
         fn project_loaded(self: Pin<&mut AppState>);
 
@@ -661,6 +683,9 @@ pub struct AppStateRust {
     // ("inst.port" / "top:name"): (severity 1|2, message). Rebuilt with
     // diagnostics on every validate.
     pin_issues: HashMap<String, (i32, String)>,
+    // Pins on nets exposed as a group boundary port, keyed "inst.port" →
+    // human note. Rebuilt with every validate; innermost group wins.
+    pin_exposed: HashMap<String, String>,
     // Undo/redo: JSON snapshots of `schematic` taken before each mutation.
     // Capped at UNDO_STACK_LIMIT entries.
     undo_stack: Vec<String>,
@@ -1048,15 +1073,19 @@ impl qobject::AppState {
             let msg = d.message.clone();
             self.as_mut().record_error(msg);
         }
-        let pin_issues = match self.as_ref().rust().schematic.as_ref() {
-            Some(s) => compute_pin_issues(s, &library, &diagnostics),
-            None => HashMap::new(),
+        let (pin_issues, pin_exposed) = match self.as_ref().rust().schematic.as_ref() {
+            Some(s) => (
+                compute_pin_issues(s, &library, &diagnostics),
+                compute_pin_exposed(s, &library),
+            ),
+            None => (HashMap::new(), HashMap::new()),
         };
         {
             let m = self.as_mut().rust_mut().get_mut();
             m.library = library;
             m.diagnostics = diagnostics;
             m.pin_issues = pin_issues;
+            m.pin_exposed = pin_exposed;
         }
         self.as_mut().rebuild_wires();
         self.as_mut().library_changed();
@@ -3265,6 +3294,68 @@ impl qobject::AppState {
         self.as_mut().groups_changed();
         true
     }
+
+    pub fn group_count(&self) -> i32 {
+        self.rust()
+            .schematic
+            .as_ref()
+            .map(|s| s.groups.len() as i32)
+            .unwrap_or(0)
+    }
+
+    pub fn group_name(&self, index: i32) -> QString {
+        self.rust()
+            .schematic
+            .as_ref()
+            .and_then(|s| s.groups.get(index as usize))
+            .map(|g| QString::from(&g.name))
+            .unwrap_or_default()
+    }
+
+    pub fn group_expanded_visible(&self, index: i32) -> bool {
+        self.rust()
+            .schematic
+            .as_ref()
+            .and_then(|s| {
+                s.groups
+                    .get(index as usize)
+                    .map(|g| !g.collapsed && !group_hidden_by_ancestor(s, g))
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn group_hull_items(&self, name: &QString) -> QString {
+        let gname = name.to_string();
+        let Some(s) = self.rust().schematic.as_ref() else {
+            return QString::default();
+        };
+        // Visible content of an expanded group: direct member instances,
+        // plus each child group either as its collapsed block or (expanded)
+        // its own visible content.
+        fn collect(s: &Schematic, gname: &str, out: &mut Vec<String>) {
+            if let Some(g) = s.groups.iter().find(|g| g.name == gname) {
+                out.extend(g.members.iter().cloned());
+            }
+            for child in s.groups.iter().filter(|c| c.parent.as_deref() == Some(gname)) {
+                if child.collapsed {
+                    out.push(child.name.clone());
+                } else {
+                    collect(s, &child.name, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        collect(s, &gname, &mut out);
+        QString::from(&out.join("\n"))
+    }
+
+    pub fn pin_exposed_note(&self, key: &QString) -> QString {
+        self.rust()
+            .pin_exposed
+            .get(&key.to_string())
+            .map(QString::from)
+            .unwrap_or_default()
+    }
 }
 
 /// Map diagnostics onto canvas pin keys for inline highlighting. Instance-
@@ -3311,6 +3402,43 @@ fn compute_pin_issues(
         }
     }
     map
+}
+
+/// Map member pins onto the group boundary ports they're exposed through,
+/// so the canvas can show where a group's external signals originate.
+/// Groups processed shallow→deep; the innermost group's note wins.
+fn compute_pin_exposed(s: &Schematic, library: &[ModuleDef]) -> HashMap<String, String> {
+    let mut out: HashMap<String, String> = HashMap::new();
+    let mut groups: Vec<&Group> = s.groups.iter().collect();
+    let by_name: HashMap<&str, &Group> = s.groups.iter().map(|g| (g.name.as_str(), g)).collect();
+    let depth = |g: &Group| {
+        let mut d = 0;
+        let mut cur = g;
+        while let Some(p) = cur.parent.as_deref().and_then(|p| by_name.get(p)) {
+            d += 1;
+            cur = p;
+            if d > 64 {
+                break;
+            }
+        }
+        d
+    };
+    groups.sort_by_key(|g| depth(g));
+    for g in groups {
+        let members = crate::groups::transitive_members(s, &g.name);
+        let (_, port_for_pin) = crate::groups::derive_boundary(s, library, &members);
+        for (pin, port) in port_for_pin {
+            if let NetRef::InstancePort(i, _) = &pin
+                && members.contains(i)
+            {
+                out.insert(
+                    pin.to_key(),
+                    format!("exposed as '{port}' on group '{}'", g.name),
+                );
+            }
+        }
+    }
+    out
 }
 
 fn direction_code(d: &Direction) -> i32 {

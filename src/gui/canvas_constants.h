@@ -37,4 +37,8 @@ inline constexpr double kZoomStep = 1.15;
 // --- Top-level ports ---
 inline constexpr int kTopPortSpacing = 44;
 
+// --- Group hulls ---
+inline constexpr int kGroupHullPadding = 26;
+inline constexpr int kGroupHullTitleHeight = 24;
+
 } // namespace hdlc

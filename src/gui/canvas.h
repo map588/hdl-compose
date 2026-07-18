@@ -317,12 +317,13 @@ class CanvasLayer {
 
     void rebuild() {
         m_wire_tool.cancel();
-        m_scene->clear();
+        m_scene->clear(); // deletes hull items too — just drop the pointers
         m_items.clear();
         m_top_ports.clear();
         m_top_port_by_name.clear();
         m_wires.clear();
         m_junction_dots.clear();
+        m_group_hulls.clear();
         int count = m_state->instance_count();
         for (int i = 0; i < count; ++i) {
             QString name = m_state->instance_name(i);
@@ -341,10 +342,44 @@ class CanvasLayer {
         }
         rebuildTopPorts();
         rebuildWires();
+        rebuildGroupHulls();
         QString sel = m_state->selected_instance();
         if (!sel.isEmpty()) {
             refreshSelectionHighlight();
         }
+    }
+
+    // One hull per expanded visible group, wrapping its member items.
+    void rebuildGroupHulls() {
+        for (auto *h : m_group_hulls) {
+            m_scene->removeItem(h);
+            delete h;
+        }
+        m_group_hulls.clear();
+        const int n = m_state->group_count();
+        for (int i = 0; i < n; ++i) {
+            if (!m_state->group_expanded_visible(i))
+                continue;
+            QString gname = m_state->group_name(i);
+            QVector<QGraphicsItem *> members;
+            const QStringList names =
+                m_state->group_hull_items(gname).split(QChar('\n'), Qt::SkipEmptyParts);
+            for (const QString &nm : names) {
+                if (auto *item = m_items.value(nm, nullptr))
+                    members << item;
+            }
+            if (members.isEmpty())
+                continue;
+            auto *hull = new GroupHullItem(m_state, gname);
+            m_scene->addItem(hull);
+            hull->setMembers(members);
+            m_group_hulls.push_back(hull);
+        }
+    }
+
+    void updateGroupHulls() {
+        for (auto *h : m_group_hulls)
+            h->refreshGeometry();
     }
 
     int instanceColumn(InstanceItem *item) const {
@@ -712,6 +747,7 @@ class CanvasLayer {
         }
         rebuildTopPorts();
         replanWires();
+        updateGroupHulls();
     }
 
     void onInstanceColumnChanged() {
@@ -721,6 +757,7 @@ class CanvasLayer {
             rebuildTopPorts();
         }
         replanWires();
+        updateGroupHulls();
     }
 
     // Per-entry change: only the named instance's pins can be affected
@@ -760,6 +797,7 @@ class CanvasLayer {
     QHash<QString, qreal> m_top_port_y; // user-dragged Y overrides, by port name
     std::vector<WireItem *> m_wires;
     std::vector<JunctionDotItem *> m_junction_dots;
+    QVector<GroupHullItem *> m_group_hulls;
     std::pair<int, int> m_last_col_bounds = {0, 0};
     QString m_hovered_net;
     WireTool m_wire_tool;

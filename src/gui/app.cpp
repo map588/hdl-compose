@@ -778,12 +778,14 @@ class MainWindow : public QMainWindow {
         addSourceAct->setIconText(QStringLiteral("Add HDL"));
         reloadAct->setIconText(QStringLiteral("Refresh"));
         saveAct->setIconText(QStringLiteral("Save"));
+        generateAct->setIconText(QStringLiteral("Generate HDL"));
         fileToolbar->addAction(newAct);
         fileToolbar->addAction(openAct);
         fileToolbar->addAction(addSourceAct);
         fileToolbar->addAction(reloadAct);
         fileToolbar->addSeparator();
         fileToolbar->addAction(saveAct);
+        fileToolbar->addAction(generateAct);
 
         // Force-reopen the editor panel if the user dragged it narrow.
         auto *showEditorAct = new QAction(QStringLiteral("Show Editor"), this);

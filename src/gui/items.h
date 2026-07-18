@@ -397,6 +397,104 @@ class BundlePinItem : public PortPinItem {
     bool m_dragged = false;
 };
 
+// --- GroupHullItem ----------------------------------------------------------
+
+class InstanceItem;
+
+/// The "bubble" around an expanded group's members: translucent hull with
+/// the group name and a '−' button that collapses the group down to its
+/// boundary ports. Purely visual — only the title strip and button take
+/// clicks, so wiring and rubber-band selection work through the interior.
+class GroupHullItem : public QGraphicsItem {
+  public:
+    GroupHullItem(AppState *state, const QString &group)
+        : m_state(state), m_group(group) {
+        setZValue(-5); // behind wires, instances, pins
+        setAcceptedMouseButtons(Qt::LeftButton);
+    }
+
+    void setMembers(const QVector<QGraphicsItem *> &members) {
+        m_members = members;
+        refreshGeometry();
+    }
+
+    // Track member drags: hull follows the union of member rects.
+    void refreshGeometry() {
+        QRectF r;
+        for (auto *it : m_members) {
+            QRectF b = it->sceneBoundingRect();
+            r = r.isNull() ? b : r.united(b);
+        }
+        r.adjust(-kGroupHullPadding, -kGroupHullPadding - kGroupHullTitleHeight,
+                 kGroupHullPadding, kGroupHullPadding);
+        if (r != m_rect) {
+            prepareGeometryChange();
+            m_rect = r;
+        }
+        update();
+    }
+
+    QRectF boundingRect() const override { return m_rect; }
+
+    QPainterPath shape() const override {
+        QPainterPath p;
+        p.addRect(glyphRect());
+        p.addRect(titleRect());
+        return p;
+    }
+
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override {
+        if (m_rect.isNull())
+            return;
+        painter->setRenderHint(QPainter::Antialiasing);
+        QPen border(QColor(170, 140, 220, 140), 1.4, Qt::DashLine);
+        border.setCosmetic(true);
+        painter->setPen(border);
+        painter->setBrush(QColor(170, 140, 220, 14));
+        painter->drawRoundedRect(m_rect, 10, 10);
+
+        QFont f = painter->font();
+        f.setBold(true);
+        painter->setFont(f);
+        painter->setPen(QColor(196, 176, 232));
+        painter->drawText(titleRect(), Qt::AlignLeft | Qt::AlignVCenter,
+                          painter->fontMetrics().elidedText(m_group, Qt::ElideRight, 200));
+
+        QRectF g = glyphRect();
+        painter->setPen(QPen(QColor(170, 140, 220, 180), 1.0));
+        painter->setBrush(QColor(46, 42, 58));
+        painter->drawRoundedRect(g, 4, 4);
+        painter->setPen(QColor(226, 228, 232));
+        painter->drawText(g, Qt::AlignCenter, QStringLiteral("−"));
+    }
+
+  protected:
+    void mousePressEvent(QGraphicsSceneMouseEvent *event) override {
+        if (event->button() == Qt::LeftButton && glyphRect().contains(event->pos())) {
+            // Collapse rebuilds the canvas and deletes THIS item — defer.
+            AppState *st = m_state;
+            const QString grp = m_group;
+            QTimer::singleShot(0, [st, grp]() { st->set_group_collapsed(grp, true); });
+            event->accept();
+            return;
+        }
+        event->ignore();
+    }
+
+  private:
+    QRectF glyphRect() const {
+        return QRectF(m_rect.right() - 26, m_rect.top() + 5, 18, 18);
+    }
+    QRectF titleRect() const {
+        return QRectF(m_rect.left() + 10, m_rect.top() + 2, 210, kGroupHullTitleHeight);
+    }
+
+    AppState *m_state;
+    QString m_group;
+    QVector<QGraphicsItem *> m_members;
+    QRectF m_rect;
+};
+
 // --- InstanceItem -----------------------------------------------------------
 
 class InstanceItem : public QGraphicsRectItem {
@@ -477,19 +575,15 @@ class InstanceItem : public QGraphicsRectItem {
 
   protected:
     void mousePressEvent(QGraphicsSceneMouseEvent *event) override {
-        if (event->button() == Qt::LeftButton && m_state) {
-            bool group_block = m_state->is_group_block(m_name);
-            QString grp = group_block ? m_name : m_state->instance_group(m_name);
-            if (!grp.isEmpty() && toggleGlyphRect().contains(event->pos())) {
-                // Mutation rebuilds the canvas and deletes THIS item — defer
-                // past the event handler, capture by value.
-                AppState *st = m_state;
-                QTimer::singleShot(0, [st, grp, group_block]() {
-                    st->set_group_collapsed(grp, !group_block);
-                });
-                event->accept();
-                return;
-            }
+        if (event->button() == Qt::LeftButton && m_state && m_state->is_group_block(m_name)
+            && toggleGlyphRect().contains(event->pos())) {
+            // Expansion rebuilds the canvas and deletes THIS item — defer
+            // past the event handler, capture by value.
+            AppState *st = m_state;
+            const QString grp = m_name;
+            QTimer::singleShot(0, [st, grp]() { st->set_group_collapsed(grp, false); });
+            event->accept();
+            return;
         }
         if (event->button() == Qt::LeftButton) {
             m_pressScenePos = event->scenePos();
