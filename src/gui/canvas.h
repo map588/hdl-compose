@@ -548,6 +548,52 @@ class CanvasLayer {
         replanWires();
     }
 
+    // "Optimize positions": relayer by signal flow (drivers left of loads),
+    // minimize wire length, straighten runs. Rewrites every instance
+    // position as one undo step.
+    void optimizeLayout() {
+        if (m_items.isEmpty())
+            return;
+        rust::Vec<FfiPlaceNode> nodes;
+        rust::Vec<FfiPlaceEdge> edges;
+        QVector<InstanceItem *> by_id;
+        QHash<QString, int> id_of;
+        for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+            id_of.insert(it.key(), by_id.size());
+            nodes.push_back(FfiPlaceNode{static_cast<qint32>(by_id.size()),
+                                         it.value()->rect().height()});
+            by_id.append(it.value());
+        }
+        for (auto *w : m_wires) {
+            auto pin_ref = [&](const QString &key, int &id, double &dy) -> bool {
+                NetKey k = NetKey::parse(key);
+                if (!k.valid || k.is_top || !id_of.contains(k.instance))
+                    return false;
+                id = id_of.value(k.instance);
+                InstanceItem *ii = by_id[id];
+                dy = ii->portAnchorScenePos(k.port).y() - ii->pos().y();
+                return true;
+            };
+            int fid = 0, tid = 0;
+            double fdy = 0, tdy = 0;
+            if (pin_ref(w->sourceKey(), fid, fdy) && pin_ref(w->targetKey(), tid, tdy))
+                edges.push_back(FfiPlaceEdge{fid, fdy, tid, tdy});
+        }
+        auto placed =
+            optimize_positions_ffi(std::move(nodes), std::move(edges), kMinModuleVerticalGap);
+        m_state->begin_batch();
+        for (const auto &p : placed) {
+            InstanceItem *ii = by_id[p.id];
+            qreal x = p.col * static_cast<qreal>(kColumnPitch) - ii->width() / 2.0;
+            ii->setPos(x, p.y);
+            m_state->set_instance_position(ii->instanceName(), x, p.y);
+        }
+        m_state->end_batch();
+        rebuildTopPorts();
+        replanWires();
+        updateGroupHulls();
+    }
+
     void clearJunctionDots() {
         for (auto *d : m_junction_dots) {
             m_scene->removeItem(d);

@@ -598,6 +598,27 @@ pub mod qobject {
         new_top: f64,
     }
 
+    /// One block for layout optimization.
+    struct FfiPlaceNode {
+        id: i32,
+        height: f64,
+    }
+
+    /// A driver→load wire; `*_dy` = pin offset from its block's top.
+    struct FfiPlaceEdge {
+        from: i32,
+        from_dy: f64,
+        to: i32,
+        to_dy: f64,
+    }
+
+    /// Optimized slot for one block.
+    struct FfiPlaceResult {
+        id: i32,
+        col: i32,
+        y: f64,
+    }
+
     /// Completion context at the cursor. kind: 0 none, 1 RHS, 2 dot-port.
     struct FfiCompletionContext {
         kind: i32,
@@ -615,6 +636,13 @@ pub mod qobject {
         /// Push-and-shove: fixed items stay, others shift minimally per
         /// column (see routing::legalize_columns).
         fn legalize_columns_ffi(items: Vec<FfiColItem>, gap: f64) -> Vec<FfiColMove>;
+
+        /// Wire-length-minimizing layout (see routing::optimize_positions).
+        fn optimize_positions_ffi(
+            nodes: Vec<FfiPlaceNode>,
+            edges: Vec<FfiPlaceEdge>,
+            gap: f64,
+        ) -> Vec<FfiPlaceResult>;
 
         /// Mini-editor grammar (pure; see src/gui/editor.rs).
         fn completion_context_ffi(line_before_cursor: &str) -> FfiCompletionContext;
@@ -844,6 +872,30 @@ fn legalize_columns_ffi(items: Vec<qobject::FfiColItem>, gap: f64) -> Vec<qobjec
     routing::legalize_columns(&rust_items, gap)
         .into_iter()
         .map(|(id, new_top)| qobject::FfiColMove { id, new_top })
+        .collect()
+}
+
+fn optimize_positions_ffi(
+    nodes: Vec<qobject::FfiPlaceNode>,
+    edges: Vec<qobject::FfiPlaceEdge>,
+    gap: f64,
+) -> Vec<qobject::FfiPlaceResult> {
+    let ns: Vec<routing::PlaceNode> = nodes
+        .into_iter()
+        .map(|n| routing::PlaceNode { id: n.id, height: n.height })
+        .collect();
+    let es: Vec<routing::PlaceEdge> = edges
+        .into_iter()
+        .map(|e| routing::PlaceEdge {
+            from: e.from,
+            from_dy: e.from_dy,
+            to: e.to,
+            to_dy: e.to_dy,
+        })
+        .collect();
+    routing::optimize_positions(&ns, &es, gap)
+        .into_iter()
+        .map(|(id, col, y)| qobject::FfiPlaceResult { id, col, y })
         .collect()
 }
 

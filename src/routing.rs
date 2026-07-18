@@ -454,6 +454,145 @@ pub fn legalize_columns(items: &[ColItem], gap: f64) -> Vec<(i32, f64)> {
     moves
 }
 
+// --- Layout optimizer -------------------------------------------------------
+
+/// One block to place. `height` includes the pin rows.
+#[derive(Clone, Copy, Debug)]
+pub struct PlaceNode {
+    pub id: i32,
+    pub height: f64,
+}
+
+/// A wire from a driver pin to a load pin; `*_dy` is the pin's Y offset
+/// from its block's top edge, so straightening can align pins, not blocks.
+#[derive(Clone, Copy, Debug)]
+pub struct PlaceEdge {
+    pub from: i32,
+    pub from_dy: f64,
+    pub to: i32,
+    pub to_dy: f64,
+}
+
+/// Optimized placement: (id, column, top Y).
+///
+/// 1. Columns by longest path from the sources (drivers left of loads),
+///    so signal flow reads left→right and wire spans are minimal.
+/// 2. Barycenter sweeps pull each block toward the mean of its connected
+///    pins, legalizing every column (order kept, gap restored) per sweep.
+/// 3. A final left→right straightening pass snaps each block so its
+///    heaviest input pin aligns exactly with the driving pin — straight
+///    wires wherever the column packing allows.
+pub fn optimize_positions(nodes: &[PlaceNode], edges: &[PlaceEdge], gap: f64) -> Vec<(i32, i32, f64)> {
+    if nodes.is_empty() {
+        return Vec::new();
+    }
+    let index: HashMap<i32, usize> = nodes.iter().enumerate().map(|(i, n)| (n.id, i)).collect();
+    let n = nodes.len();
+    let edges: Vec<(usize, f64, usize, f64)> = edges
+        .iter()
+        .filter_map(|e| {
+            let (f, t) = (*index.get(&e.from)?, *index.get(&e.to)?);
+            if f == t {
+                return None;
+            }
+            Some((f, e.from_dy, t, e.to_dy))
+        })
+        .collect();
+
+    // --- 1. Longest-path layering (relaxation, cycle-capped) ---
+    let mut col: Vec<i32> = vec![0; n];
+    for _ in 0..n {
+        let mut changed = false;
+        for &(f, _, t, _) in &edges {
+            if col[t] < col[f] + 1 {
+                col[t] = col[f] + 1;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // --- 2. Barycenter sweeps with per-column legalization ---
+    // Initial stacking: per column, in input order.
+    let mut y: Vec<f64> = vec![0.0; n];
+    let mut by_col: HashMap<i32, Vec<usize>> = HashMap::new();
+    for (i, &c) in col.iter().enumerate() {
+        by_col.entry(c).or_default().push(i);
+    }
+    for members in by_col.values() {
+        let mut cur = 0.0;
+        for &i in members {
+            y[i] = cur;
+            cur += nodes[i].height + gap;
+        }
+    }
+    let legalize = |y: &mut Vec<f64>, order: &mut Vec<usize>, members: &[usize]| {
+        // Stack in desired-Y order around the group's mean so columns don't
+        // drift; restores the minimum gap.
+        let mut m: Vec<usize> = members.to_vec();
+        m.sort_by(|&a, &b| y[a].partial_cmp(&y[b]).unwrap().then(a.cmp(&b)));
+        let total: f64 =
+            m.iter().map(|&i| nodes[i].height).sum::<f64>() + gap * (m.len().saturating_sub(1)) as f64;
+        let mean: f64 = m.iter().map(|&i| y[i] + nodes[i].height / 2.0).sum::<f64>() / m.len() as f64;
+        let mut cur = mean - total / 2.0;
+        for &i in &m {
+            y[i] = cur;
+            cur += nodes[i].height + gap;
+        }
+        *order = m;
+    };
+    let mut orders: HashMap<i32, Vec<usize>> = by_col.clone();
+    for _ in 0..8 {
+        for i in 0..n {
+            let mut sum = 0.0;
+            let mut cnt = 0.0;
+            for &(f, fdy, t, tdy) in &edges {
+                if t == i {
+                    sum += y[f] + fdy - tdy;
+                    cnt += 1.0;
+                } else if f == i {
+                    sum += y[t] + tdy - fdy;
+                    cnt += 1.0;
+                }
+            }
+            if cnt > 0.0 {
+                y[i] = sum / cnt;
+            }
+        }
+        for (c, members) in &by_col {
+            let mut order = Vec::new();
+            legalize(&mut y, &mut order, members);
+            orders.insert(*c, order);
+        }
+    }
+
+    // --- 3. Straightening: align each block's first input pin exactly ---
+    let mut cols_sorted: Vec<i32> = by_col.keys().copied().collect();
+    cols_sorted.sort_unstable();
+    for &c in &cols_sorted[1..] {
+        let members = orders.get(&c).cloned().unwrap_or_default();
+        for &i in &members {
+            if let Some(&(f, fdy, _, tdy)) =
+                edges.iter().find(|&&(_, _, t, _)| t == i).filter(|&&(f, ..)| col[f] < c)
+            {
+                y[i] = y[f] + fdy - tdy;
+            }
+        }
+        // Re-legalize in straightened order; ties keep barycenter order.
+        let mut order = Vec::new();
+        legalize(&mut y, &mut order, &members);
+        orders.insert(c, order);
+    }
+
+    nodes
+        .iter()
+        .enumerate()
+        .map(|(i, node)| (node.id, col[i], y[i]))
+        .collect()
+}
+
 /// Find a Y where a `width`×`height` module at `left` doesn't overlap any
 /// other module (each side padded by `margin`). Prefers `proposed_y`, else
 /// the nearest clear candidate, else below everything.
@@ -694,6 +833,57 @@ mod tests {
         let items = [ci(0, 100.0, 100.0, true), ci(1, 100.0, 100.0, false), other];
         let moves = legalize_columns(&items, 60.0);
         assert_eq!(moves, vec![(1, 260.0)]);
+    }
+
+    fn pn(id: i32, height: f64) -> PlaceNode {
+        PlaceNode { id, height }
+    }
+    fn pe(from: i32, from_dy: f64, to: i32, to_dy: f64) -> PlaceEdge {
+        PlaceEdge { from, from_dy, to, to_dy }
+    }
+
+    #[test]
+    fn optimize_layers_follow_signal_flow() {
+        // a -> b -> c chain: columns 0, 1, 2.
+        let nodes = [pn(0, 100.0), pn(1, 100.0), pn(2, 100.0)];
+        let edges = [pe(0, 50.0, 1, 50.0), pe(1, 50.0, 2, 50.0)];
+        let r = optimize_positions(&nodes, &edges, 60.0);
+        let col_of = |id: i32| r.iter().find(|e| e.0 == id).unwrap().1;
+        assert_eq!((col_of(0), col_of(1), col_of(2)), (0, 1, 2));
+    }
+
+    #[test]
+    fn optimize_straightens_chain() {
+        // Matching pin offsets → connected blocks align exactly.
+        let nodes = [pn(0, 100.0), pn(1, 100.0), pn(2, 100.0)];
+        let edges = [pe(0, 30.0, 1, 70.0), pe(1, 30.0, 2, 30.0)];
+        let r = optimize_positions(&nodes, &edges, 60.0);
+        let y_of = |id: i32| r.iter().find(|e| e.0 == id).unwrap().2;
+        // b's input pin (dy 70) aligns with a's output pin (dy 30).
+        assert!((y_of(0) + 30.0 - (y_of(1) + 70.0)).abs() < 0.5, "{r:?}");
+        // c's input aligns with b's output (same dy → same top).
+        assert!((y_of(1) - y_of(2)).abs() < 0.5, "{r:?}");
+    }
+
+    #[test]
+    fn optimize_fanout_stacks_with_gap() {
+        // One driver, three loads in the same column: loads stacked, gapped.
+        let nodes = [pn(0, 100.0), pn(1, 100.0), pn(2, 100.0), pn(3, 100.0)];
+        let edges = [pe(0, 50.0, 1, 50.0), pe(0, 50.0, 2, 50.0), pe(0, 50.0, 3, 50.0)];
+        let r = optimize_positions(&nodes, &edges, 60.0);
+        let mut load_ys: Vec<f64> = r.iter().filter(|e| e.0 != 0).map(|e| e.2).collect();
+        load_ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((load_ys[1] - load_ys[0] - 160.0).abs() < 0.5, "{load_ys:?}");
+        assert!((load_ys[2] - load_ys[1] - 160.0).abs() < 0.5, "{load_ys:?}");
+    }
+
+    #[test]
+    fn optimize_survives_cycles_and_disconnected() {
+        // a <-> b feedback plus an island: must terminate and place all.
+        let nodes = [pn(0, 100.0), pn(1, 100.0), pn(2, 80.0)];
+        let edges = [pe(0, 50.0, 1, 50.0), pe(1, 20.0, 0, 20.0)];
+        let r = optimize_positions(&nodes, &edges, 60.0);
+        assert_eq!(r.len(), 3);
     }
 
     #[test]

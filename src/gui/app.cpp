@@ -775,6 +775,10 @@ class MainWindow : public QMainWindow {
         auto *viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
         auto *zoomFitAct = viewMenu->addAction(QStringLiteral("Zoom to &Fit"));
         zoomFitAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
+        auto *optimizeAct = viewMenu->addAction(QStringLiteral("&Optimize Positions"));
+        optimizeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
+        optimizeAct->setToolTip(QStringLiteral(
+            "Re-place all blocks: drivers left of loads, wire length minimized, runs straightened"));
         auto *issuesAct = viewMenu->addAction(QStringLiteral("Validation &Issues..."));
 
         // Help menu — the canvas is gesture-heavy; give the gestures a home.
@@ -793,6 +797,7 @@ class MainWindow : public QMainWindow {
         reloadAct->setIconText(QStringLiteral("Refresh"));
         saveAct->setIconText(QStringLiteral("Save"));
         generateAct->setIconText(QStringLiteral("Generate HDL"));
+        optimizeAct->setIconText(QStringLiteral("Tidy"));
         fileToolbar->addAction(newAct);
         fileToolbar->addAction(openAct);
         fileToolbar->addAction(addSourceAct);
@@ -800,6 +805,8 @@ class MainWindow : public QMainWindow {
         fileToolbar->addSeparator();
         fileToolbar->addAction(saveAct);
         fileToolbar->addAction(generateAct);
+        fileToolbar->addSeparator();
+        fileToolbar->addAction(optimizeAct);
 
         // Force-reopen the editor panel if the user dragged it narrow.
         auto *showEditorAct = new QAction(QStringLiteral("Show Editor"), this);
@@ -826,6 +833,13 @@ class MainWindow : public QMainWindow {
         connect(zoomFitAct, &QAction::triggered, this, [this]() {
             if (m_canvas)
                 m_canvas->zoomToFit();
+        });
+        connect(optimizeAct, &QAction::triggered, this, [this]() {
+            if (m_canvas_layer) {
+                m_canvas_layer->optimizeLayout();
+                if (m_canvas)
+                    m_canvas->zoomToFit();
+            }
         });
         connect(issuesAct, &QAction::triggered, this, &MainWindow::onShowValidationIssues);
         connect(controlsAct, &QAction::triggered, this, &MainWindow::onShowCanvasControls);
