@@ -745,6 +745,8 @@ class TopPortItem : public PortPinItem {
     QPointF m_press_scene;
     qreal m_start_y = 0;
     bool m_moved = false;
+    // Other selected top ports riding along in a group drag: (port, start Y).
+    QVector<QPair<TopPortItem *, qreal>> m_drag_group;
 };
 
 } // namespace hdlc

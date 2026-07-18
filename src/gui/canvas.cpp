@@ -50,10 +50,11 @@ void WireItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *) {
 // --- TopPortItem drag (needs full CanvasLayer type) -------------------------
 
 void TopPortItem::mousePressEvent(QGraphicsSceneMouseEvent *event) {
-    // Shift+click toggles this port in the selection (append) instead of arming
-    // a wire — the plain click is taken by wiring, so this is how to multi-select
-    // for Delete.
-    if (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ShiftModifier)) {
+    // Shift/Ctrl/Cmd + click toggles this port in the selection (append or
+    // remove) instead of arming a wire — the plain click is taken by wiring,
+    // so modifier-click is how to multi-select for Delete / group drags.
+    if (event->button() == Qt::LeftButton
+        && (event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier))) {
         setSelected(!isSelected());
         event->accept();
         return;
@@ -62,6 +63,17 @@ void TopPortItem::mousePressEvent(QGraphicsSceneMouseEvent *event) {
         m_press_scene = event->scenePos();
         m_start_y = pos().y();
         m_moved = false;
+        // A drag starting on a selected port moves every selected top port
+        // together, keeping their relative spacing.
+        m_drag_group.clear();
+        if (isSelected() && scene()) {
+            for (QGraphicsItem *it : scene()->selectedItems()) {
+                if (auto *tp = dynamic_cast<TopPortItem *>(it)) {
+                    if (tp != this)
+                        m_drag_group.append({tp, tp->pos().y()});
+                }
+            }
+        }
         event->accept();
         return;
     }
@@ -73,8 +85,13 @@ void TopPortItem::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
         if (!m_moved && (event->scenePos() - m_press_scene).manhattanLength() >= kClickThresholdPx)
             m_moved = true;
         if (m_moved) {
-            qreal y = m_layer->clampTopPortY(m_start_y + (event->scenePos().y() - m_press_scene.y()));
+            const qreal dy = event->scenePos().y() - m_press_scene.y();
+            qreal y = m_layer->clampTopPortY(m_start_y + dy);
             setPos(m_locked_x, y); // X stays pinned to the edge
+            for (const auto &entry : m_drag_group) {
+                TopPortItem *tp = entry.first;
+                tp->setPos(tp->lockedX(), m_layer->clampTopPortY(entry.second + dy));
+            }
             m_layer->replanWires();
         }
         event->accept();
@@ -87,12 +104,16 @@ void TopPortItem::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
     if (event->button() == Qt::LeftButton) {
         if (m_moved) {
             m_moved = false;
-            if (m_layer)
+            if (m_layer) {
                 m_layer->setTopPortY(portName(), pos().y());
+                for (const auto &entry : m_drag_group)
+                    m_layer->setTopPortY(entry.first->portName(), entry.first->pos().y());
+            }
         } else if (m_wire_tool) {
             // No drag: treat as a click — arm/commit a wire like a normal pin.
             m_wire_tool->onPinPressed(this, event->scenePos());
         }
+        m_drag_group.clear();
         event->accept();
         return;
     }
