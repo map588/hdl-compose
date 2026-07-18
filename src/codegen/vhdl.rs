@@ -899,4 +899,47 @@ mod tests {
             "merged net must not declare a second signal: {output}"
         );
     }
+
+    #[test]
+    fn slice_connected_top_port_keeps_full_vector_type() {
+        // A scalar driver into led[0] of a 5-bit top port: the intermediate
+        // must be declared with the PORT's type, not the driver's scalar type.
+        let mut s = Schematic::new("top_level", Language::Vhdl);
+        s.top_ports.push(PortDef {
+            name: "led".into(),
+            direction: Direction::Out,
+            port_type: PortType::StdLogicVector(Range {
+                high: RangeExpr::Literal(4),
+                low: RangeExpr::Literal(0),
+                dir: RangeDir::Downto,
+            }),
+            bundle: None,
+        });
+        s.add_instance("u_drv", "driver").unwrap();
+        s.set_port_map_entry(
+            "u_drv",
+            "q",
+            Some(NetRef::TopPortSlice("led".into(), crate::types::SliceExpr::Bit(0))),
+        )
+        .unwrap();
+        let lib = vec![ModuleDef {
+            name: "driver".into(),
+            generics: vec![],
+            ports: vec![PortDef {
+                name: "q".into(),
+                direction: Direction::Out,
+                port_type: PortType::StdLogic,
+                bundle: None,
+            }],
+            source_path: "driver.vhd".into(),
+            source_hash: 0,
+            dependencies: vec![],
+        }];
+        let output = generate_vhdl(&s, &lib, &[]).unwrap();
+        assert!(
+            output.contains("signal led_s : std_logic_vector(4 downto 0);"),
+            "{output}"
+        );
+        assert!(output.contains("q => led_s(0)"), "{output}");
+    }
 }

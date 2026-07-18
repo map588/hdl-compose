@@ -286,8 +286,19 @@ pub fn collect_top_intermediates(
             continue;
         }
         // Prefer the net's resolved type (driver-side generics applied);
-        // fall back to the port's own declared type.
-        let port_type = net.port_type.clone().unwrap_or_else(|| port.port_type.clone());
+        // fall back to the port's own declared type. When anything connects
+        // through a slice of this port, the intermediate must keep the
+        // port's full type — the net type reflects only the sliced driver.
+        let sliced = schematic.instances.iter().any(|inst| {
+            inst.port_map.values().flatten().any(
+                |nr| matches!(nr, NetRef::TopPortSlice(n, _) if n == &port.name),
+            )
+        });
+        let port_type = if sliced {
+            port.port_type.clone()
+        } else {
+            net.port_type.clone().unwrap_or_else(|| port.port_type.clone())
+        };
         out.push(TopIntermediate {
             port_name: port.name.clone(),
             sig_name: net.name.clone(),
