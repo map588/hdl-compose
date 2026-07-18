@@ -556,6 +556,21 @@ pub mod qobject {
         messages: Vec<String>,
     }
 
+    /// One module in a column for push-and-shove placement.
+    struct FfiColItem {
+        id: i32,
+        col: i32,
+        top: f64,
+        height: f64,
+        fixed: bool,
+    }
+
+    /// A module the legalizer moved: apply `new_top` and persist it.
+    struct FfiColMove {
+        id: i32,
+        new_top: f64,
+    }
+
     /// Completion context at the cursor. kind: 0 none, 1 RHS, 2 dot-port.
     struct FfiCompletionContext {
         kind: i32,
@@ -570,14 +585,9 @@ pub mod qobject {
             params: FfiRouteParams,
         ) -> FfiRouteResult;
 
-        fn resolve_clear_y_ffi(
-            left: f64,
-            width: f64,
-            height: f64,
-            proposed_y: f64,
-            margin: f64,
-            obstacles: Vec<FfiRect>,
-        ) -> f64;
+        /// Push-and-shove: fixed items stay, others shift minimally per
+        /// column (see routing::legalize_columns).
+        fn legalize_columns_ffi(items: Vec<FfiColItem>, gap: f64) -> Vec<FfiColMove>;
 
         /// Mini-editor grammar (pure; see src/gui/editor.rs).
         fn completion_context_ffi(line_before_cursor: &str) -> FfiCompletionContext;
@@ -764,18 +774,6 @@ fn plan_routes_ffi(
     }
 }
 
-fn resolve_clear_y_ffi(
-    left: f64,
-    width: f64,
-    height: f64,
-    proposed_y: f64,
-    margin: f64,
-    obstacles: Vec<qobject::FfiRect>,
-) -> f64 {
-    let obstacles_r: Vec<routing::Rect> = obstacles.iter().map(conv_rect).collect();
-    routing::resolve_clear_y(left, width, height, proposed_y, margin, &obstacles_r)
-}
-
 fn conv_rect(r: &qobject::FfiRect) -> routing::Rect {
     routing::Rect { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
 }
@@ -796,6 +794,23 @@ fn refuse(error: &str) -> qobject::FfiConnectResult {
 
 fn done(committed: bool, sticky: bool) -> qobject::FfiConnectResult {
     qobject::FfiConnectResult { committed, sticky: committed && sticky, error: String::new() }
+}
+
+fn legalize_columns_ffi(items: Vec<qobject::FfiColItem>, gap: f64) -> Vec<qobject::FfiColMove> {
+    let rust_items: Vec<routing::ColItem> = items
+        .into_iter()
+        .map(|i| routing::ColItem {
+            id: i.id,
+            col: i.col,
+            top: i.top,
+            height: i.height,
+            fixed: i.fixed,
+        })
+        .collect();
+    routing::legalize_columns(&rust_items, gap)
+        .into_iter()
+        .map(|(id, new_top)| qobject::FfiColMove { id, new_top })
+        .collect()
 }
 
 // --- Mini-editor FFI helpers -------------------------------------------------

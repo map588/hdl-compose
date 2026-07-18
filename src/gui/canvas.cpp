@@ -237,10 +237,15 @@ void CanvasView::dropEvent(QDropEvent *event) {
     InstanceItem *item = m_canvas_layer ? m_canvas_layer->itemFor(inst_name) : nullptr;
     QPointF pos(scene_pos.x() - kMinInstanceWidth / 2.0, scene_pos.y());
     if (item && m_canvas_layer) {
-        pos = m_canvas_layer->placeInstance(
-            item, QPointF(scene_pos.x() - item->width() / 2.0, scene_pos.y()));
+        // Snap X to the drop column, keep the drop Y; push-shove settles the
+        // rest of the column (and persists every changed position).
+        const int col = static_cast<int>(std::round(scene_pos.x() / kColumnPitch));
+        pos = QPointF(col * kColumnPitch - item->width() / 2.0, scene_pos.y());
+        item->setPos(pos);
+        m_canvas_layer->settleAfterMove({item});
+    } else {
+        m_state->set_instance_position(inst_name, pos.x(), pos.y());
     }
-    m_state->set_instance_position(inst_name, pos.x(), pos.y());
     m_state->end_batch();
     event->acceptProposedAction();
 }

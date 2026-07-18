@@ -484,30 +484,33 @@ class CanvasLayer {
     // resolve_clear_y_ffi below. The canvas only gathers pin positions and
     // module rects and applies the returned polylines.
 
-    qreal resolveClearY(InstanceItem *self, qreal snapped_x, qreal w, qreal h, qreal proposed_y) const {
-        rust::Vec<FfiRect> obstacles;
+    // Push-and-shove settlement after a drag or drop: `fixed` items keep
+    // their exact (column-snapped) drop position; every other module in the
+    // affected columns shifts the minimum distance that restores the module
+    // gap, preserving vertical order. Applies the moves, persists every
+    // changed position as one undo step, and replans wires.
+    void settleAfterMove(const QList<InstanceItem *> &fixed) {
+        rust::Vec<FfiColItem> items;
+        QVector<InstanceItem *> by_id;
         for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
-            if (it.value() == self)
-                continue;
-            QRectF r = it.value()->sceneBoundingRect();
-            obstacles.push_back(FfiRect{r.left(), r.top(), r.right(), r.bottom()});
+            InstanceItem *ii = it.value();
+            items.push_back(FfiColItem{static_cast<qint32>(by_id.size()),
+                                       instanceColumn(ii), ii->pos().y(),
+                                       ii->rect().height(), fixed.contains(ii)});
+            by_id.append(ii);
         }
-        return resolve_clear_y_ffi(snapped_x, w, h, proposed_y,
-                                   static_cast<double>(kMinModuleVerticalGap) / 2.0,
-                                   std::move(obstacles));
-    }
-
-    // Single authority for instance placement: snap X to the column grid,
-    // shove Y clear of other modules. Interactive drags (itemChange) and
-    // programmatic placement (drop) both go through here; `proposed` is the
-    // item's top-left corner.
-    QPointF placeInstance(InstanceItem *item, const QPointF &proposed) const {
-        const qreal w = item->width();
-        const qreal centered = proposed.x() + w / 2.0;
-        const int col = static_cast<int>(std::round(centered / static_cast<qreal>(kColumnPitch)));
-        const qreal snapped_x = col * kColumnPitch - w / 2.0;
-        const qreal y = resolveClearY(item, snapped_x, w, item->rect().height(), proposed.y());
-        return QPointF(snapped_x, y);
+        auto moves = legalize_columns_ffi(std::move(items), kMinModuleVerticalGap);
+        m_state->begin_batch();
+        for (const auto &mv : moves) {
+            InstanceItem *ii = by_id[mv.id];
+            ii->setPos(ii->pos().x(), mv.new_top);
+            m_state->set_instance_position(ii->instanceName(), ii->pos().x(), mv.new_top);
+        }
+        for (auto *ii : fixed) {
+            m_state->set_instance_position(ii->instanceName(), ii->pos().x(), ii->pos().y());
+        }
+        m_state->end_batch();
+        replanWires();
     }
 
     void clearJunctionDots() {

@@ -390,6 +390,70 @@ pub fn plan_routes(nets: &[Net], obstacles: &[Rect], p: Params) -> RouteResult {
     result
 }
 
+/// One module in a column, for push-and-shove legalization.
+#[derive(Clone, Copy, Debug)]
+pub struct ColItem {
+    pub id: i32,
+    pub col: i32,
+    pub top: f64,
+    pub height: f64,
+    /// Fixed items (the dragged selection) keep their Y; everything else
+    /// shifts minimally.
+    pub fixed: bool,
+}
+
+/// Push-and-shove placement: per column, keep every `fixed` item exactly
+/// where it is and shift the others the minimum distance that restores at
+/// least `gap` of separation, preserving vertical order. Returns
+/// `(id, new_top)` for the items that actually moved.
+pub fn legalize_columns(items: &[ColItem], gap: f64) -> Vec<(i32, f64)> {
+    let mut cols: HashMap<i32, Vec<ColItem>> = HashMap::new();
+    for it in items {
+        cols.entry(it.col).or_default().push(*it);
+    }
+    let mut moves: Vec<(i32, f64)> = Vec::new();
+    for (_, mut col) in cols {
+        // Original vertical order; fixed first on ties so equal-top movables
+        // yield to the dragged block.
+        col.sort_by(|a, b| {
+            a.top
+                .partial_cmp(&b.top)
+                .unwrap()
+                .then(b.fixed.cmp(&a.fixed))
+        });
+        let mut assigned: Vec<f64> = col.iter().map(|c| c.top).collect();
+        let mut cursor = f64::NEG_INFINITY;
+        // Movables placed since the last fixed item — the run that shifts up
+        // when a fixed item's position overrides the cursor.
+        let mut run: Vec<usize> = Vec::new();
+        for i in 0..col.len() {
+            if col[i].fixed {
+                let ftop = col[i].top;
+                if cursor > ftop {
+                    let delta = cursor - ftop;
+                    for &j in &run {
+                        assigned[j] -= delta;
+                    }
+                }
+                cursor = ftop + col[i].height + gap;
+                run.clear();
+            } else {
+                let t = col[i].top.max(cursor);
+                assigned[i] = t;
+                cursor = t + col[i].height + gap;
+                run.push(i);
+            }
+        }
+        for (i, it) in col.iter().enumerate() {
+            if !it.fixed && (assigned[i] - it.top).abs() > 0.5 {
+                moves.push((it.id, assigned[i]));
+            }
+        }
+    }
+    moves.sort_by_key(|m| m.0);
+    moves
+}
+
 /// Find a Y where a `width`×`height` module at `left` doesn't overlap any
 /// other module (each side padded by `margin`). Prefers `proposed_y`, else
 /// the nearest clear candidate, else below everything.
@@ -590,6 +654,46 @@ mod tests {
             !(hy >= block.top - 8.0 && hy <= block.bottom + 8.0),
             "bridge y {hy} sits inside blocked band"
         );
+    }
+
+    fn ci(id: i32, top: f64, height: f64, fixed: bool) -> ColItem {
+        ColItem { id, col: 0, top, height, fixed }
+    }
+
+    #[test]
+    fn legalize_noop_when_clear() {
+        let items = [ci(0, 0.0, 100.0, true), ci(1, 200.0, 100.0, false)];
+        assert!(legalize_columns(&items, 60.0).is_empty());
+    }
+
+    #[test]
+    fn legalize_pushes_lower_neighbor_down_and_cascades() {
+        // Fixed dropped onto item 1; item 1 pushes down into item 2.
+        let items = [
+            ci(0, 100.0, 100.0, true),
+            ci(1, 150.0, 100.0, false),
+            ci(2, 320.0, 100.0, false),
+        ];
+        let moves = legalize_columns(&items, 60.0);
+        assert_eq!(moves, vec![(1, 260.0), (2, 420.0)]);
+    }
+
+    #[test]
+    fn legalize_shifts_upper_run_up() {
+        // Fixed lands overlapping an item that sits slightly above it — the
+        // upper item yields upward, exactly clearing the gap.
+        let items = [ci(0, 90.0, 100.0, false), ci(1, 100.0, 100.0, true)];
+        let moves = legalize_columns(&items, 60.0);
+        assert_eq!(moves, vec![(0, -60.0)]);
+    }
+
+    #[test]
+    fn legalize_never_moves_fixed_and_ignores_other_columns() {
+        let mut other = ci(3, 100.0, 100.0, false);
+        other.col = 1; // different column: untouched even though Y overlaps
+        let items = [ci(0, 100.0, 100.0, true), ci(1, 100.0, 100.0, false), other];
+        let moves = legalize_columns(&items, 60.0);
+        assert_eq!(moves, vec![(1, 260.0)]);
     }
 
     #[test]

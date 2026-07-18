@@ -824,10 +824,23 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
 }
 
 void InstanceItem::commitDragPosition() {
-    if (m_canvas_layer)
-        setPos(m_canvas_layer->placeInstance(this, pos()));
-    QPointF p = pos();
-    m_state->set_instance_position(m_name, p.x(), p.y());
+    // Multi-drag: every selected instance keeps its dropped spot (relative
+    // spacing intact); the rest of the column shoves out of the way.
+    QList<InstanceItem *> fixed;
+    if (auto *sc = scene()) {
+        for (QGraphicsItem *it : sc->selectedItems()) {
+            if (auto *ii = dynamic_cast<InstanceItem *>(it))
+                fixed << ii;
+        }
+    }
+    if (!fixed.contains(this))
+        fixed << this;
+    if (m_canvas_layer) {
+        m_canvas_layer->settleAfterMove(fixed);
+    } else {
+        QPointF p = pos();
+        m_state->set_instance_position(m_name, p.x(), p.y());
+    }
 }
 
 void InstanceItem::toggleBundleExpanded(const QString &bundle) {
