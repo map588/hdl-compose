@@ -690,7 +690,77 @@ class CanvasLayer {
             settleAfterMove(locked);
         rebuildTopPorts();
         replanWires();
+        tidyTopPorts();
         updateGroupHulls();
+    }
+
+    // Place each top port at the barycenter of the instance pins on its net,
+    // then legalize per side (sorted, min spacing, clamped to the module
+    // band). Runs after Tidy so ports follow the fresh instance placement
+    // instead of keeping stale drag positions or the y=0-centered default
+    // stack hovering above the design.
+    void tidyTopPorts() {
+        if (m_top_ports.empty() || m_wires.empty())
+            return;
+        QHash<QString, QVector<qreal>> pulls; // top-port name -> connected pin Ys
+        for (auto *w : m_wires) {
+            auto add = [&](const QString &top_key, const QString &pin_key) {
+                NetKey t = NetKey::parse(top_key);
+                if (!t.valid || !t.is_top)
+                    return;
+                NetKey p = NetKey::parse(pin_key);
+                if (!p.valid || p.is_top)
+                    return;
+                if (InstanceItem *ii = m_items.value(p.instance, nullptr))
+                    pulls[t.port].append(ii->portAnchorScenePos(p.port).y());
+            };
+            add(w->sourceKey(), w->targetKey());
+            add(w->targetKey(), w->sourceKey());
+        }
+
+        const auto [band_top, band_bot] = topPortYBounds();
+        for (PinSide side : {PinSide::Left, PinSide::Right}) {
+            struct Entry {
+                TopPortItem *tp;
+                qreal want;
+                qreal y = 0;
+            };
+            QVector<Entry> list;
+            for (auto *tp : m_top_ports) {
+                if (tp->side() != side)
+                    continue;
+                const QVector<qreal> ys = pulls.value(tp->portName());
+                qreal want = tp->pos().y(); // unconnected: keep relative order
+                if (!ys.isEmpty()) {
+                    qreal sum = 0;
+                    for (qreal v : ys)
+                        sum += v;
+                    want = sum / ys.size();
+                }
+                list.append({tp, want});
+            }
+            if (list.isEmpty())
+                continue;
+            std::stable_sort(list.begin(), list.end(),
+                             [](const Entry &a, const Entry &b) { return a.want < b.want; });
+            qreal prev = -1e18;
+            for (auto &e : list) {
+                qreal y = std::clamp(e.want, band_top, band_bot);
+                y = std::max(y, prev + kTopPortSpacing);
+                e.y = y;
+                prev = y;
+            }
+            // Ran past the bottom of the band: shift the stack back up.
+            const qreal over = prev - band_bot;
+            if (over > 0)
+                for (auto &e : list)
+                    e.y -= over;
+            for (auto &e : list) {
+                m_top_port_y[e.tp->portName()] = e.y;
+                e.tp->setPos(e.tp->lockedX(), e.y);
+            }
+        }
+        replanWires();
     }
 
     void clearJunctionDots() {
