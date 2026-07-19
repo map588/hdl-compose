@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "top_name": "synth_top",
   "language": "Vhdl",
   "top_generics": [],
@@ -134,23 +134,14 @@
         "sys_clk": {
           "TopPort": "clk"
         },
-        "sys_rstn": {
-          "TopPort": "rstn"
+        "update": {
+          "InstancePort": [
+            "midi_if",
+            "update"
+          ]
         },
         "midi_clk": {
           "TopPort": "midi_clk"
-        },
-        "midi_sdata": {
-          "TopPort": "midi_data"
-        },
-        "midi_startn": {
-          "TopPort": "midi_startn"
-        },
-        "cpu_ack": {
-          "InstancePort": [
-            "ed_update",
-            "sig_out"
-          ]
         },
         "midi_output": {
           "InstancePort": [
@@ -158,17 +149,26 @@
             "midi_output"
           ]
         },
-        "interrupt": null,
-        "update": {
+        "midi_sdata": {
+          "TopPort": "midi_data"
+        },
+        "midi_startn": {
+          "TopPort": "midi_startn"
+        },
+        "sys_rstn": {
+          "TopPort": "rstn"
+        },
+        "cpu_ack": {
           "InstancePort": [
-            "midi_if",
-            "update"
+            "ed_update",
+            "sig_out"
           ]
-        }
+        },
+        "interrupt": null
       },
       "position": [
-        0,
-        0
+        445.5,
+        1898.7858
       ],
       "manual_bundles": {}
     },
@@ -177,28 +177,28 @@
       "module_ref": "edge_detector",
       "generic_map": {},
       "port_map": {
-        "clk": {
-          "TopPort": "clk"
-        },
         "rstn": {
           "TopPort": "rstn"
         },
-        "sig_in": {
-          "InstancePort": [
-            "midi_if",
-            "update"
-          ]
+        "clk": {
+          "TopPort": "clk"
         },
         "sig_out": {
           "InstancePort": [
             "ed_update",
             "sig_out"
           ]
+        },
+        "sig_in": {
+          "InstancePort": [
+            "midi_if",
+            "update"
+          ]
         }
       },
       "position": [
-        150,
-        0
+        -103.5,
+        1899.4525
       ],
       "manual_bundles": {}
     },
@@ -209,16 +209,10 @@
         "WIDTH": "16"
       },
       "port_map": {
-        "src_clk": {
-          "TopPort": "clk"
-        },
-        "src_rstn": {
-          "TopPort": "rstn"
-        },
-        "s_tdata": {
+        "m_tvalid": {
           "InstancePort": [
-            "midi_if",
-            "midi_output"
+            "midi_fifo",
+            "m_tvalid"
           ]
         },
         "s_tvalid": {
@@ -227,11 +221,29 @@
             "sig_out"
           ]
         },
+        "s_tdata": {
+          "InstancePort": [
+            "midi_if",
+            "midi_output"
+          ]
+        },
+        "src_clk": {
+          "TopPort": "clk"
+        },
+        "dst_rstn": {
+          "TopPort": "rstn"
+        },
+        "m_tready": {
+          "InstancePort": [
+            "proc",
+            "read_midi"
+          ]
+        },
         "s_tready": null,
         "dst_clk": {
           "TopPort": "clk"
         },
-        "dst_rstn": {
+        "src_rstn": {
           "TopPort": "rstn"
         },
         "m_tdata": {
@@ -239,23 +251,11 @@
             "midi_fifo",
             "m_tdata"
           ]
-        },
-        "m_tvalid": {
-          "InstancePort": [
-            "midi_fifo",
-            "m_tvalid"
-          ]
-        },
-        "m_tready": {
-          "InstancePort": [
-            "proc",
-            "read_midi"
-          ]
         }
       },
       "position": [
-        300,
-        0
+        1010.5,
+        1850.7858
       ],
       "manual_bundles": {}
     },
@@ -269,13 +269,56 @@
         "clk": {
           "TopPort": "clk"
         },
-        "rstn": {
-          "TopPort": "rstn"
+        "param_write": {
+          "InstancePort": [
+            "proc",
+            "param_write"
+          ]
         },
         "update": {
           "InstancePort": [
             "midi_fifo",
             "m_tvalid"
+          ]
+        },
+        "triggers": {
+          "InstancePort": [
+            "proc",
+            "triggers"
+          ]
+        },
+        "param_value": {
+          "InstancePort": [
+            "proc",
+            "param_value"
+          ]
+        },
+        "velocity": {
+          "InstancePort": [
+            "proc",
+            "velocity"
+          ]
+        },
+        "note_index": {
+          "InstancePort": [
+            "proc",
+            "note_index"
+          ]
+        },
+        "param_number": {
+          "InstancePort": [
+            "proc",
+            "param_number"
+          ]
+        },
+        "rstn": {
+          "TopPort": "rstn"
+        },
+        "note_stops": null,
+        "read_midi": {
+          "InstancePort": [
+            "proc",
+            "read_midi"
           ]
         },
         "data_in": {
@@ -284,60 +327,17 @@
             "m_tdata"
           ]
         },
-        "read_midi": {
-          "InstancePort": [
-            "proc",
-            "read_midi"
-          ]
-        },
         "ack": null,
-        "triggers": {
-          "InstancePort": [
-            "proc",
-            "triggers"
-          ]
-        },
-        "note_stops": null,
         "note_states": {
           "InstancePort": [
             "proc",
             "note_states"
           ]
-        },
-        "note_index": {
-          "InstancePort": [
-            "proc",
-            "note_index"
-          ]
-        },
-        "velocity": {
-          "InstancePort": [
-            "proc",
-            "velocity"
-          ]
-        },
-        "param_write": {
-          "InstancePort": [
-            "proc",
-            "param_write"
-          ]
-        },
-        "param_number": {
-          "InstancePort": [
-            "proc",
-            "param_number"
-          ]
-        },
-        "param_value": {
-          "InstancePort": [
-            "proc",
-            "param_value"
-          ]
         }
       },
       "position": [
-        450,
-        0
+        1553.5,
+        1865.931
       ],
       "manual_bundles": {}
     },
@@ -346,72 +346,6 @@
       "module_ref": "voice_chain",
       "generic_map": {},
       "port_map": {
-        "clk": {
-          "TopPort": "clk"
-        },
-        "rstn": {
-          "TopPort": "rstn"
-        },
-        "note_state": {
-          "InstancePortSlice": [
-            "proc",
-            "note_states",
-            {
-              "Bit": 0
-            }
-          ]
-        },
-        "trigger": {
-          "InstancePortSlice": [
-            "proc",
-            "triggers",
-            {
-              "Bit": 0
-            }
-          ]
-        },
-        "note_index": {
-          "InstancePort": [
-            "proc",
-            "note_index"
-          ]
-        },
-        "velocity": {
-          "InstancePort": [
-            "proc",
-            "velocity"
-          ]
-        },
-        "param_write": {
-          "InstancePort": [
-            "proc",
-            "param_write"
-          ]
-        },
-        "param_number": {
-          "InstancePort": [
-            "proc",
-            "param_number"
-          ]
-        },
-        "param_value": {
-          "InstancePort": [
-            "proc",
-            "param_value"
-          ]
-        },
-        "m_axis_out_tdata": {
-          "InstancePort": [
-            "voice0",
-            "m_axis_out_tdata"
-          ]
-        },
-        "m_axis_out_tvalid": {
-          "InstancePort": [
-            "voice0",
-            "m_axis_out_tvalid"
-          ]
-        },
         "m_axis_out_tready": {
           "InstancePort": [
             "cdc0",
@@ -426,11 +360,77 @@
         },
         "env_gate": {
           "TopPort": "env_gate0"
+        },
+        "note_state": {
+          "InstancePortSlice": [
+            "proc",
+            "note_states",
+            {
+              "Bit": 0
+            }
+          ]
+        },
+        "velocity": {
+          "InstancePort": [
+            "proc",
+            "velocity"
+          ]
+        },
+        "clk": {
+          "TopPort": "clk"
+        },
+        "rstn": {
+          "TopPort": "rstn"
+        },
+        "param_value": {
+          "InstancePort": [
+            "proc",
+            "param_value"
+          ]
+        },
+        "param_write": {
+          "InstancePort": [
+            "proc",
+            "param_write"
+          ]
+        },
+        "m_axis_out_tvalid": {
+          "InstancePort": [
+            "voice0",
+            "m_axis_out_tvalid"
+          ]
+        },
+        "trigger": {
+          "InstancePortSlice": [
+            "proc",
+            "triggers",
+            {
+              "Bit": 0
+            }
+          ]
+        },
+        "m_axis_out_tdata": {
+          "InstancePort": [
+            "voice0",
+            "m_axis_out_tdata"
+          ]
+        },
+        "param_number": {
+          "InstancePort": [
+            "proc",
+            "param_number"
+          ]
+        },
+        "note_index": {
+          "InstancePort": [
+            "proc",
+            "note_index"
+          ]
         }
       },
       "position": [
-        600,
-        100
+        1523.5,
+        1507.931
       ],
       "manual_bundles": {}
     },
@@ -439,20 +439,38 @@
       "module_ref": "voice_chain",
       "generic_map": {},
       "port_map": {
-        "clk": {
-          "TopPort": "clk"
-        },
-        "rstn": {
-          "TopPort": "rstn"
-        },
-        "note_state": {
-          "InstancePortSlice": [
-            "proc",
-            "note_states",
-            {
-              "Bit": 1
-            }
+        "m_axis_out_tready": {
+          "InstancePort": [
+            "cdc1",
+            "s_tready"
           ]
+        },
+        "velocity": {
+          "InstancePort": [
+            "proc",
+            "velocity"
+          ]
+        },
+        "note_index": {
+          "InstancePort": [
+            "proc",
+            "note_index"
+          ]
+        },
+        "param_number": {
+          "InstancePort": [
+            "proc",
+            "param_number"
+          ]
+        },
+        "param_write": {
+          "InstancePort": [
+            "proc",
+            "param_write"
+          ]
+        },
+        "env_gate": {
+          "TopPort": "env_gate1"
         },
         "trigger": {
           "InstancePortSlice": [
@@ -463,34 +481,13 @@
             }
           ]
         },
-        "note_index": {
-          "InstancePort": [
-            "proc",
-            "note_index"
-          ]
+        "clk": {
+          "TopPort": "clk"
         },
-        "velocity": {
+        "env_cv": {
           "InstancePort": [
-            "proc",
-            "velocity"
-          ]
-        },
-        "param_write": {
-          "InstancePort": [
-            "proc",
-            "param_write"
-          ]
-        },
-        "param_number": {
-          "InstancePort": [
-            "proc",
-            "param_number"
-          ]
-        },
-        "param_value": {
-          "InstancePort": [
-            "proc",
-            "param_value"
+            "voice1",
+            "env_cv"
           ]
         },
         "m_axis_out_tdata": {
@@ -505,25 +502,28 @@
             "m_axis_out_tvalid"
           ]
         },
-        "m_axis_out_tready": {
+        "param_value": {
           "InstancePort": [
-            "cdc1",
-            "s_tready"
+            "proc",
+            "param_value"
           ]
         },
-        "env_cv": {
-          "InstancePort": [
-            "voice1",
-            "env_cv"
+        "note_state": {
+          "InstancePortSlice": [
+            "proc",
+            "note_states",
+            {
+              "Bit": 1
+            }
           ]
         },
-        "env_gate": {
-          "TopPort": "env_gate1"
+        "rstn": {
+          "TopPort": "rstn"
         }
       },
       "position": [
-        600,
-        500
+        1523.5,
+        3579.931
       ],
       "manual_bundles": {}
     },
@@ -534,40 +534,10 @@
         "WIDTH": "24"
       },
       "port_map": {
-        "src_clk": {
-          "TopPort": "clk"
-        },
-        "src_rstn": {
-          "TopPort": "rstn"
-        },
         "s_tdata": {
           "InstancePort": [
             "voice0",
             "m_axis_out_tdata"
-          ]
-        },
-        "s_tvalid": {
-          "InstancePort": [
-            "voice0",
-            "m_axis_out_tvalid"
-          ]
-        },
-        "s_tready": {
-          "InstancePort": [
-            "cdc0",
-            "s_tready"
-          ]
-        },
-        "dst_clk": {
-          "TopPort": "mclk"
-        },
-        "dst_rstn": {
-          "TopPort": "rstn"
-        },
-        "m_tdata": {
-          "InstancePort": [
-            "cdc0",
-            "m_tdata"
           ]
         },
         "m_tvalid": {
@@ -581,11 +551,41 @@
             "i2s0",
             "s_axis_in_tready"
           ]
+        },
+        "src_clk": {
+          "TopPort": "clk"
+        },
+        "dst_rstn": {
+          "TopPort": "rstn"
+        },
+        "src_rstn": {
+          "TopPort": "rstn"
+        },
+        "s_tvalid": {
+          "InstancePort": [
+            "voice0",
+            "m_axis_out_tvalid"
+          ]
+        },
+        "dst_clk": {
+          "TopPort": "mclk"
+        },
+        "s_tready": {
+          "InstancePort": [
+            "cdc0",
+            "s_tready"
+          ]
+        },
+        "m_tdata": {
+          "InstancePort": [
+            "cdc0",
+            "m_tdata"
+          ]
         }
       },
       "position": [
-        1400,
-        100
+        449.0,
+        1446.7858
       ],
       "manual_bundles": {}
     },
@@ -596,8 +596,23 @@
         "DATA_WIDTH": "24"
       },
       "port_map": {
-        "s_axis_in_clk": {
-          "TopPort": "mclk"
+        "s_axis_in_tready": {
+          "InstancePort": [
+            "i2s0",
+            "s_axis_in_tready"
+          ]
+        },
+        "s_axis_in_tvalid": {
+          "InstancePort": [
+            "cdc0",
+            "m_tvalid"
+          ]
+        },
+        "lrclk": {
+          "InstancePort": [
+            "i2s0",
+            "lrclk"
+          ]
         },
         "resetn": {
           "TopPort": "rstn"
@@ -608,76 +623,19 @@
             "m_tdata"
           ]
         },
-        "s_axis_in_tvalid": {
-          "InstancePort": [
-            "cdc0",
-            "m_tvalid"
-          ]
-        },
-        "s_axis_in_tready": {
-          "InstancePort": [
-            "i2s0",
-            "s_axis_in_tready"
-          ]
-        },
-        "bclk": {
-          "InstancePort": [
-            "i2s0",
-            "bclk"
-          ]
-        },
         "sdata": {
-          "InstancePort": [
-            "i2s0",
-            "sdata"
-          ]
-        },
-        "lrclk": {
-          "InstancePort": [
-            "i2s0",
-            "lrclk"
-          ]
-        }
-      },
-      "position": [
-        1600,
-        100
-      ],
-      "manual_bundles": {}
-    },
-    {
-      "name": "selectio0",
-      "module_ref": "selectio",
-      "generic_map": {},
-      "port_map": {
-        "clk_in": {
-          "InstancePort": [
-            "i2s0",
-            "bclk"
-          ]
-        },
-        "data_out_from_device": {
-          "InstancePort": [
-            "i2s0",
-            "sdata"
-          ]
-        },
-        "data_out_to_pins": {
           "TopPort": "sdata0"
         },
-        "clk_to_pins": {
+        "s_axis_in_clk": {
+          "TopPort": "mclk"
+        },
+        "bclk": {
           "TopPort": "bclk_out0"
-        },
-        "clk_reset": {
-          "TopPort": "io_reset"
-        },
-        "io_reset": {
-          "TopPort": "io_reset"
         }
       },
       "position": [
-        1800,
-        100
+        -141.0,
+        1685.4525
       ],
       "manual_bundles": {}
     },
@@ -686,6 +644,9 @@
       "module_ref": "clock_obuf",
       "generic_map": {},
       "port_map": {
+        "clk_reset": {
+          "TopPort": "io_reset"
+        },
         "clk_in": {
           "InstancePort": [
             "i2s0",
@@ -694,14 +655,11 @@
         },
         "clk_to_pins": {
           "TopPort": "lrclk_out0"
-        },
-        "clk_reset": {
-          "TopPort": "io_reset"
         }
       },
       "position": [
-        1800,
-        200
+        460.0,
+        1732.7858
       ],
       "manual_bundles": {}
     },
@@ -721,8 +679,8 @@
         }
       },
       "position": [
-        1800,
-        300
+        -100.0,
+        1519.4525
       ],
       "manual_bundles": {}
     },
@@ -736,8 +694,26 @@
         "src_clk": {
           "TopPort": "clk"
         },
+        "s_tvalid": {
+          "InstancePort": [
+            "voice1",
+            "m_axis_out_tvalid"
+          ]
+        },
         "src_rstn": {
           "TopPort": "rstn"
+        },
+        "m_tvalid": {
+          "InstancePort": [
+            "cdc1",
+            "m_tvalid"
+          ]
+        },
+        "m_tready": {
+          "InstancePort": [
+            "i2s1",
+            "s_axis_in_tready"
+          ]
         },
         "s_tdata": {
           "InstancePort": [
@@ -745,10 +721,10 @@
             "m_axis_out_tdata"
           ]
         },
-        "s_tvalid": {
+        "m_tdata": {
           "InstancePort": [
-            "voice1",
-            "m_axis_out_tvalid"
+            "cdc1",
+            "m_tdata"
           ]
         },
         "s_tready": {
@@ -762,29 +738,11 @@
         },
         "dst_rstn": {
           "TopPort": "rstn"
-        },
-        "m_tdata": {
-          "InstancePort": [
-            "cdc1",
-            "m_tdata"
-          ]
-        },
-        "m_tvalid": {
-          "InstancePort": [
-            "cdc1",
-            "m_tvalid"
-          ]
-        },
-        "m_tready": {
-          "InstancePort": [
-            "i2s1",
-            "s_axis_in_tready"
-          ]
         }
       },
       "position": [
-        1400,
-        500
+        1569.0,
+        3937.931
       ],
       "manual_bundles": {}
     },
@@ -798,13 +756,10 @@
         "s_axis_in_clk": {
           "TopPort": "mclk"
         },
-        "resetn": {
-          "TopPort": "rstn"
-        },
-        "s_axis_in_tdata": {
+        "s_axis_in_tready": {
           "InstancePort": [
-            "cdc1",
-            "m_tdata"
+            "i2s1",
+            "s_axis_in_tready"
           ]
         },
         "s_axis_in_tvalid": {
@@ -813,70 +768,31 @@
             "m_tvalid"
           ]
         },
-        "s_axis_in_tready": {
-          "InstancePort": [
-            "i2s1",
-            "s_axis_in_tready"
-          ]
-        },
         "bclk": {
-          "InstancePort": [
-            "i2s1",
-            "bclk"
-          ]
-        },
-        "sdata": {
-          "InstancePort": [
-            "i2s1",
-            "sdata"
-          ]
+          "TopPort": "bclk_out1"
         },
         "lrclk": {
           "InstancePort": [
             "i2s1",
             "lrclk"
           ]
-        }
-      },
-      "position": [
-        1600,
-        500
-      ],
-      "manual_bundles": {}
-    },
-    {
-      "name": "selectio1",
-      "module_ref": "selectio",
-      "generic_map": {},
-      "port_map": {
-        "clk_in": {
-          "InstancePort": [
-            "i2s1",
-            "bclk"
-          ]
         },
-        "data_out_from_device": {
-          "InstancePort": [
-            "i2s1",
-            "sdata"
-          ]
+        "resetn": {
+          "TopPort": "rstn"
         },
-        "data_out_to_pins": {
+        "sdata": {
           "TopPort": "sdata1"
         },
-        "clk_to_pins": {
-          "TopPort": "bclk_out1"
-        },
-        "clk_reset": {
-          "TopPort": "io_reset"
-        },
-        "io_reset": {
-          "TopPort": "io_reset"
+        "s_axis_in_tdata": {
+          "InstancePort": [
+            "cdc1",
+            "m_tdata"
+          ]
         }
       },
       "position": [
-        1800,
-        500
+        1539.0,
+        4223.931
       ],
       "manual_bundles": {}
     },
@@ -899,8 +815,8 @@
         }
       },
       "position": [
-        1800,
-        600
+        1580.0,
+        4437.931
       ],
       "manual_bundles": {}
     },
@@ -909,19 +825,19 @@
       "module_ref": "clock_obuf",
       "generic_map": {},
       "port_map": {
-        "clk_in": {
-          "TopPort": "mclk"
-        },
         "clk_to_pins": {
           "TopPort": "mclk_out1"
         },
         "clk_reset": {
           "TopPort": "io_reset"
+        },
+        "clk_in": {
+          "TopPort": "mclk"
         }
       },
       "position": [
-        1800,
-        700
+        -100.0,
+        1353.4525
       ],
       "manual_bundles": {}
     },
@@ -929,8 +845,8 @@
       "name": "vcf_gate_or",
       "module_ref": "bitwise_vec_op",
       "generic_map": {
-        "OP": "\"OR\"",
-        "SIZE": "2"
+        "SIZE": "2",
+        "OP": "\"OR\""
       },
       "port_map": {
         "input_vector": {
@@ -947,8 +863,8 @@
         }
       },
       "position": [
-        600,
-        900
+        1569.0,
+        3437.931
       ],
       "manual_bundles": {}
     },
@@ -956,8 +872,8 @@
       "name": "vcf_trig_or",
       "module_ref": "bitwise_vec_op",
       "generic_map": {
-        "OP": "\"OR\"",
-        "SIZE": "2"
+        "SIZE": "2",
+        "OP": "\"OR\""
       },
       "port_map": {
         "input_vector": {
@@ -974,8 +890,8 @@
         }
       },
       "position": [
-        600,
-        1000
+        1572.0,
+        3295.931
       ],
       "manual_bundles": {}
     },
@@ -984,23 +900,14 @@
       "module_ref": "enveloper",
       "generic_map": {
         "ATTACK_ADDR": "80",
-        "DECAY_ADDR": "81",
-        "SUSTAIN_ADDR": "82",
         "RELEASE_ADDR": "83",
-        "CLKS_PER_TICK": "104167"
+        "CLKS_PER_TICK": "104167",
+        "SUSTAIN_ADDR": "82",
+        "DECAY_ADDR": "81"
       },
       "port_map": {
         "clk": {
           "TopPort": "clk"
-        },
-        "rst_n": {
-          "TopPort": "rstn"
-        },
-        "gate": {
-          "InstancePort": [
-            "vcf_gate_or",
-            "result"
-          ]
         },
         "trig": {
           "InstancePort": [
@@ -1008,49 +915,19 @@
             "result"
           ]
         },
-        "param_write": {
+        "gate": {
           "InstancePort": [
-            "proc",
-            "param_write"
+            "vcf_gate_or",
+            "result"
           ]
         },
-        "param_addr": {
-          "InstancePort": [
-            "proc",
-            "param_number"
-          ]
-        },
-        "param_data": {
-          "InstancePort": [
-            "proc",
-            "param_value"
-          ]
-        },
-        "gate_out": null,
         "env_out": {
           "InstancePort": [
             "env_vcf",
             "env_out"
           ]
-        }
-      },
-      "position": [
-        800,
-        900
-      ],
-      "manual_bundles": {}
-    },
-    {
-      "name": "lfo_0",
-      "module_ref": "lfo",
-      "generic_map": {
-        "RATE_ADDR": "85",
-        "CLKS_PER_TICK": "10417"
-      },
-      "port_map": {
-        "clk": {
-          "TopPort": "clk"
         },
+        "gate_out": null,
         "rst_n": {
           "TopPort": "rstn"
         },
@@ -1060,16 +937,37 @@
             "param_write"
           ]
         },
+        "param_data": {
+          "InstancePort": [
+            "proc",
+            "param_value"
+          ]
+        },
         "param_addr": {
           "InstancePort": [
             "proc",
             "param_number"
           ]
-        },
-        "param_data": {
+        }
+      },
+      "position": [
+        1562.0,
+        3009.931
+      ],
+      "manual_bundles": {}
+    },
+    {
+      "name": "lfo_0",
+      "module_ref": "lfo",
+      "generic_map": {
+        "CLKS_PER_TICK": "10417",
+        "RATE_ADDR": "85"
+      },
+      "port_map": {
+        "param_write": {
           "InstancePort": [
             "proc",
-            "param_value"
+            "param_write"
           ]
         },
         "lfo_out": {
@@ -1077,11 +975,29 @@
             "lfo_0",
             "lfo_out"
           ]
+        },
+        "param_addr": {
+          "InstancePort": [
+            "proc",
+            "param_number"
+          ]
+        },
+        "rst_n": {
+          "TopPort": "rstn"
+        },
+        "param_data": {
+          "InstancePort": [
+            "proc",
+            "param_value"
+          ]
+        },
+        "clk": {
+          "TopPort": "clk"
         }
       },
       "position": [
-        800,
-        1100
+        1565.0,
+        2771.931
       ],
       "manual_bundles": {}
     },
@@ -1092,8 +1008,20 @@
         "DEPTH_ADDR": "86"
       },
       "port_map": {
+        "param_addr": {
+          "InstancePort": [
+            "proc",
+            "param_number"
+          ]
+        },
         "clk": {
           "TopPort": "clk"
+        },
+        "lfo_in": {
+          "InstancePort": [
+            "lfo_0",
+            "lfo_out"
+          ]
         },
         "rst_n": {
           "TopPort": "rstn"
@@ -1104,28 +1032,10 @@
             "param_write"
           ]
         },
-        "param_addr": {
-          "InstancePort": [
-            "proc",
-            "param_number"
-          ]
-        },
         "param_data": {
           "InstancePort": [
             "proc",
             "param_value"
-          ]
-        },
-        "env_in": {
-          "InstancePort": [
-            "env_vcf",
-            "env_out"
-          ]
-        },
-        "lfo_in": {
-          "InstancePort": [
-            "lfo_0",
-            "lfo_out"
           ]
         },
         "cv_out": {
@@ -1133,11 +1043,17 @@
             "mix",
             "cv_out"
           ]
+        },
+        "env_in": {
+          "InstancePort": [
+            "env_vcf",
+            "env_out"
+          ]
         }
       },
       "position": [
-        1000,
-        1000
+        1565.5,
+        2485.931
       ],
       "manual_bundles": {}
     },
@@ -1148,11 +1064,11 @@
         "CLK_DIV": "260"
       },
       "port_map": {
-        "clk": {
-          "TopPort": "clk"
-        },
-        "rst_n": {
-          "TopPort": "rstn"
+        "ch_b": {
+          "InstancePort": [
+            "voice1",
+            "env_cv"
+          ]
         },
         "ch_a": {
           "InstancePort": [
@@ -1160,11 +1076,17 @@
             "env_cv"
           ]
         },
-        "ch_b": {
-          "InstancePort": [
-            "voice1",
-            "env_cv"
-          ]
+        "rst_n": {
+          "TopPort": "rstn"
+        },
+        "clk": {
+          "TopPort": "clk"
+        },
+        "ldac": {
+          "TopPort": "DAC_SS"
+        },
+        "scl": {
+          "TopPort": "DAC_SCLK"
         },
         "ch_c": {
           "InstancePort": [
@@ -1172,19 +1094,13 @@
             "cv_out"
           ]
         },
-        "scl": {
-          "TopPort": "DAC_SCLK"
-        },
         "sda": {
           "TopPort": "DAC_MOSI"
-        },
-        "ldac": {
-          "TopPort": "DAC_SS"
         }
       },
       "position": [
-        1200,
-        1000
+        1580.0,
+        2223.931
       ],
       "manual_bundles": {}
     }
@@ -1211,6 +1127,8 @@
     "rtl/cv/axis_cdc.vhd",
     "rtl/audio/i2s_manager.vhd",
     "rtl/audio/clocked_data_out.v",
-    "rtl/audio/clock_obuf.vhd"
+    "rtl/audio/clock_obuf.vhd",
+    "rtl/registers/map_reg.vhd",
+    "rtl/audio/i2s_tx.vhd"
   ]
 }
