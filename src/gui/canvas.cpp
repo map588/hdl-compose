@@ -37,6 +37,15 @@ QString allocate_instance_name(AppState *state, const QString &module) {
 
 // --- WireItem hover (needs full CanvasLayer type) ----------------------------
 
+void WireItem::mousePressEvent(QGraphicsSceneMouseEvent *event) {
+    if (event->button() == Qt::LeftButton && m_layer && m_layer->wireTool()->armed()) {
+        m_layer->wireTool()->onWirePressed(CanvasLayer::baseKey(m_source_key));
+        event->accept();
+        return;
+    }
+    QGraphicsPathItem::mousePressEvent(event);
+}
+
 void WireItem::hoverEnterEvent(QGraphicsSceneHoverEvent *) {
     if (m_layer)
         m_layer->setHoveredNet(CanvasLayer::baseKey(m_source_key));
@@ -158,7 +167,9 @@ void WireTool::clearProvisional() {
 void WireTool::createProvisional(PortPinItem *from, const QPointF &scene_pos) {
     clearProvisional();
     m_provisional = new QGraphicsPathItem();
-    QPen pen(QColor(255, 215, 64, 180), 1.5);
+    QColor accent = kWiringAccent;
+    accent.setAlpha(190);
+    QPen pen(accent, 1.5);
     pen.setCosmetic(true);
     pen.setStyle(Qt::DashLine);
     m_provisional->setPen(pen);
@@ -193,6 +204,25 @@ void WireTool::onPinPressed(PortPinItem *pin, const QPointF &scene_pos) {
     m_armed = pin;
     pin->setArmedState(true);
     createProvisional(pin, scene_pos);
+}
+
+void WireTool::onWirePressed(const QString &net_pin_key) {
+    if (!m_armed || net_pin_key.isEmpty())
+        return;
+    FfiConnectResult r = m_state->connect_pins(m_armed->key(), net_pin_key);
+    if (!r.committed) {
+        if (!r.error.empty()) {
+            m_armed->flashRed();
+            QToolTip::showText(QCursor::pos(),
+                               QString::fromUtf8(r.error.data(), static_cast<int>(r.error.size())));
+        }
+        return; // stay armed — the user can still pick a pin
+    }
+    if (r.sticky) {
+        clearProvisional();
+        return;
+    }
+    cancel();
 }
 
 void WireTool::onPinDragMove(const QPointF &scene_pos) {

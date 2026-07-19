@@ -53,7 +53,9 @@ QPainterPath PortPinItem::shape() const {
     qreal y = m_slot * kPinSlotHeight + kPinSlotHeight / 2.0;
     qreal pw = m_parent ? m_parent->width() : kMinInstanceWidth;
     qreal tip_x = (m_side == PinSide::Left) ? 0 : pw;
-    qreal half = 9.0;
+    // Full slot height: adjacent pin targets tile edge-to-edge, so a near
+    // miss still lands on the intended pin instead of the instance body.
+    qreal half = kPinSlotHeight / 2.0;
     p.addRect(QRectF(tip_x - half, y - half, 2 * half, 2 * half));
     return p;
 }
@@ -147,10 +149,14 @@ void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWi
             setToolTip(tip);
     }
 
-    // Armed-state halo: yellow ring around the pin tip when WireTool has armed us.
+    // Armed-state halo: dashed cyan ring — matches the provisional wire so
+    // "wiring in progress" reads as one visual, distinct from the solid
+    // amber/red validation rings.
     if (m_armed_state) {
         painter->setBrush(Qt::NoBrush);
-        painter->setPen(QPen(QColor(255, 215, 64), 2.5));
+        QPen armed_pen(kWiringAccent, 2.5);
+        armed_pen.setStyle(Qt::DashLine);
+        painter->setPen(armed_pen);
         painter->drawEllipse(QPointF(tip_x, y), kPinShapeSize + 2, kPinShapeSize + 2);
     }
 

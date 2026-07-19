@@ -1621,8 +1621,9 @@ class MainWindow : public QMainWindow {
         box.setText(QStringLiteral(
             "<b>Wiring</b><br>"
             "Click a pin, then click another pin — or drag pin to pin. Esc cancels.<br>"
+            "With a pin armed (dashed cyan ring), click an existing wire to join its net.<br>"
             "Input-to-input wiring joins loads on one net (tool stays armed for fan-out).<br>"
-            "Hover a wire to highlight its whole net.<br><br>"
+            "Clicking anything that isn't a pin or wire cancels. Hover a wire to highlight its net.<br><br>"
             "<b>Right-click</b><br>"
             "Wire &rarr; set net alias (signal name in generated HDL).<br>"
             "Pin &rarr; promote to top-level port, connect slice, clear connection.<br>"

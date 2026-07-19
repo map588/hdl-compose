@@ -53,6 +53,9 @@ class WireTool {
     void onPinPressed(PortPinItem *pin, const QPointF &scene_pos);
     void onPinDragMove(const QPointF &scene_pos);
     void onPinReleased(const QPointF &scene_pos);
+    // Armed pin clicked onto an existing wire: join the armed pin to that
+    // wire's net (via any pin key on the net). No-op when not armed.
+    void onWirePressed(const QString &net_pin_key);
 
     void cancel();
     void notifyPinDestroyed(PortPinItem *pin) {
@@ -220,6 +223,14 @@ class CanvasView : public QGraphicsView {
         if (m_wire_tool && hit == m_wire_tool->provisionalItem())
             hit = nullptr;
         bool empty_click = event->button() == Qt::LeftButton && hit == nullptr;
+        // Armed wiring: a click that lands on anything other than a pin or a
+        // wire (instance body, label, ...) can't complete the connection —
+        // cancel instead of leaving the provisional line dangling.
+        if (m_wire_tool && m_wire_tool->armed() && event->button() == Qt::LeftButton
+            && hit != nullptr && dynamic_cast<PortPinItem *>(hit) == nullptr
+            && dynamic_cast<WireItem *>(hit) == nullptr) {
+            m_wire_tool->cancel();
+        }
         QGraphicsView::mousePressEvent(event);
         if (empty_click) {
             if (m_wire_tool && m_wire_tool->armed())
@@ -239,9 +250,19 @@ class CanvasView : public QGraphicsView {
         }
         QGraphicsView::mouseMoveEvent(event);
         // Click-click wiring: keep the provisional line tracking the cursor
-        // between the arming click and the closing click.
-        if (m_wire_tool && m_wire_tool->armed())
+        // between the arming click and the closing click, and show a
+        // crosshair so wiring mode is unmistakable.
+        const bool wiring = m_wire_tool && m_wire_tool->armed();
+        if (wiring)
             m_wire_tool->updateProvisional(mapToScene(event->position().toPoint()));
+        if (wiring != m_wiring_cursor) {
+            m_wiring_cursor = wiring;
+            if (wiring) {
+                viewport()->setCursor(Qt::CrossCursor);
+            } else {
+                viewport()->unsetCursor();
+            }
+        }
     }
 
     void mouseReleaseEvent(QMouseEvent *event) override {
@@ -303,6 +324,7 @@ class CanvasView : public QGraphicsView {
     bool m_panning = false;
     double m_zoom = 1.0;
     WireTool *m_wire_tool = nullptr;
+    bool m_wiring_cursor = false;
     CanvasLayer *m_canvas_layer = nullptr;
 };
 

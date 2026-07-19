@@ -122,6 +122,11 @@ class JunctionDotItem : public QGraphicsEllipseItem {
 
 // --- WireItem ---------------------------------------------------------------
 
+// Wiring-mode accent: armed-pin halo + provisional wire. Deliberately cyan —
+// nothing else on the canvas uses it, so "wiring in progress" can't be
+// mistaken for the amber/red validation rings or the blue selection disc.
+inline const QColor kWiringAccent(0, 210, 255);
+
 class WireItem : public QGraphicsPathItem {
   public:
     WireItem(const QString &source_key, const QString &target_key)
@@ -190,6 +195,13 @@ class WireItem : public QGraphicsPathItem {
     }
     void setCanvasLayer(CanvasLayer *layer) { m_layer = layer; }
 
+  protected:
+    // Armed wiring click on a wire joins the armed pin to this wire's net;
+    // otherwise the click selects the wire as before. Body in canvas.cpp
+    // (needs the full CanvasLayer type).
+    void mousePressEvent(QGraphicsSceneMouseEvent *event) override;
+
+  public:
     // Net hover: brighter, thicker pen on every wire of the hovered net so
     // fan-out is traceable. Driven by CanvasLayer::setHoveredNet.
     void setNetHover(bool hover) {
@@ -664,7 +676,9 @@ class TopPortItem : public PortPinItem {
 
     QPainterPath shape() const override {
         QPainterPath p;
-        qreal half = 9.0;
+        // Match the instance-pin hit size (full slot height) — top ports are
+        // the most common wiring target and deserve the forgiving box.
+        qreal half = kPinSlotHeight / 2.0;
         p.addRect(QRectF(-half, -half, 2 * half, 2 * half));
         return p;
     }
@@ -674,10 +688,13 @@ class TopPortItem : public PortPinItem {
     void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) override {
         painter->setRenderHint(QPainter::Antialiasing);
 
+        // Selection is a filled translucent disc — a different visual class
+        // from the outline rings (validation) and the dashed ring (wiring),
+        // so the three states can't be confused.
         if (option && (option->state & QStyle::State_Selected)) {
-            painter->setBrush(Qt::NoBrush);
-            painter->setPen(QPen(QColor(66, 180, 244), 2.0));
-            painter->drawEllipse(QPointF(0, 0), kPinShapeSize + 2, kPinShapeSize + 2);
+            painter->setPen(QPen(QColor(66, 180, 244), 1.0));
+            painter->setBrush(QColor(66, 180, 244, 70));
+            painter->drawEllipse(QPointF(0, 0), kPinShapeSize + 4, kPinShapeSize + 4);
         }
 
         // Validation ring + tooltip, same scheme as PortPinItem::paint.
@@ -685,7 +702,9 @@ class TopPortItem : public PortPinItem {
 
         if (armedState()) {
             painter->setBrush(Qt::NoBrush);
-            painter->setPen(QPen(QColor(255, 215, 64), 2.5));
+            QPen armed_pen(kWiringAccent, 2.5);
+            armed_pen.setStyle(Qt::DashLine);
+            painter->setPen(armed_pen);
             painter->drawEllipse(QPointF(0, 0), kPinShapeSize + 2, kPinShapeSize + 2);
         }
 
@@ -720,10 +739,15 @@ class TopPortItem : public PortPinItem {
     }
 
     QRectF boundingRect() const override {
+        // United with the disc box so the selection fill / armed halo
+        // (radius kPinShapeSize + 4) stays inside the rect.
+        constexpr qreal r = kPinShapeSize + 6;
+        const QRectF disc(-r, -r, 2 * r, 2 * r);
         if (side() == PinSide::Left) {
-            return QRectF(-300 - kPinShapeSize - 6, -kPinSlotHeight / 2.0, 300 + kPinShapeSize + 6, kPinSlotHeight);
+            return QRectF(-300 - kPinShapeSize - 6, -kPinSlotHeight / 2.0, 300 + kPinShapeSize + 6, kPinSlotHeight)
+                .united(disc);
         }
-        return QRectF(0, -kPinSlotHeight / 2.0, kPinShapeSize + 6 + 300, kPinSlotHeight);
+        return QRectF(0, -kPinSlotHeight / 2.0, kPinShapeSize + 6 + 300, kPinSlotHeight).united(disc);
     }
 
   private:
