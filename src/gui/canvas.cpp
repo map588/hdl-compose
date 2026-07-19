@@ -37,6 +37,22 @@ QString allocate_instance_name(AppState *state, const QString &module) {
 
 // --- WireItem hover (needs full CanvasLayer type) ----------------------------
 
+// --- PortPinItem net-hover (needs full CanvasLayer type) ---------------------
+
+CanvasLayer *PortPinItem::canvasLayer() const {
+    return m_parent ? m_parent->canvasLayer() : nullptr;
+}
+
+void PortPinItem::hoverEnterEvent(QGraphicsSceneHoverEvent *) {
+    if (CanvasLayer *layer = canvasLayer(); layer && !m_key.isEmpty())
+        layer->setHoveredNetForPin(m_key);
+}
+
+void PortPinItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *) {
+    if (CanvasLayer *layer = canvasLayer())
+        layer->setHoveredNet(QString());
+}
+
 void WireItem::mousePressEvent(QGraphicsSceneMouseEvent *event) {
     if (event->button() == Qt::LeftButton && m_layer && m_layer->wireTool()->armed()) {
         m_layer->wireTool()->onWirePressed(CanvasLayer::baseKey(m_source_key));

@@ -170,18 +170,19 @@ class WireItem : public QGraphicsPathItem {
     QPainterPath shape() const override {
         QPainterPathStroker stroker;
         stroker.setWidth(10.0);
-        // Trim the first and last segments out of the hit shape so the wire
-        // doesn't intercept clicks on the port pin under its endpoints. The
-        // wire still RENDERS edge-to-edge — only its clickable region is
-        // shortened to the trunk/bridge segments between the stubs.
-        if (m_waypoints.size() >= 4) {
-            QPainterPath trimmed;
-            trimmed.moveTo(m_waypoints[1]);
-            for (int i = 2; i < m_waypoints.size() - 1; ++i)
-                trimmed.lineTo(m_waypoints[i]);
-            return stroker.createStroke(trimmed);
+        // The whole run is hoverable/clickable — including the port stubs, so
+        // net-hover lights up right to the pin — except a small disc at each
+        // endpoint, which is cleared so clicks there always reach the pin
+        // underneath instead of the wire.
+        QPainterPath s = stroker.createStroke(path());
+        if (m_waypoints.size() >= 2) {
+            QPainterPath ends;
+            constexpr qreal r = 14.0;
+            ends.addEllipse(m_waypoints.first(), r, r);
+            ends.addEllipse(m_waypoints.last(), r, r);
+            s = s.subtracted(ends);
         }
-        return stroker.createStroke(path());
+        return s;
     }
 
     QRectF boundingRect() const override {
@@ -357,6 +358,9 @@ class PortPinItem : public QGraphicsItem {
     bool armedState() const { return m_armed_state; }
 
     virtual QPointF tipScenePos() const;
+    // Layer access for net-hover; instance pins reach it via their parent,
+    // TopPortItem overrides with its own pointer. Bodies in canvas.cpp.
+    virtual CanvasLayer *canvasLayer() const;
 
     void flashRed(int ms = 500);
 
@@ -369,6 +373,9 @@ class PortPinItem : public QGraphicsItem {
     void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override;
     void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override;
     void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override;
+    // Hovering a pin lights its whole net, same as hovering a wire.
+    void hoverEnterEvent(QGraphicsSceneHoverEvent *event) override;
+    void hoverLeaveEvent(QGraphicsSceneHoverEvent *event) override;
 
     QString m_name;
     QString m_key;
@@ -534,6 +541,7 @@ class InstanceItem : public QGraphicsRectItem {
     }
 
     void setCanvasLayer(CanvasLayer *layer) { m_canvas_layer = layer; }
+    CanvasLayer *canvasLayer() const { return m_canvas_layer; }
 
     QPointF portAnchorScenePos(const QString &port_name) const {
         auto it = m_port_anchor.find(port_name);
@@ -668,6 +676,7 @@ class TopPortItem : public PortPinItem {
     }
 
     void setLayer(CanvasLayer *layer) { m_layer = layer; }
+    CanvasLayer *canvasLayer() const override { return m_layer; }
     // The edge X this port snaps to; dragging only changes Y.
     void setLockedX(qreal x) { m_locked_x = x; }
     qreal lockedX() const { return m_locked_x; }
@@ -688,16 +697,35 @@ class TopPortItem : public PortPinItem {
     void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) override {
         painter->setRenderHint(QPainter::Antialiasing);
 
-        // Selection is a filled translucent disc — a different visual class
-        // from the outline rings (validation) and the dashed ring (wiring),
-        // so the three states can't be confused.
+        // Label metrics first — the selection highlight hugs pin + text.
+        QString label = portName();
+        QString w = format_width(width());
+        if (!w.isEmpty())
+            label += w;
+        QFont f = painter->font();
+        f.setBold(true);
+        label = QFontMetrics(f).elidedText(label, Qt::ElideMiddle, 300);
+        const qreal text_w = QFontMetrics(f).horizontalAdvance(label);
+
+        // Selection: rounded highlight behind the pin glyph and its label —
+        // a list-row style fill + outline, distinct from the validation
+        // square and the dashed wiring ring.
         if (option && (option->state & QStyle::State_Selected)) {
-            painter->setPen(QPen(QColor(66, 180, 244), 1.0));
-            painter->setBrush(QColor(66, 180, 244, 70));
-            painter->drawEllipse(QPointF(0, 0), kPinShapeSize + 4, kPinShapeSize + 4);
+            const qreal hpad = 5.0;
+            QRectF hl;
+            if (side() == PinSide::Left) {
+                hl = QRectF(-kPinShapeSize - 6 - text_w - hpad, -kPinSlotHeight / 2.0 + 2,
+                            kPinShapeSize + 6 + text_w + 2 * hpad, kPinSlotHeight - 4);
+            } else {
+                hl = QRectF(-hpad, -kPinSlotHeight / 2.0 + 2,
+                            kPinShapeSize + 6 + text_w + 2 * hpad, kPinSlotHeight - 4);
+            }
+            painter->setPen(QPen(QColor(66, 180, 244), 1.5));
+            painter->setBrush(QColor(66, 180, 244, 45));
+            painter->drawRoundedRect(hl, 5.0, 5.0);
         }
 
-        // Validation ring + tooltip, same scheme as PortPinItem::paint.
+        // Validation marker + tooltip, same scheme as PortPinItem::paint.
         paintIssueRing(painter, QPointF(0, 0));
 
         if (armedState()) {
@@ -720,15 +748,8 @@ class TopPortItem : public PortPinItem {
         }
         painter->drawPolygon(poly);
 
-        QString label = portName();
-        QString w = format_width(width());
-        if (!w.isEmpty())
-            label += w;
-        QFont f = painter->font();
-        f.setBold(true);
         painter->setFont(f);
         painter->setPen(QColor(220, 220, 220));
-        label = painter->fontMetrics().elidedText(label, Qt::ElideMiddle, 300);
         if (side() == PinSide::Left) {
             painter->drawText(QRectF(-300 - kPinShapeSize - 6, -kPinSlotHeight / 2.0, 300, kPinSlotHeight),
                               Qt::AlignRight | Qt::AlignVCenter, label);

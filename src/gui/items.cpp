@@ -21,6 +21,7 @@ namespace hdlc {
 PortPinItem::PortPinItem(const QString &name, int direction, int width, PinSide side, InstanceItem *parent)
     : QGraphicsItem(parent), m_name(name), m_direction(direction), m_width(width), m_side(side), m_parent(parent) {
     setAcceptedMouseButtons(Qt::LeftButton);
+    setAcceptHoverEvents(true);
     QString tip = m_name;
     QString w = format_width(m_width);
     if (!w.isEmpty())
@@ -122,10 +123,21 @@ void PortPinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWi
         QString base_tip = m_name + format_width(m_width);
         QString tip = base_tip;
         if (issue > 0) {
+            // Snug rounded square around the pin glyph only — a big ring
+            // swallowed the port label.
             painter->setBrush(Qt::NoBrush);
-            QPen ring(issue >= 2 ? QColor(232, 72, 60) : QColor(255, 179, 0), 2.0);
+            QPen ring(issue >= 2 ? QColor(232, 72, 60) : QColor(255, 179, 0), 1.5);
             painter->setPen(ring);
-            painter->drawEllipse(QPointF(tip_x, y), kPinShapeSize + 3, kPinShapeSize + 3);
+            const qreal pad = 2.5;
+            QRectF box = (m_direction == 2)
+                             ? QRectF(tip_x - kPinShapeSize / 2.0 - pad, y - kPinShapeSize / 2.0 - pad,
+                                      kPinShapeSize + 2 * pad, kPinShapeSize + 2 * pad)
+                         : (m_side == PinSide::Left)
+                             ? QRectF(tip_x - kPinShapeSize - pad, y - kPinShapeSize / 2.0 - pad,
+                                      kPinShapeSize + 2 * pad, kPinShapeSize + 2 * pad)
+                             : QRectF(tip_x - pad, y - kPinShapeSize / 2.0 - pad,
+                                      kPinShapeSize + 2 * pad, kPinShapeSize + 2 * pad);
+            painter->drawRoundedRect(box, 2.0, 2.0);
             tip = base_tip + QStringLiteral("\n") + state->pin_issue_message(m_key);
         }
         // Collapsed group block: tooltip names the internal origin pin(s).
@@ -983,10 +995,16 @@ void TopPortItem::paintIssueRing(QPainter *painter, const QPointF &center) {
     int issue = state->pin_issue_level(key());
     QString tip = portName() + format_width(width());
     if (issue > 0) {
+        // Snug rounded square around the triangle glyph — same language as
+        // instance pins, and it stays clear of the port label.
         painter->setBrush(Qt::NoBrush);
-        QPen ring(issue >= 2 ? QColor(232, 72, 60) : QColor(255, 179, 0), 2.0);
+        QPen ring(issue >= 2 ? QColor(232, 72, 60) : QColor(255, 179, 0), 1.5);
         painter->setPen(ring);
-        painter->drawEllipse(center, kPinShapeSize + 3, kPinShapeSize + 3);
+        const qreal pad = 2.5;
+        const qreal x0 = (side() == PinSide::Left) ? center.x() - kPinShapeSize - pad : center.x() - pad;
+        painter->drawRoundedRect(QRectF(x0, center.y() - kPinShapeSize / 2.0 - pad,
+                                        kPinShapeSize + 2 * pad, kPinShapeSize + 2 * pad),
+                                 2.0, 2.0);
         tip += QStringLiteral("\n") + state->pin_issue_message(key());
     }
     if (tip != toolTip())

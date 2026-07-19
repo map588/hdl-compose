@@ -681,7 +681,7 @@ class MainWindow : public QMainWindow {
 
         sidebar_splitter->addWidget(m_tree_view);
         sidebar_splitter->addWidget(library_container);
-        sidebar_splitter->setSizes({500, 300});
+        sidebar_splitter->setSizes({600, 200});
 
         // Canvas.
         auto *scene = new QGraphicsScene(m_root_splitter);
@@ -697,7 +697,8 @@ class MainWindow : public QMainWindow {
         // between per-instance editing (default) and top-level entity
         // editing. Panel stays visible so the Top Level button is always
         // reachable even when nothing is selected.
-        auto *editor_panel = new QWidget(m_root_splitter);
+        m_editor_panel = new QWidget(m_root_splitter);
+        auto *editor_panel = m_editor_panel;
         editor_panel->setMinimumWidth(300);
         auto *editor_layout = new QVBoxLayout(editor_panel);
         editor_layout->setContentsMargins(0, 0, 0, 0);
@@ -727,9 +728,12 @@ class MainWindow : public QMainWindow {
         m_root_splitter->addWidget(editor_panel);
         m_root_splitter->setSizes({250, 800, 350});
         // Editor panel can be dragged narrow but not collapsed to zero —
-        // otherwise the splitter handle disappears. The Show Editor toolbar
-        // action restores it forcibly.
+        // otherwise the splitter handle disappears. The Editor toolbar
+        // toggle restores it forcibly.
         m_root_splitter->setCollapsible(2, false);
+        // Canvas-first: the editor panel starts hidden; the toolbar Editor
+        // toggle (Ctrl+\) reveals it.
+        editor_panel->hide();
         setCentralWidget(m_root_splitter);
     }
 
@@ -836,9 +840,11 @@ class MainWindow : public QMainWindow {
         fileToolbar->addSeparator();
         fileToolbar->addAction(optimizeAct);
 
-        // Force-reopen the editor panel if the user dragged it narrow.
-        auto *showEditorAct = new QAction(QStringLiteral("Show Editor"), this);
-        showEditorAct->setToolTip(QStringLiteral("Restore the editor panel to its default width."));
+        // Toggle the editor panel (starts hidden); showing also restores a
+        // sane width if the user previously dragged it narrow.
+        auto *showEditorAct = new QAction(QStringLiteral("Editor"), this);
+        showEditorAct->setCheckable(true);
+        showEditorAct->setToolTip(QStringLiteral("Show/hide the mini-editor panel."));
         showEditorAct->setShortcut(QKeySequence(QStringLiteral("Ctrl+\\")));
         fileToolbar->addSeparator();
         fileToolbar->addAction(showEditorAct);
@@ -857,7 +863,14 @@ class MainWindow : public QMainWindow {
         connect(matchByNameAct, &QAction::triggered, this, &MainWindow::onMatchByName);
         connect(renameInstAct, &QAction::triggered, this, &MainWindow::onRenameSelected);
         connect(deleteInstAct, &QAction::triggered, this, &MainWindow::onDeleteSelected);
-        connect(showEditorAct, &QAction::triggered, this, &MainWindow::showEditorPanel);
+        connect(showEditorAct, &QAction::toggled, this, [this](bool on) {
+            if (on) {
+                m_editor_panel->show();
+                showEditorPanel();
+            } else {
+                m_editor_panel->hide();
+            }
+        });
         connect(zoomFitAct, &QAction::triggered, this, [this]() {
             if (m_canvas)
                 m_canvas->zoomToFit();
@@ -1820,6 +1833,7 @@ class MainWindow : public QMainWindow {
     CanvasView *m_canvas = nullptr;
     QMenu *m_recent_menu = nullptr;
     std::unique_ptr<CanvasLayer> m_canvas_layer;
+    QWidget *m_editor_panel = nullptr;
     QPushButton *m_editor_top_level_btn = nullptr;
     QPlainTextEdit *m_editor = nullptr;
     MiniEditorHighlighter *m_highlighter = nullptr;
@@ -1860,6 +1874,6 @@ extern "C" int run_gui(int *argc, char **argv) {
     apply_material_dark_theme(app);
 
     MainWindow window;
-    window.show();
+    window.showMaximized();
     return app.exec();
 }

@@ -713,6 +713,19 @@ class CanvasLayer {
             w->setNetHover(!base.isEmpty() && baseKey(w->sourceKey()) == base);
     }
 
+    // Net hover from a PIN: a load pin's key differs from the net's source
+    // key, so resolve through any wire touching the pin before highlighting.
+    void setHoveredNetForPin(const QString &pin_key) {
+        const QString base = baseKey(pin_key);
+        for (auto *w : m_wires) {
+            if (baseKey(w->sourceKey()) == base || baseKey(w->targetKey()) == base) {
+                setHoveredNet(baseKey(w->sourceKey()));
+                return;
+            }
+        }
+        setHoveredNet(QString());
+    }
+
     // Keep the scene rect covering everything placed so far (plus working
     // margin) — the old fixed ±2000 rect made wide designs unreachable by
     // scrolling. Never shrinks below the default workspace.
