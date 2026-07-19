@@ -332,6 +332,12 @@ static QString sh_quote(const QString &s) {
     return QStringLiteral("'") + escaped + QStringLiteral("'");
 }
 
+// Open a source file in the user-configured editor. One command template,
+// run through the user's login shell exactly as if typed in a terminal:
+// {file} is replaced with the shell-quoted absolute path (appended when the
+// placeholder is absent). TUI editors bring their own terminal in the
+// command itself, e.g. "kitty -e nvim {file}" — no AppleScript, no
+// per-terminal dialects, works the same for every user and platform.
 void launch_goto_source(QWidget *parent, const QString &source_path) {
     if (source_path.isEmpty()) {
         QMessageBox::information(parent, QStringLiteral("Goto Source"), QStringLiteral("Source path unavailable."));
@@ -340,92 +346,37 @@ void launch_goto_source(QWidget *parent, const QString &source_path) {
     QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
     QString cmd = settings.value(QStringLiteral("editor_command")).toString().trimmed();
     if (cmd.isEmpty()) {
-        QMessageBox::information(parent, QStringLiteral("Goto Source"),
-                                 QStringLiteral("No external editor configured. Set one in "
-                                                "File → Preferences."));
+        QMessageBox::information(
+            parent, QStringLiteral("Goto Source"),
+            QStringLiteral("No external editor configured. Set one in File \u2192 Preferences.\n\n"
+                           "The command runs through your shell; {file} is the source path.\n"
+                           "Examples:  code -g {file}   \u00b7   zed {file}   \u00b7   kitty -e nvim {file}"));
         return;
     }
-    bool in_terminal = settings.value(QStringLiteral("editor_in_terminal"), false).toBool();
 
-    QStringList parts = cmd.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-    QString program = parts.takeFirst();
-    parts << source_path;
+    const QString quoted = sh_quote(QFileInfo(source_path).absoluteFilePath());
+    QString line = cmd;
+    if (line.contains(QStringLiteral("{file}"))) {
+        line.replace(QStringLiteral("{file}"), quoted);
+    } else {
+        line += QChar(' ');
+        line += quoted;
+    }
 
-    if (in_terminal) {
-#ifdef __APPLE__
-        // .app bundles have no TTY — terminal editors (nvim, vim, emacs -nw)
-        // exit immediately. Launch inside the user's preferred macOS terminal
-        // app via osascript. Default "Terminal" (always present on macOS);
-        // user-configurable in Preferences (e.g. "iTerm", "Alacritty",
-        // "kitty", "Ghostty" — anything that implements `do script`).
-        QString terminal_app = settings
-            .value(QStringLiteral("terminal_app"), QStringLiteral("Terminal"))
-            .toString()
-            .trimmed();
-        if (terminal_app.isEmpty()) {
-            terminal_app = QStringLiteral("Terminal");
-        }
-        QString shell_cmd = sh_quote(program);
-        for (const QString &p : parts) {
-            shell_cmd += QChar(' ');
-            shell_cmd += sh_quote(p);
-        }
-        QString as_escaped = shell_cmd;
-        as_escaped.replace(QChar('\\'), QStringLiteral("\\\\"));
-        as_escaped.replace(QChar('"'), QStringLiteral("\\\""));
-        // iTerm uses a different AppleScript dialect — `do script` is a
-        // Terminal.app-only command. iTerm needs `create window` + a session
-        // `write text`. Branch on app name so both Just Work.
-        QString script;
-        if (terminal_app.compare(QStringLiteral("iTerm"), Qt::CaseInsensitive) == 0
-            || terminal_app.compare(QStringLiteral("iTerm2"), Qt::CaseInsensitive) == 0) {
-            script = QStringLiteral(
-                "tell application \"%1\"\n"
-                "  activate\n"
-                "  set newWin to (create window with default profile)\n"
-                "  tell current session of newWin to write text \"%2\"\n"
-                "end tell")
-                .arg(terminal_app, as_escaped);
-        } else {
-            script = QStringLiteral("tell application \"%1\" to do script \"%2\"\n"
-                                    "tell application \"%1\" to activate")
-                         .arg(terminal_app, as_escaped);
-        }
-        // Run synchronously so we can surface osascript's exit code + stderr.
-        // startDetached only fails if the process couldn't spawn at all; it
-        // returns true even when AppleScript itself errors out, which made the
-        // failure mode silent. Sync wait on osascript is fast (sub-second).
-        QProcess proc;
-        proc.start(QStringLiteral("/usr/bin/osascript"),
-                   QStringList{QStringLiteral("-e"), script});
-        if (!proc.waitForStarted(2000)) {
-            QMessageBox::warning(parent, QStringLiteral("Goto Source"),
-                                 QStringLiteral("Could not start osascript."));
-            return;
-        }
-        proc.waitForFinished(5000);
-        if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
-            QString err = QString::fromLocal8Bit(proc.readAllStandardError()).trimmed();
-            if (err.isEmpty()) {
-                err = QStringLiteral("exit code %1").arg(proc.exitCode());
-            }
-            QMessageBox::warning(parent, QStringLiteral("Goto Source"),
-                                 QStringLiteral("Failed to launch %1 in %2:\n%3")
-                                     .arg(cmd, terminal_app, err));
-        }
-        return;
+#ifdef Q_OS_WIN
+    const QString shell = QStringLiteral("cmd");
+    const QStringList args{QStringLiteral("/C"), line};
 #else
-        QMessageBox::warning(parent, QStringLiteral("Goto Source"),
-            QStringLiteral("Terminal-mode launch is currently macOS-only. "
-                           "Either uncheck \"Run editor in terminal\" or set "
-                           "editor_command to a self-contained terminal "
-                           "wrapper (e.g. \"xterm -e nvim\")."));
-        return;
+    // Login shell so the user's PATH applies even when the app was launched
+    // from Finder/desktop rather than a terminal.
+    QString shell = qEnvironmentVariable("SHELL");
+    if (shell.isEmpty())
+        shell = QStringLiteral("/bin/sh");
+    const QStringList args{QStringLiteral("-l"), QStringLiteral("-c"), line};
 #endif
-    }
-
-    if (!QProcess::startDetached(program, parts)) {
-        QMessageBox::warning(parent, QStringLiteral("Goto Source"), QStringLiteral("Failed to launch: %1").arg(cmd));
+    if (!QProcess::startDetached(shell, args)) {
+        QMessageBox::warning(parent, QStringLiteral("Goto Source"),
+                             QStringLiteral("Failed to launch: %1").arg(line));
     }
 }
 
@@ -471,19 +422,11 @@ void prompt_preferences(QWidget *parent) {
 
     auto *editor_edit = new QLineEdit(&dlg);
     editor_edit->setText(settings.value(QStringLiteral("editor_command"), QString()).toString());
-    editor_edit->setPlaceholderText(QStringLiteral("e.g. nvim, code, zed"));
-
-    auto *in_term_check = new QCheckBox(
-        QStringLiteral("Run editor in terminal (required for nvim/vim)"), &dlg);
-    in_term_check->setChecked(settings.value(QStringLiteral("editor_in_terminal"), false).toBool());
-
-    auto *terminal_edit = new QLineEdit(&dlg);
-    terminal_edit->setText(
-        settings.value(QStringLiteral("terminal_app"), QStringLiteral("Terminal")).toString());
-    terminal_edit->setPlaceholderText(QStringLiteral("Terminal, iTerm, Alacritty, kitty, Ghostty"));
-    terminal_edit->setToolTip(QStringLiteral(
-        "macOS only. Application name used by AppleScript `do script` to host "
-        "the editor process. Must support `do script`."));
+    editor_edit->setPlaceholderText(QStringLiteral("code -g {file}  ·  zed {file}  ·  kitty -e nvim {file}"));
+    editor_edit->setToolTip(QStringLiteral(
+        "Runs through your shell exactly as typed in a terminal. {file} is replaced "
+        "with the source path (appended if omitted). Terminal editors bring their own "
+        "terminal, e.g. \"alacritty -e nvim {file}\" or \"wezterm start -- nvim {file}\"."));
 
     auto *default_dir_edit = new QLineEdit(&dlg);
     default_dir_edit->setText(settings.value(QStringLiteral("default_open_dir"), QString()).toString());
@@ -505,8 +448,6 @@ void prompt_preferences(QWidget *parent) {
 
     auto *form = new QFormLayout;
     form->addRow(QStringLiteral("&External editor command:"), editor_edit);
-    form->addRow(QString(), in_term_check);
-    form->addRow(QStringLiteral("&Terminal app (macOS):"), terminal_edit);
     form->addRow(QStringLiteral("&Default open directory:"), dir_row);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
@@ -519,8 +460,6 @@ void prompt_preferences(QWidget *parent) {
 
     if (dlg.exec() == QDialog::Accepted) {
         settings.setValue(QStringLiteral("editor_command"), editor_edit->text());
-        settings.setValue(QStringLiteral("editor_in_terminal"), in_term_check->isChecked());
-        settings.setValue(QStringLiteral("terminal_app"), terminal_edit->text().trimmed());
         settings.setValue(QStringLiteral("default_open_dir"), default_dir_edit->text().trimmed());
     }
 }
