@@ -183,11 +183,89 @@ fn lane_x(idx: i32, slot: usize, total: usize, info: &HashMap<i32, GutterInfo>, 
 }
 
 /// The vertical run of one net in one gutter.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Span {
     net: usize,
     lo: f64,
     hi: f64,
+    /// Y of each pin of the net on the column left of the gutter. The stub
+    /// of such a pin runs from the left edge of the gutter to the lane.
+    left_pins: Vec<f64>,
+    /// Y of each pin on the column right of the gutter.
+    right_pins: Vec<f64>,
+}
+
+/// One lane of a gutter while lanes are assigned.
+struct Track {
+    bottom: f64, // bottom of the last run
+    nets: Vec<usize>,
+    mid_sum: f64, // sum of the run midpoints
+    left_pins: Vec<f64>,
+    right_pins: Vec<f64>,
+}
+
+impl Track {
+    fn mean_mid(&self) -> f64 {
+        self.mid_sum / self.nets.len() as f64
+    }
+
+    /// True when a left pin of `self` faces a right pin of `other` at one
+    /// Y. The stubs of the two pins then lie on one line, and they overlap
+    /// unless the lane of `self` is left of the lane of `other`.
+    fn must_be_left_of(&self, other: &Track, lane_step: f64) -> bool {
+        self.left_pins
+            .iter()
+            .any(|l| other.right_pins.iter().any(|r| (l - r).abs() < lane_step))
+    }
+}
+
+/// Put the runs of one gutter on lanes, first fit by top edge. A run goes on
+/// a lane when it is `share_gap` below the last run of that lane; an
+/// infinite gap gives each run its own lane.
+fn pack_tracks(ordered: &[Span], share_gap: f64) -> Vec<Track> {
+    let mut tracks: Vec<Track> = Vec::new();
+    for s in ordered {
+        let mid = (s.lo + s.hi) / 2.0;
+        match tracks.iter_mut().find(|t| t.bottom + share_gap <= s.lo) {
+            Some(t) => {
+                t.bottom = s.hi;
+                t.nets.push(s.net);
+                t.mid_sum += mid;
+                t.left_pins.extend(&s.left_pins);
+                t.right_pins.extend(&s.right_pins);
+            }
+            None => tracks.push(Track {
+                bottom: s.hi,
+                nets: vec![s.net],
+                mid_sum: mid,
+                left_pins: s.left_pins.clone(),
+                right_pins: s.right_pins.clone(),
+            }),
+        }
+    }
+    tracks
+}
+
+/// Order lanes left to right: by mean midpoint, with each lane after the
+/// lanes that must be left of it. Returns false when the rules form a
+/// cycle; the lanes of a cycle keep the midpoint order.
+fn order_tracks(mut pending: Vec<Track>, lane_step: f64) -> (Vec<Track>, bool) {
+    pending.sort_by(|a, b| {
+        let by_mid = a.mean_mid().partial_cmp(&b.mean_mid()).unwrap();
+        by_mid.then(a.nets[0].cmp(&b.nets[0]))
+    });
+    let mut ordered: Vec<Track> = Vec::new();
+    let mut acyclic = true;
+    while !pending.is_empty() {
+        // The first lane that no remaining lane must be left of.
+        let free = (0..pending.len()).find(|&i| {
+            !(0..pending.len())
+                .any(|j| j != i && pending[j].must_be_left_of(&pending[i], lane_step))
+        });
+        acyclic &= free.is_some();
+        ordered.push(pending.remove(free.unwrap_or(0)));
+    }
+    (ordered, acyclic)
 }
 
 /// Assign each (net, gutter) pair a lane X.
@@ -200,6 +278,11 @@ struct Span {
 ///
 /// Lanes are then ordered by the mean vertical midpoint of their nets, so
 /// nets flowing in parallel keep their relative order instead of weaving.
+/// One rule overrides that order: when a pin on the left column faces a pin
+/// of a different net on the right column at one Y, the lane of the left
+/// pin goes left of the lane of the right pin (`Track::must_be_left_of`).
+/// When the rules of the nets form a cycle, no order satisfies them; the
+/// lanes of the cycle keep the midpoint order.
 fn assign_lanes(
     per_gutter: &HashMap<i32, Vec<Span>>,
     info: &HashMap<i32, GutterInfo>,
@@ -211,27 +294,27 @@ fn assign_lanes(
         let mut ordered = spans.clone();
         ordered.sort_by(|a, b| a.lo.partial_cmp(&b.lo).unwrap().then(a.net.cmp(&b.net)));
 
-        // (bottom of the last run, member nets, sum of member midpoints)
-        let mut tracks: Vec<(f64, Vec<usize>, f64)> = Vec::new();
-        for s in ordered {
-            let mid = (s.lo + s.hi) / 2.0;
-            match tracks.iter_mut().find(|t| t.0 + share_gap <= s.lo) {
-                Some(t) => {
-                    t.0 = s.hi;
-                    t.1.push(s.net);
-                    t.2 += mid;
-                }
-                None => tracks.push((s.hi, vec![s.net], mid)),
-            }
+        // Shared lanes first. Two nets on one lane merge their rules, and
+        // that can make a cycle that the nets alone do not have. Then each
+        // net gets its own lane.
+        let (mut tracks, acyclic) = order_tracks(pack_tracks(&ordered, share_gap), p.lane_step);
+        if !acyclic {
+            tracks = order_tracks(pack_tracks(&ordered, f64::INFINITY), p.lane_step).0;
         }
-        tracks.sort_by(|a, b| {
-            let (ma, mb) = (a.2 / a.1.len() as f64, b.2 / b.1.len() as f64);
-            ma.partial_cmp(&mb).unwrap().then(a.1[0].cmp(&b.1[0]))
-        });
-        let total = tracks.len();
-        for (slot, track) in tracks.iter().enumerate() {
+        // Two stubs that face each other lie on one line. One lane step
+        // between their ends still reads as one wire, so leave an empty
+        // lane between the two lanes.
+        let mut slots: Vec<usize> = Vec::with_capacity(tracks.len());
+        for (i, track) in tracks.iter().enumerate() {
+            let prev = i.checked_sub(1).map(|j| (slots[j], &tracks[j]));
+            slots.push(prev.map_or(0, |(slot, left)| {
+                slot + 1 + usize::from(left.must_be_left_of(track, p.lane_step))
+            }));
+        }
+        let total = slots.last().map_or(0, |last| last + 1);
+        for (&slot, track) in slots.iter().zip(&tracks) {
             let x = lane_x(idx, slot, total, info, p);
-            for &net in &track.1 {
+            for &net in &track.nets {
                 lanes.insert((net, idx), x);
             }
         }
@@ -357,22 +440,21 @@ pub fn plan_routes(nets: &[Net], obstacles: &[Rect], p: Params) -> RouteResult {
     for (net_idx, net) in nets.iter().enumerate() {
         let plan = &plans[net_idx];
         for &g in &plan.unique_g {
-            let mut ys: Vec<f64> = Vec::new();
-            if plan.g_d == g {
-                ys.push(net.driver.y);
-            }
-            for (i, l) in net.loads.iter().enumerate() {
-                if plan.g_l[i] == g {
-                    ys.push(l.y);
-                }
-            }
-            if let Some(hy) = plan.hy {
-                ys.push(hy);
-            }
+            // The pins of the net in this gutter, by the side they are on.
+            let pins = std::iter::once((plan.g_d, &net.driver))
+                .chain(plan.g_l.iter().copied().zip(&net.loads))
+                .filter(|&(pin_g, _)| pin_g == g);
+            let (left, right): (Vec<&Endpoint>, Vec<&Endpoint>) =
+                pins.map(|(_, e)| e).partition(|e| e.exits_right);
+            let left_pins: Vec<f64> = left.iter().map(|e| e.y).collect();
+            let right_pins: Vec<f64> = right.iter().map(|e| e.y).collect();
+            let ys = || left_pins.iter().chain(&right_pins).chain(&plan.hy).copied();
             per_gutter.entry(g).or_default().push(Span {
                 net: net_idx,
-                lo: ys.iter().cloned().fold(f64::INFINITY, f64::min),
-                hi: ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+                lo: ys().fold(f64::INFINITY, f64::min),
+                hi: ys().fold(f64::NEG_INFINITY, f64::max),
+                left_pins,
+                right_pins,
             });
         }
     }
@@ -1092,7 +1174,9 @@ mod tests {
                 let cx = c as f64 * P.column_pitch;
                 let mut y = 0.0;
                 for &(half, rows, gap) in blocks {
-                    y += gap;
+                    // Whole pin slots, as on the canvas grid: pins of
+                    // neighbor columns then often share a Y.
+                    y += (gap / PIN_SLOT).round() * PIN_SLOT;
                     let top = y;
                     let bottom = top + 50.0 + rows as f64 * PIN_SLOT;
                     rects.push(Rect {
@@ -1158,6 +1242,106 @@ mod tests {
         (a.y - b.y).abs() < 1e-9 && (a.x - b.x).abs() > 1e-9
     }
 
+    /// Pairs of horizontal segments of different nets that lie on one line
+    /// and overlap. Such a pair reads as one wire between two pins.
+    fn horizontal_overlaps(nets: &[Net], r: &RouteResult) -> Vec<String> {
+        let segs = segments(nets, r);
+        let horiz: Vec<_> = segs.iter().filter(|s| is_horizontal(s.1, s.2)).collect();
+        let mut out = Vec::new();
+        for a in &horiz {
+            for b in &horiz {
+                if a.0 >= b.0 || (a.1.y - b.1.y).abs() > 0.5 {
+                    continue;
+                }
+                let (a0, a1) = (a.1.x.min(a.2.x), a.1.x.max(a.2.x));
+                let (b0, b1) = (b.1.x.min(b.2.x), b.1.x.max(b.2.x));
+                if a1 > b0 && b1 > a0 {
+                    out.push(format!(
+                        "nets {} and {} overlap at y={} (x {a0}..{a1} and {b0}..{b1})",
+                        a.0, b.0, a.1.y
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    /// The example project: `count` leaves `u_pulse` at the Y where `clk`
+    /// enters `u_led`. The two stubs face each other across one gutter. The
+    /// old lane order put the `clk` lane left of the `count` lane, so the
+    /// stubs overlapped and read as a wire from `count` to `clk`.
+    #[test]
+    fn facing_stubs_at_one_y_do_not_overlap() {
+        let clk = Net {
+            driver: ep(-100.0, 400.0, true, 0),
+            loads: vec![ep(380.0, 493.0, false, 1), ep(860.0, 493.0, false, 2)],
+        };
+        let count = Net {
+            driver: ep(580.0, 493.0, true, 1),
+            loads: vec![ep(860.0, 505.0, false, 2)],
+        };
+        let blocks = [
+            Rect {
+                left: 380.0,
+                top: 450.0,
+                right: 580.0,
+                bottom: 530.0,
+            },
+            Rect {
+                left: 860.0,
+                top: 450.0,
+                right: 1060.0,
+                bottom: 530.0,
+            },
+        ];
+        let nets = [clk, count];
+        let r = plan_routes(&nets, &blocks, P);
+        assert_eq!(horizontal_overlaps(&nets, &r), Vec::<String>::new());
+    }
+
+    /// Reference for the lane rules, written apart from the router: net `a`
+    /// must be left of net `b` in a gutter when a pin of `a` on the left
+    /// column faces a pin of `b` on the right column. True when the rules
+    /// of one gutter form a cycle.
+    fn lane_rules_have_cycle(nets: &[Net]) -> bool {
+        let pins = |n: &Net| {
+            std::iter::once(n.driver)
+                .chain(n.loads.iter().copied())
+                .collect::<Vec<_>>()
+        };
+        let mut edges: HashMap<i32, Vec<(usize, usize)>> = HashMap::new();
+        for (a, na) in nets.iter().enumerate() {
+            for (b, nb) in nets.iter().enumerate() {
+                for l in pins(na).iter().filter(|e| a != b && e.exits_right) {
+                    for r in pins(nb).iter().filter(|e| !e.exits_right) {
+                        let g = gutter_index(l.col, true);
+                        if g == gutter_index(r.col, false) && (l.y - r.y).abs() < P.lane_step {
+                            edges.entry(g).or_default().push((a, b));
+                        }
+                    }
+                }
+            }
+        }
+        // Remove nets that have no rule that points at them; nets remain
+        // only in a cycle.
+        edges.values().any(|list| {
+            let mut live: HashSet<usize> = list.iter().flat_map(|&(a, b)| [a, b]).collect();
+            loop {
+                let free: Vec<usize> = live
+                    .iter()
+                    .copied()
+                    .filter(|n| !list.iter().any(|&(a, b)| b == *n && live.contains(&a)))
+                    .collect();
+                if free.is_empty() {
+                    return !live.is_empty();
+                }
+                for n in free {
+                    live.remove(&n);
+                }
+            }
+        })
+    }
+
     proptest! {
         /// A wire never runs through the body of a block.
         #[test]
@@ -1196,6 +1380,31 @@ mod tests {
                         a1 + P.lane_step <= b0 || b1 + P.lane_step <= a0,
                         "nets {} and {} share lane x={} with runs {a0}..{a1} and {b0}..{b1}",
                         a.0, b.0, a.1.x
+                    );
+                }
+            }
+        }
+
+        /// The stubs of two pins that face each other across a gutter never
+        /// overlap, unless the lane rules of the nets form a cycle. In a
+        /// cycle no lane order keeps each pair of stubs apart.
+        #[test]
+        fn facing_stubs_do_not_overlap((nets, rects) in design()) {
+            prop_assume!(!lane_rules_have_cycle(&nets));
+            let r = plan_routes(&nets, &rects, P);
+            let segs = segments(&nets, &r);
+            let stubs: Vec<_> = segs.iter().filter(|s| s.3 && is_horizontal(s.1, s.2)).collect();
+            for a in &stubs {
+                for b in &stubs {
+                    if a.0 >= b.0 || (a.1.y - b.1.y).abs() > 0.5 {
+                        continue;
+                    }
+                    let (a0, a1) = (a.1.x.min(a.2.x), a.1.x.max(a.2.x));
+                    let (b0, b1) = (b.1.x.min(b.2.x), b.1.x.max(b.2.x));
+                    prop_assert!(
+                        a1 <= b0 || b1 <= a0,
+                        "stubs of nets {} and {} overlap at y={} (x {a0}..{a1} and {b0}..{b1})",
+                        a.0, b.0, a.1.y
                     );
                 }
             }
