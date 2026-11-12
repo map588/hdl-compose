@@ -19,10 +19,14 @@ inline constexpr int kInstanceCenterPadding = 24;
 
 // --- Column / wire grid ---
 // Pitch sized so long HDL signal names fit unelided in the block body
-// (labels size the block up to kMaxInstanceWidth) while keeping full
+// (labels size the block up to kMaxInstanceWidth = 440) while keeping full
 // wire gutters between columns.
-inline constexpr int kColumnPitch = 560;
-inline constexpr int kColumnGutterHalf = 60;
+//
+// Gutter capacity: two blocks of maximum width leave 2 * kColumnGutterHalf
+// = 200 between them. The router keeps kWireStubMin clear on each side,
+// so 120 remain: 10 lanes at kWireLaneStep before lanes start to squeeze.
+inline constexpr int kColumnPitch = 640;
+inline constexpr int kColumnGutterHalf = 100;
 // Cap instance width below the column pitch so a module body can never
 // invade the wire gutters on either side of its column.
 inline constexpr int kMaxInstanceWidth = kColumnPitch - 2 * kColumnGutterHalf;

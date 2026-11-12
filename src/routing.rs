@@ -1071,7 +1071,9 @@ mod tests {
 
     use proptest::prelude::*;
 
-    const MAX_BLOCK_WIDTH: f64 = 440.0; // kMaxInstanceWidth
+    // The canvas leaves a gutter of 200 between two blocks of maximum
+    // width (2 * kColumnGutterHalf). Same gutter here, on the test pitch.
+    const MAX_BLOCK_WIDTH: f64 = 280.0;
     const PIN_SLOT: f64 = 24.0; // kPinSlotHeight
 
     /// A random design: blocks centered on their column, pins on the block
