@@ -22,6 +22,27 @@ pub struct GeneratedDesign {
     pub top_code: String,
 }
 
+impl GeneratedDesign {
+    /// Write the design to disk: the top-level module to `top_path`, and
+    /// each group module next to it under its own filename. Returns the
+    /// written paths, group files first.
+    ///
+    /// The CLI and the GUI both write through this function, so the two
+    /// always produce the same set of files.
+    pub fn write_to(&self, top_path: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+        let dir = top_path.parent().unwrap_or(std::path::Path::new(""));
+        let mut written = Vec::with_capacity(self.files.len() + 1);
+        for (fname, code) in &self.files {
+            let p = dir.join(fname);
+            std::fs::write(&p, code)?;
+            written.push(p);
+        }
+        std::fs::write(top_path, &self.top_code)?;
+        written.push(top_path.to_path_buf());
+        Ok(written)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DesignError {
     #[error("group validation failed")]

@@ -688,24 +688,17 @@ fn cmd_codegen(project_path: &std::path::Path, output: Option<&std::path::Path>)
     };
 
     match output {
-        Some(out_path) => {
-            let dir = out_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."));
-            for (fname, code) in &design.files {
-                let p = dir.join(fname);
-                if let Err(e) = std::fs::write(&p, code) {
-                    eprintln!("error: {e}");
-                    return ExitCode::from(2);
+        Some(out_path) => match design.write_to(out_path) {
+            Ok(written) => {
+                for p in &written {
+                    println!("Written to {}", p.display());
                 }
-                println!("Written to {}", p.display());
             }
-            if let Err(e) = std::fs::write(out_path, &design.top_code) {
+            Err(e) => {
                 eprintln!("error: {e}");
                 return ExitCode::from(2);
             }
-            println!("Written to {}", out_path.display());
-        }
+        },
         None => {
             let comment = match schematic.language {
                 Language::Vhdl => "--",

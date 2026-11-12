@@ -1351,16 +1351,12 @@ impl qobject::AppState {
             }
         };
         let library = self.as_ref().rust().library.clone();
-        let diagnostics = schematic.validate(&library);
 
-        let result = match schematic.language {
-            Language::Vhdl => codegen::vhdl::generate_vhdl(&schematic, &library, &diagnostics),
-            Language::SystemVerilog => codegen::sv::generate_sv(&schematic, &library, &diagnostics),
-        };
-
-        let code = match result {
-            Ok(c) => c,
-            Err(codegen::CodegenError::ValidationErrors(errs)) => {
+        // Same entry point as the CLI: a grouped project produces one file
+        // for each group in addition to the top-level file.
+        let design = match codegen::generate_design(&schematic, &library) {
+            Ok(d) => d,
+            Err(codegen::DesignError::Top(codegen::CodegenError::ValidationErrors(errs))) => {
                 let mut msg = String::from("validation errors prevent codegen:");
                 for d in &errs {
                     msg.push_str("\n  ");
@@ -1369,18 +1365,31 @@ impl qobject::AppState {
                 self.as_mut().record_error(msg);
                 return false;
             }
-            Err(codegen::CodegenError::DirtyInstances(names)) => {
+            Err(codegen::DesignError::Top(codegen::CodegenError::DirtyInstances(names))) => {
                 self.as_mut().record_error(format!(
                     "dirty instances present (source re-parse dropped connections). Reconnect: {}",
                     names.join(", ")
                 ));
                 return false;
             }
+            Err(codegen::DesignError::GroupDiagnostics(diags)) => {
+                let mut msg = String::from("group validation errors prevent codegen:");
+                for d in &diags {
+                    msg.push_str("\n  ");
+                    msg.push_str(&d.to_string());
+                }
+                self.as_mut().record_error(msg);
+                return false;
+            }
+            Err(e @ codegen::DesignError::Group { .. }) => {
+                self.as_mut().record_error(e.to_string());
+                return false;
+            }
         };
 
         let path_buf = PathBuf::from(path.to_string());
-        match std::fs::write(&path_buf, &code) {
-            Ok(()) => {
+        match design.write_to(&path_buf) {
+            Ok(_) => {
                 self.as_mut().rust_mut().get_mut().last_error.clear();
                 true
             }

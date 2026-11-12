@@ -493,6 +493,28 @@ mod tests {
         (s, lib)
     }
 
+    /// Regression: the GUI wrote only the top-level file for a grouped
+    /// project. The CLI and the GUI now share `GeneratedDesign::write_to`.
+    #[test]
+    fn grouped_design_writes_one_file_for_each_group() {
+        let (s, lib) = grouped_fixture();
+        let design = crate::codegen::generate_design(&s, &lib).unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let top = dir.path().join("top.vhd");
+
+        let written = design.write_to(&top).unwrap();
+
+        assert_eq!(written, vec![dir.path().join("chain.vhd"), top.clone()]);
+        let chain = std::fs::read_to_string(dir.path().join("chain.vhd")).unwrap();
+        assert!(chain.contains("entity chain is"), "{chain}");
+        let top_code = std::fs::read_to_string(&top).unwrap();
+        assert!(top_code.contains("u_chain"), "{top_code}");
+        // The flat emitter the GUI used before knows nothing about groups.
+        let flat =
+            crate::codegen::vhdl::generate_vhdl(&s, &lib, &s.validate(&lib)).unwrap_or_default();
+        assert!(!flat.contains("u_chain"), "{flat}");
+    }
+
     #[test]
     fn validate_groups_catches_bad_members_and_cycles() {
         let (mut s, lib) = grouped_fixture();

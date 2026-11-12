@@ -156,7 +156,10 @@ The window opens maximized with the canvas front and center.
   buffer. Commits on Ctrl+Return or focus-out, Tab completes signal names.
   The Top Level toggle edits the top entity's ports and generics the same
   way.
-- **File > Generate HDL** (Cmd+G) writes the structural wrapper.
+- **File > Generate HDL** (Cmd+G) writes the structural wrapper to
+  `<top>.vhd` / `<top>.sv` next to the project file, plus one file for each
+  group. It does not ask for a path. **Generate HDL As...** (Cmd+Shift+G)
+  lets you choose one.
 - **Goto Source** (right-click an instance) opens the module's source file
   with a command you configure in Preferences. The command runs through your
   shell exactly as typed in a terminal; `{file}` is replaced with the source

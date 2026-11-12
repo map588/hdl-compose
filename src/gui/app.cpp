@@ -708,8 +708,11 @@ class MainWindow : public QMainWindow {
         auto *saveAsAct = fileMenu->addAction(QStringLiteral("Save &As..."));
         saveAsAct->setShortcut(QKeySequence::SaveAs);
         fileMenu->addSeparator();
-        auto *generateAct = fileMenu->addAction(QStringLiteral("&Generate HDL..."));
+        auto *generateAct = fileMenu->addAction(QStringLiteral("&Generate HDL"));
         generateAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
+        generateAct->setToolTip(QStringLiteral("Write the generated HDL next to the project file"));
+        auto *generateAsAct = fileMenu->addAction(QStringLiteral("Generate HDL &As..."));
+        generateAsAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G));
         fileMenu->addSeparator();
         auto *prefsAct = fileMenu->addAction(QStringLiteral("&Preferences..."));
         fileMenu->addSeparator();
@@ -806,7 +809,8 @@ class MainWindow : public QMainWindow {
         connect(addSourceAct, &QAction::triggered, this, &MainWindow::onAddSource);
         connect(saveAct, &QAction::triggered, this, &MainWindow::onSaveProject);
         connect(saveAsAct, &QAction::triggered, this, [this]() { saveAsProject(); });
-        connect(generateAct, &QAction::triggered, this, &MainWindow::onGenerate);
+        connect(generateAct, &QAction::triggered, this, [this]() { onGenerate(false); });
+        connect(generateAsAct, &QAction::triggered, this, [this]() { onGenerate(true); });
         connect(reloadAct, &QAction::triggered, this, &MainWindow::onReloadLibrary);
         connect(copySourcesAct, &QAction::triggered, this, &MainWindow::onCopySources);
         connect(prefsAct, &QAction::triggered, this, [this]() { prompt_preferences(this); });
@@ -1418,7 +1422,11 @@ class MainWindow : public QMainWindow {
         }
     }
 
-    void onGenerate() {
+    // Write the generated HDL. The default target is <top>.<ext> next to the
+    // project file, with no dialog: this is the action the user repeats
+    // most. `ask` (Generate HDL As...) or an unsaved project opens the
+    // file dialog instead.
+    void onGenerate(bool ask) {
         if (!m_state->has_project()) {
             QMessageBox::information(this, QStringLiteral("Generate HDL"), QStringLiteral("No project loaded."));
             return;
@@ -1439,11 +1447,12 @@ class MainWindow : public QMainWindow {
             QMessageBox::warning(this, QStringLiteral("Generate HDL"), QStringLiteral("Unknown project language."));
             return;
         }
-        QString suggested = m_state->suggest_codegen_path();
-        QString path =
-            QFileDialog::getSaveFileName(this, QStringLiteral("Generate %1").arg(lang_label), suggested, filter);
-        if (path.isEmpty()) {
-            return;
+        QString path = m_state->suggest_codegen_path();
+        if (ask || m_state->current_project_path().isEmpty()) {
+            path = QFileDialog::getSaveFileName(this, QStringLiteral("Generate %1").arg(lang_label), path, filter);
+            if (path.isEmpty()) {
+                return;
+            }
         }
         if (m_state->generate_code(path)) {
             statusBar()->showMessage(QStringLiteral("Generated %1").arg(path), 5000);
