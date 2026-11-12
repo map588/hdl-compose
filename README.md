@@ -147,7 +147,7 @@ The window opens maximized with the canvas front and center.
   clicking anything else cancels. Hover a pin or wire to highlight its whole
   net. `F` / `Ctrl+0` zoom to fit, `Ctrl`+wheel zoom, middle-drag pan,
   `Ctrl+L` tidies the layout (including top-port placement), `Esc` cancels,
-  `Delete` removes the selection.
+  `Delete` removes the selection. Pinch on a trackpad zooms.
 - **Toolchain menu:** Check, Synth, Build Bitstream, and Flash run the CLI
   commands above against the saved project and stream their output into a
   dock at the bottom. Select Board picks a `.board.json` and remembers it per
@@ -251,9 +251,9 @@ text-vs-canvas decision.
   open-source tool commands need a `toolchain.json` exclusion for it.
 - The `sim` command expects `<top>_tb` next to the project file; projects
   that keep testbenches elsewhere run them outside the tool for now.
-- Tool discovery is PATH-only. A GUI launched from Finder does not inherit a
-  terminal's PATH, so toolchain runs may report missing tools there; launch
-  from a shell with oss-cad-suite activated.
+- Tool discovery is PATH-only. The GUI runs toolchain commands through your
+  login shell, so the tools must be on the PATH that your shell profile sets
+  (for example, source the oss-cad-suite `environment` file there).
 - No bus rippers or slice adapters beyond inline `[h:l]` / `(h downto l)`.
 
 ## License

@@ -22,6 +22,7 @@
 #include <QKeyEvent>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QNativeGestureEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
@@ -203,18 +204,25 @@ class CanvasView : public QGraphicsView {
                 event->accept();
                 return;
             }
-            double factor = std::pow(kZoomStep, delta / 120.0);
-            double new_scale = std::clamp(m_zoom * factor, kZoomMin, kZoomMax);
-            if (new_scale == m_zoom) {
-                event->accept();
-                return;
-            }
-            scale(new_scale / m_zoom, new_scale / m_zoom);
-            m_zoom = new_scale;
+            zoomBy(std::pow(kZoomStep, delta / 120.0));
             event->accept();
         } else {
             QGraphicsView::wheelEvent(event);
         }
+    }
+
+    // Trackpad pinch. Qt delivers it to the viewport as a native gesture;
+    // value() is the incremental scale change of this event.
+    bool viewportEvent(QEvent *event) override {
+        if (event->type() == QEvent::NativeGesture) {
+            auto *gesture = static_cast<QNativeGestureEvent *>(event);
+            if (gesture->gestureType() == Qt::ZoomNativeGesture) {
+                zoomBy(1.0 + gesture->value());
+                event->accept();
+                return true;
+            }
+        }
+        return QGraphicsView::viewportEvent(event);
     }
 
     void mousePressEvent(QMouseEvent *event) override {
@@ -352,6 +360,15 @@ class CanvasView : public QGraphicsView {
     }
 
   private:
+    // Multiply the zoom by `factor`, clamped to [kZoomMin, kZoomMax].
+    void zoomBy(double factor) {
+        double new_scale = std::clamp(m_zoom * factor, kZoomMin, kZoomMax);
+        if (new_scale == m_zoom)
+            return;
+        scale(new_scale / m_zoom, new_scale / m_zoom);
+        m_zoom = new_scale;
+    }
+
     AppState *m_state;
     QPoint m_panAnchor;
     bool m_panning = false;

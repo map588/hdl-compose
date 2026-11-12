@@ -613,8 +613,27 @@ class MainWindow : public QMainWindow {
         connectEditor();
         connectModelSignals();
         connectTreeSignals();
-        statusBar()->showMessage(QStringLiteral("Ready"));
+        // Validation summary: a permanent widget, so timed status messages
+        // do not erase it. A click opens the full list.
+        m_issues_btn = new QPushButton(this);
+        m_issues_btn->setFlat(true);
+        m_issues_btn->setCursor(Qt::PointingHandCursor);
+        m_issues_btn->setToolTip(QStringLiteral("Show validation issues"));
+        m_issues_btn->hide();
+        statusBar()->addPermanentWidget(m_issues_btn);
+        connect(m_issues_btn, &QPushButton::clicked, this, &MainWindow::onShowValidationIssues);
+        statusBar()->showMessage(QStringLiteral("Ready"), 3000);
         update_window_title(this, m_state);
+        restoreWindowState();
+    }
+
+    // Show the window the way the user left it. First run: maximized.
+    void showInitial() {
+        if (m_has_stored_geometry) {
+            show();
+        } else {
+            showMaximized();
+        }
     }
 
     // Startup: open the project given on the command line. Without one,
@@ -831,6 +850,7 @@ class MainWindow : public QMainWindow {
         // Toggle the editor panel (starts hidden); showing also restores a
         // sane width if the user previously dragged it narrow.
         auto *showEditorAct = new QAction(QStringLiteral("Editor"), this);
+        m_show_editor_act = showEditorAct;
         showEditorAct->setCheckable(true);
         showEditorAct->setToolTip(QStringLiteral("Show/hide the mini-editor panel."));
         showEditorAct->setShortcut(QKeySequence(QStringLiteral("Ctrl+\\")));
@@ -966,7 +986,15 @@ class MainWindow : public QMainWindow {
         connect(m_state, &AppState::validation_changed, this, [this]() {
             int errs = m_state->validation_error_count();
             int warns = m_state->validation_warning_count();
-            statusBar()->showMessage(QStringLiteral("%1 error(s), %2 warning(s)").arg(errs).arg(warns));
+            if (errs == 0 && warns == 0) {
+                m_issues_btn->setText(QStringLiteral("No issues"));
+                m_issues_btn->setStyleSheet(QStringLiteral("border: 0; color: #9aa0aa;"));
+            } else {
+                m_issues_btn->setText(QStringLiteral("%1 error(s), %2 warning(s)").arg(errs).arg(warns));
+                m_issues_btn->setStyleSheet(errs > 0 ? QStringLiteral("border: 0; color: #e8483c;")
+                                                     : QStringLiteral("border: 0; color: #ffb300;"));
+            }
+            m_issues_btn->setVisible(m_state->has_project());
             // Pin issue rings paint from the freshly rebuilt pin_issues map.
             if (m_canvas && m_canvas->scene())
                 m_canvas->scene()->update();
@@ -1195,6 +1223,28 @@ class MainWindow : public QMainWindow {
         m_completer->complete(rect);
     }
 
+    // --- Window layout persistence --------------------------------------------
+
+    void saveWindowState() {
+        QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+        settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
+        settings.setValue(QStringLiteral("window/splitter"), m_root_splitter->saveState());
+        settings.setValue(QStringLiteral("window/editor_visible"), m_show_editor_act->isChecked());
+    }
+
+    void restoreWindowState() {
+        QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+        const QByteArray geometry = settings.value(QStringLiteral("window/geometry")).toByteArray();
+        m_has_stored_geometry = !geometry.isEmpty() && restoreGeometry(geometry);
+        // The toggle resets the splitter to its default shares, so restore
+        // the stored splitter sizes after it.
+        m_show_editor_act->setChecked(settings.value(QStringLiteral("window/editor_visible"), false).toBool());
+        const QByteArray splitter = settings.value(QStringLiteral("window/splitter")).toByteArray();
+        if (!splitter.isEmpty()) {
+            m_root_splitter->restoreState(splitter);
+        }
+    }
+
     // --- Reactive helpers ---------------------------------------------------
 
     void refreshSidebar() {
@@ -1285,14 +1335,16 @@ class MainWindow : public QMainWindow {
     }
 
     void promptDeleteInstance(const QString &inst_name) {
-        auto btn = QMessageBox::question(this, QStringLiteral("Delete Instance"),
-                                         QStringLiteral("Delete instance %1?").arg(inst_name));
-        if (btn != QMessageBox::Yes) {
-            return;
-        }
+        // No confirmation: the Delete key on the canvas asks for none, and
+        // Undo restores the instance with its connections.
         if (!m_state->remove_instance(inst_name)) {
             show_state_error(this, m_state, QStringLiteral("Delete"));
+            return;
         }
+        statusBar()->showMessage(
+            QStringLiteral("Deleted %1 \u2014 %2 to undo")
+                .arg(inst_name, QKeySequence(QKeySequence::Undo).toString(QKeySequence::NativeText)),
+            5000);
     }
 
     // Edit-menu variants act on the current selection.
@@ -1698,6 +1750,7 @@ class MainWindow : public QMainWindow {
   protected:
     void closeEvent(QCloseEvent *event) override {
         if (maybeSaveDirty()) {
+            saveWindowState();
             event->accept();
         } else {
             event->ignore();
@@ -1856,7 +1909,22 @@ class MainWindow : public QMainWindow {
         }
         m_tool_cancel->setEnabled(true);
         m_tool_proc->setWorkingDirectory(QFileInfo(project).absolutePath());
+#ifdef Q_OS_WIN
         m_tool_proc->start(QCoreApplication::applicationFilePath(), args);
+#else
+        // Through the login shell, so the tools on the user's PATH
+        // (oss-cad-suite) are found when the app was started from Finder.
+        // `exec` replaces the shell, so Cancel still kills the CLI itself.
+        QString line = QStringLiteral("exec ") + sh_quote(QCoreApplication::applicationFilePath());
+        for (const QString &a : std::as_const(args)) {
+            line += QChar(' ');
+            line += sh_quote(a);
+        }
+        QString shell = qEnvironmentVariable("SHELL");
+        if (shell.isEmpty())
+            shell = QStringLiteral("/bin/sh");
+        m_tool_proc->start(shell, {QStringLiteral("-l"), QStringLiteral("-c"), line});
+#endif
     }
 
   private:
@@ -1881,6 +1949,9 @@ class MainWindow : public QMainWindow {
     QFileSystemWatcher *m_fs_watcher = nullptr;
     QAction *m_undo_act = nullptr;
     QAction *m_redo_act = nullptr;
+    QAction *m_show_editor_act = nullptr;
+    QPushButton *m_issues_btn = nullptr;
+    bool m_has_stored_geometry = false;
 
     // Toolchain runner state.
     QDockWidget *m_tool_dock = nullptr;
@@ -1915,7 +1986,7 @@ extern "C" int run_gui(int *argc, char **argv) {
     const QString initial_project = *argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString();
 
     MainWindow window;
-    window.showMaximized();
+    window.showInitial();
     // After the first event-loop turn, so the viewport has its final size
     // when the project is fitted to it.
     QTimer::singleShot(0, &window, [&window, initial_project]() { window.openInitialProject(initial_project); });
