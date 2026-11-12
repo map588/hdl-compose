@@ -254,4 +254,4 @@ text-vs-canvas decision.
 
 ## License
 
-TBD.
+MIT. See [LICENSE](LICENSE).

@@ -306,8 +306,6 @@ drop (add + initial position). Nestable; only the outermost pair acts.
 
 ## Known open work
 
-- Top-level mini editor: SV-grammar variant for SV projects (currently always
-  VHDL-shaped).
 - Project tree pane: recursive traversal of sub-component dependencies (one
   level today).
 - Verilog/SV codegen: less manual GUI verification than VHDL path.
@@ -323,9 +321,15 @@ src/
   project.rs           — load/save .hdlc
   vhdl.rs              — vhdl_lang AST → ModuleDef
   verilog.rs           — sv-parser AST → ModuleDef
+  nets.rs              — net resolution (union-find), drivers, net diagnostics
+  groups.rs            — hierarchical groups: boundary ports, expand_hierarchy
+  routing.rs           — placement (legalize, Tidy) and the channel wire router
+  toolchain.rs         — check/synth/sim/fpga/build/flash via external tools
+  board.rs             — board definition files, constraint pin check
   codegen/
-    mod.rs             — shared helpers (resolve_port_type,
-                          collect_internal_nets, collect_top_intermediates)
+    mod.rs             — generate_design (flat + grouped) and shared helpers
+                          (resolve_port_type, collect_internal_nets,
+                          collect_top_intermediates)
     vhdl.rs            — VHDL emitter
     sv.rs              — SystemVerilog emitter
   gui/
@@ -351,5 +355,9 @@ tests/
   project_roundtrip.rs — load fixture project → codegen → re-parse
   sv_roundtrip.rs, vhdl_roundtrip.rs — parse → codegen → parse shape checks
   fixtures/            — counter.{vhd,v}, fifo_sync.{vhd,v}, .hdlc fixtures
-openspec/              — feature change proposals + archived specs
+  projects/hdlc/       — realistic example project (two-voice synthesizer)
+  hardware/            — board definition used for the hardware-verified flow
+docs/
+  FORMAT.md            — .hdlc file format reference
+  hdlc.schema.json     — JSON Schema (output of `hdl-compose schema`)
 ```
