@@ -1847,8 +1847,12 @@ class MainWindow : public QMainWindow {
                     for (QAction *a : std::as_const(m_toolchain_actions)) {
                         a->setEnabled(true);
                     }
-                    // A build or a flash makes a new placement.
-                    if (ok && m_chip_dock && m_chip_dock->isVisible())
+                    // A build opens the chip view. A flash also makes a new
+                    // placement, but the user asked for the board, not the
+                    // view: load again only when the dock is open.
+                    if (ok && m_tool_verb == QStringLiteral("build"))
+                        showChipView();
+                    else if (ok && m_chip_dock && m_chip_dock->isVisible())
                         loadChipView();
                 });
         connect(m_tool_cancel, &QPushButton::clicked, this, [this]() { m_tool_proc->kill(); });

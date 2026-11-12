@@ -165,7 +165,7 @@ The window opens maximized with the canvas front and center.
   colored square: logic, register, I/O, DSP, memory, or clock. Select an
   instance on the canvas to mark its tiles on the chip. Hover a tile to list
   its cells. `Ctrl`+wheel or pinch zooms, drag pans, double-click fits. The
-  view shows placement only, not routing. Run Build Bitstream first.
+  view shows placement only, not routing. Build Bitstream opens it.
 - **Editor panel** (hidden by default, `Ctrl+\` or the Editor toolbar
   button): per-instance `port map` / `generic map` in a VHDL-shaped text
   buffer. Commits on Ctrl+Return or focus-out, Tab completes signal names.
