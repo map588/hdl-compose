@@ -34,6 +34,9 @@ make help                 # all targets
 
 `cargo build` alone also works; `cxx-qt-build` locates Qt via `qmake`.
 
+On macOS, `make app` installs `/Applications/hdl-compose.app`. The bundle
+starts from Finder and opens `.hdlc` files on double-click.
+
 ## Quick start
 
 ```sh
@@ -159,6 +162,9 @@ The window opens maximized with the canvas front and center.
   buffer. Commits on Ctrl+Return or focus-out, Tab completes signal names.
   The Top Level toggle edits the top entity's ports and generics the same
   way.
+- **File > New** asks for the project name, the language, and where to save
+  the `.hdlc` file. A project always has a file, so source paths stay
+  relative to it.
 - **File > Generate HDL** (Cmd+G) writes the structural wrapper to
   `<top>.vhd` / `<top>.sv` next to the project file, plus one file for each
   group. It does not ask for a path. **Generate HDL As...** (Cmd+Shift+G)

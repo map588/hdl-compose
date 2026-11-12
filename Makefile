@@ -1,7 +1,8 @@
-.PHONY: build release run gui check test fmt clippy clean app app-release app-debug app-bundle-check help
+.PHONY: build release run gui check test fmt clippy clean app app-release app-debug app-bundle help
 
 BIN := hdl-compose
 APP_BUNDLE := /Applications/hdl-compose.app
+LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
 help:
 	@echo "Targets:"
@@ -13,8 +14,8 @@ help:
 	@echo "  test     - cargo test"
 	@echo "  fmt      - cargo fmt"
 	@echo "  clippy   - cargo clippy --all-targets -- -D warnings"
-	@echo "  app-release - cargo build --release && cp target/release/$(BIN) $(APP_BUNDLE)/Contents/MacOS/$(BIN)"
-	@echo "  app-debug - cargo build && cp target/debug/$(BIN) $(APP_BUNDLE)/Contents/MacOS/$(BIN)"
+	@echo "  app-release - release build installed as $(APP_BUNDLE) (macOS)"
+	@echo "  app-debug - debug build installed as $(APP_BUNDLE) (macOS)"
 	@echo "  clean    - cargo clean"
 	@echo ""
 	@echo "Requires Qt 6 (homebrew: brew install qt). qmake found: $$(command -v qmake6 || command -v qmake)"
@@ -43,23 +44,23 @@ clippy:
 clean:
 	cargo clean
 
-app-release: release app-bundle-check
+app-release: release app-bundle
 	cp target/release/$(BIN) $(APP_BUNDLE)/Contents/MacOS/$(BIN)
 	@pkill -x $(BIN) 2>/dev/null || true
 	@echo "refreshed $(APP_BUNDLE)"
 
-app-debug: build app-bundle-check
+app-debug: build app-bundle
 	cp target/debug/$(BIN) $(APP_BUNDLE)/Contents/MacOS/$(BIN)
 	@pkill -x $(BIN) 2>/dev/null || true
 	@echo "refreshed $(APP_BUNDLE)"
 
-# Refresh /Applications/hdl-compose.app wrapper used for computer-use GUI testing.
-# The .app must already exist (created once manually with Info.plist).
+# Install /Applications/hdl-compose.app (macOS). The bundle makes the app
+# launchable from Finder and registers it as the handler for .hdlc files.
 app: app-debug
 
-app-bundle-check:
-	@if [ ! -d "$(APP_BUNDLE)" ]; then \
-		echo "error: $(APP_BUNDLE) does not exist."; \
-		echo "Create the bundle once with Info.plist, then re-run make app."; \
-		exit 1; \
-	fi
+# Create the bundle skeleton when it is missing, install the current
+# Info.plist, and tell Launch Services to read it again.
+app-bundle:
+	mkdir -p $(APP_BUNDLE)/Contents/MacOS
+	cp packaging/macos/Info.plist $(APP_BUNDLE)/Contents/Info.plist
+	$(LSREGISTER) -f $(APP_BUNDLE)

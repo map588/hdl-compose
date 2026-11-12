@@ -16,6 +16,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFileOpenEvent>
 #include <QFileSystemWatcher>
 #include <QFont>
 #include <QFontMetrics>
@@ -627,6 +628,13 @@ class MainWindow : public QMainWindow {
         restoreWindowState();
     }
 
+    // A project file opened from outside the app (Finder double-click).
+    void openFromSystem(const QString &path) {
+        if (maybeSaveDirty()) {
+            openProjectPath(path);
+        }
+    }
+
     // Show the window the way the user left it. First run: maximized.
     void showInitial() {
         if (m_has_stored_geometry) {
@@ -641,6 +649,10 @@ class MainWindow : public QMainWindow {
     void openInitialProject(const QString &path) {
         if (!path.isEmpty()) {
             openProjectPath(path);
+            return;
+        }
+        // Finder can deliver a file to open before this runs.
+        if (m_state->has_project()) {
             return;
         }
         const QStringList recents = recent_projects();
@@ -1398,11 +1410,29 @@ class MainWindow : public QMainWindow {
         if (!prompt_new_project(this, name, lang)) {
             return;
         }
+        // A project always has a file from the start: relative source paths,
+        // the Toolchain menu and Generate HDL all need its location. Ask
+        // before the current project is replaced, so Cancel changes nothing.
+        QString path = QFileDialog::getSaveFileName(
+            this, QStringLiteral("Save New Project"),
+            QDir(default_open_dir()).filePath(name + QStringLiteral(".hdlc")),
+            QStringLiteral("HDL Compose Projects (*.hdlc)"));
+        if (path.isEmpty()) {
+            return;
+        }
+        if (!path.endsWith(QStringLiteral(".hdlc"), Qt::CaseInsensitive)) {
+            path += QStringLiteral(".hdlc");
+        }
         if (!m_state->new_project(name, lang)) {
             show_state_error(this, m_state, QStringLiteral("New Project"));
             return;
         }
-        statusBar()->showMessage(QStringLiteral("Created new project: %1").arg(name), 3000);
+        if (!m_state->save_project_as(path)) {
+            show_state_error(this, m_state, QStringLiteral("New Project"));
+            return;
+        }
+        add_recent_project(path);
+        statusBar()->showMessage(QStringLiteral("Created %1").arg(path), 3000);
     }
 
     void openProjectPath(const QString &path) {
@@ -1971,6 +2001,26 @@ class MainWindow : public QMainWindow {
 
 } // anonymous namespace
 
+// Forwards the operating system's "open this file" request (macOS Finder
+// double-click on a .hdlc file) to a callback.
+class FileOpenFilter : public QObject {
+  public:
+    FileOpenFilter(std::function<void(const QString &)> on_open, QObject *parent)
+        : QObject(parent), m_on_open(std::move(on_open)) {}
+
+  protected:
+    bool eventFilter(QObject *obj, QEvent *ev) override {
+        if (ev->type() == QEvent::FileOpen) {
+            m_on_open(static_cast<QFileOpenEvent *>(ev)->file());
+            return true;
+        }
+        return QObject::eventFilter(obj, ev);
+    }
+
+  private:
+    std::function<void(const QString &)> m_on_open;
+};
+
 extern "C" int run_gui(int *argc, char **argv) {
     // HiDPI: pass-through fractional scale factors (e.g. 2x Retina) without
     // rounding — keeps fonts and pixmaps crisp on macOS.
@@ -1986,6 +2036,7 @@ extern "C" int run_gui(int *argc, char **argv) {
     const QString initial_project = *argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString();
 
     MainWindow window;
+    app.installEventFilter(new FileOpenFilter([&window](const QString &path) { window.openFromSystem(path); }, &app));
     window.showInitial();
     // After the first event-loop turn, so the viewport has its final size
     // when the project is fitted to it.
