@@ -293,7 +293,9 @@ pub fn collect_top_intermediates(
         let port_type = if crate::nets::has_literal_bounds(&port.port_type) {
             port.port_type.clone()
         } else {
-            net.port_type.clone().unwrap_or_else(|| port.port_type.clone())
+            net.port_type
+                .clone()
+                .unwrap_or_else(|| port.port_type.clone())
         };
         out.push(TopIntermediate {
             port_name: port.name.clone(),
@@ -312,7 +314,10 @@ pub fn find_top_port_context<'a>(
     schematic: &'a Schematic,
     library: &'a [ModuleDef],
     top_port_name: &str,
-) -> Option<(&'a [GenericDef], &'a std::collections::HashMap<String, String>)> {
+) -> Option<(
+    &'a [GenericDef],
+    &'a std::collections::HashMap<String, String>,
+)> {
     use std::collections::HashMap;
     let lib_map: HashMap<&str, &ModuleDef> = library.iter().map(|m| (m.name.as_str(), m)).collect();
     for inst in &schematic.instances {
@@ -328,7 +333,6 @@ pub fn find_top_port_context<'a>(
     }
     None
 }
-
 
 /// Collect the internal signal declarations: one per resolved net that does
 /// not route through a top-port intermediate. Returns (signal_name, port_type)

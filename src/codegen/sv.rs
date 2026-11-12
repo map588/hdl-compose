@@ -167,8 +167,7 @@ fn emit_instance(
         for (i, (name, value)) in generics.iter().enumerate() {
             let sep = if i < generics.len() - 1 { "," } else { "" };
             let gdef = module.generics.iter().find(|g| g.name == **name);
-            let value =
-                crate::codegen::format_generic_value(value, gdef, &schematic.top_generics);
+            let value = crate::codegen::format_generic_value(value, gdef, &schematic.top_generics);
             writeln!(out, "    .{name}({value}){sep}").unwrap();
         }
         write!(out, "  )").unwrap();
@@ -211,12 +210,10 @@ fn render_rhs_sv(nets: &Nets, net_ref: &NetRef) -> String {
         .to_string();
     match net_ref {
         NetRef::TopPort(_) | NetRef::InstancePort(_, _) => base_name,
-        NetRef::TopPortSlice(_, slice) | NetRef::InstancePortSlice(_, _, slice) => {
-            match slice {
-                SliceExpr::Bit(i) => format!("{base_name}[{i}]"),
-                SliceExpr::Range { high, low } => format!("{base_name}[{high}:{low}]"),
-            }
-        }
+        NetRef::TopPortSlice(_, slice) | NetRef::InstancePortSlice(_, _, slice) => match slice {
+            SliceExpr::Bit(i) => format!("{base_name}[{i}]"),
+            SliceExpr::Range { high, low } => format!("{base_name}[{high}:{low}]"),
+        },
         NetRef::Constant(_) => unreachable!("handled above"),
     }
 }

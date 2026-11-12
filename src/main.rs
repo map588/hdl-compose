@@ -336,7 +336,12 @@ fn build_example_project(name: &str, language: &Language) -> Result<Schematic, S
     use hdl_compose::types::{Direction, GenericDef, NetRef, PortDef, PortType};
 
     let (ext, pulse_src, led_src, ena_const) = match language {
-        Language::Vhdl => ("vhd", EXAMPLE_PULSE_GEN_VHDL, EXAMPLE_LED_DRIVER_VHDL, "'1'"),
+        Language::Vhdl => (
+            "vhd",
+            EXAMPLE_PULSE_GEN_VHDL,
+            EXAMPLE_LED_DRIVER_VHDL,
+            "'1'",
+        ),
         Language::SystemVerilog => ("sv", EXAMPLE_PULSE_GEN_SV, EXAMPLE_LED_DRIVER_SV, "1'b1"),
     };
     let pulse_path = PathBuf::from(format!("pulse_gen.{ext}"));
@@ -371,7 +376,9 @@ fn build_example_project(name: &str, language: &Language) -> Result<Schematic, S
     s.library_paths.push(led_path);
 
     {
-        let inst = s.add_instance("u_pulse", "pulse_gen").map_err(|e| e.to_string())?;
+        let inst = s
+            .add_instance("u_pulse", "pulse_gen")
+            .map_err(|e| e.to_string())?;
         inst.position = (80.0, 80.0);
         // Top-generic passthrough: DIV follows the top-level CLK_DIV.
         inst.generic_map.insert("DIV".into(), "CLK_DIV".into());
@@ -382,7 +389,9 @@ fn build_example_project(name: &str, language: &Language) -> Result<Schematic, S
             .insert("ena".into(), Some(NetRef::Constant(ena_const.into())));
     }
     {
-        let inst = s.add_instance("u_led", "led_driver").map_err(|e| e.to_string())?;
+        let inst = s
+            .add_instance("u_led", "led_driver")
+            .map_err(|e| e.to_string())?;
         inst.position = (360.0, 80.0);
         inst.port_map
             .insert("clk".into(), Some(NetRef::TopPort("clk".into())));
@@ -430,7 +439,11 @@ fn cmd_migrate(projects: &[PathBuf]) -> ExitCode {
             }
         }
     }
-    if failed > 0 { ExitCode::from(1) } else { ExitCode::SUCCESS }
+    if failed > 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 fn cmd_gui() -> ExitCode {
@@ -667,7 +680,9 @@ fn cmd_codegen(project_path: &std::path::Path, output: Option<&std::path::Path>)
 
     match output {
         Some(out_path) => {
-            let dir = out_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let dir = out_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
             for (fname, code) in &design.files {
                 let p = dir.join(fname);
                 if let Err(e) = std::fs::write(&p, code) {
@@ -780,9 +795,7 @@ fn cmd_sim(project_path: &std::path::Path, wave: bool) -> ExitCode {
     match hdl_compose::toolchain::run_sim(&staged, &schematic, project_dir(project_path)) {
         Ok(Some(wave_file)) => {
             println!("sim finished, wave written to {}", wave_file.display());
-            if wave
-                && let Err(msg) = hdl_compose::toolchain::open_wave_viewer(&wave_file)
-            {
+            if wave && let Err(msg) = hdl_compose::toolchain::open_wave_viewer(&wave_file) {
                 eprintln!("error: {msg}");
                 return ExitCode::from(2);
             }
@@ -877,9 +890,7 @@ fn cmd_flash(
         Err(code) => return code,
     };
     let bit = match load_project(project_path) {
-        Ok((schematic, _)) => {
-            project_dir(project_path).join(format!("{}.bit", schematic.top_name))
-        }
+        Ok((schematic, _)) => project_dir(project_path).join(format!("{}.bit", schematic.top_name)),
         Err(code) => return code,
     };
     let bit = if bit.exists() {

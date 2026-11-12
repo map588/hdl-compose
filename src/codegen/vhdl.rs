@@ -3,8 +3,8 @@ use std::fmt::Write;
 
 use crate::codegen::{
     CodegenError, check_errors, check_no_dirty_instances, collect_internal_nets,
-    collect_top_intermediates, find_top_port_context, port_type_to_vhdl,
-    port_type_to_vhdl_signal, resolve_port_type,
+    collect_top_intermediates, find_top_port_context, port_type_to_vhdl, port_type_to_vhdl_signal,
+    resolve_port_type,
 };
 use crate::nets::{Nets, resolve_nets};
 use crate::schematic::Diagnostic;
@@ -240,8 +240,7 @@ fn emit_instance(
         for (i, (name, value)) in generics.iter().enumerate() {
             let sep = if i < generics.len() - 1 { "," } else { "" };
             let gdef = module.generics.iter().find(|g| g.name == **name);
-            let value =
-                crate::codegen::format_generic_value(value, gdef, &schematic.top_generics);
+            let value = crate::codegen::format_generic_value(value, gdef, &schematic.top_generics);
             writeln!(out, "      {} => {}{}", name, value, sep).unwrap();
         }
         writeln!(out, "    )").unwrap();
@@ -288,14 +287,12 @@ fn render_rhs_vhdl(nets: &Nets, net_ref: &NetRef) -> String {
         .to_string();
     match net_ref {
         NetRef::TopPort(_) | NetRef::InstancePort(_, _) => base_name,
-        NetRef::TopPortSlice(_, slice) | NetRef::InstancePortSlice(_, _, slice) => {
-            match slice {
-                SliceExpr::Bit(i) => format!("{base_name}({i})"),
-                SliceExpr::Range { high, low } => {
-                    format!("{base_name}({high} downto {low})")
-                }
+        NetRef::TopPortSlice(_, slice) | NetRef::InstancePortSlice(_, _, slice) => match slice {
+            SliceExpr::Bit(i) => format!("{base_name}({i})"),
+            SliceExpr::Range { high, low } => {
+                format!("{base_name}({high} downto {low})")
             }
-        }
+        },
         NetRef::Constant(_) => unreachable!("handled above"),
     }
 }
@@ -497,7 +494,8 @@ mod tests {
         // Bare word for a string generic — codegen must quote it.
         s.set_generic_map_entry("u_alu", "OP", "OR").unwrap();
         // Already-quoted stays untouched.
-        s.set_generic_map_entry("u_alu", "MODE", "\"FAST\"").unwrap();
+        s.set_generic_map_entry("u_alu", "MODE", "\"FAST\"")
+            .unwrap();
         // Top-generic passthrough: an identifier naming a top generic is a
         // reference, never a string literal.
         s.set_generic_map_entry("u_alu", "TICKS", "CLKS_PER_TICK")
@@ -919,7 +917,10 @@ mod tests {
         s.set_port_map_entry(
             "u_drv",
             "q",
-            Some(NetRef::TopPortSlice("led".into(), crate::types::SliceExpr::Bit(0))),
+            Some(NetRef::TopPortSlice(
+                "led".into(),
+                crate::types::SliceExpr::Bit(0),
+            )),
         )
         .unwrap();
         let lib = vec![ModuleDef {
@@ -989,9 +990,6 @@ mod tests {
             output.contains("signal led_s : std_logic_vector(4 downto 0);"),
             "{output}"
         );
-        assert!(
-            output.contains("count(28 downto 24) => led_s"),
-            "{output}"
-        );
+        assert!(output.contains("count(28 downto 24) => led_s"), "{output}");
     }
 }

@@ -217,12 +217,7 @@ mod tests {
         s.add_instance("spi_0", "spi").unwrap();
         s.get_instance_mut("spi_0").unwrap().manual_bundles.insert(
             "spi".into(),
-            vec![
-                "mosi".into(),
-                "miso".into(),
-                "sclk".into(),
-                "cs_n".into(),
-            ],
+            vec!["mosi".into(), "miso".into(), "sclk".into(), "cs_n".into()],
         );
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("v3.hdlc");
@@ -234,12 +229,15 @@ mod tests {
             .manual_bundles
             .get("spi")
             .unwrap();
-        assert_eq!(loaded_bundle, &vec![
-            "mosi".to_string(),
-            "miso".to_string(),
-            "sclk".to_string(),
-            "cs_n".to_string(),
-        ]);
+        assert_eq!(
+            loaded_bundle,
+            &vec![
+                "mosi".to_string(),
+                "miso".to_string(),
+                "sclk".to_string(),
+                "cs_n".to_string(),
+            ]
+        );
     }
 
     #[test]

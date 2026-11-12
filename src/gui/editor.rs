@@ -130,7 +130,11 @@ pub fn render_instance_buffer(s: &Schematic, library: &[ModuleDef], instance_nam
     if !generics.is_empty() {
         out += "  generic map (\n";
         for g in generics {
-            out += &format!("    {:<gen_width$} => {},\n", g.name, generic_value(&g.name));
+            out += &format!(
+                "    {:<gen_width$} => {},\n",
+                g.name,
+                generic_value(&g.name)
+            );
         }
         out += "  )\n";
     }
@@ -166,8 +170,7 @@ pub fn is_constant_literal(s: &str) -> bool {
         return true;
     }
     // VHDL based bit-string literals: x"AB", B"1010", o"17" ...
-    matches!(first.to_ascii_lowercase(), 'x' | 'b' | 'o' | 'd')
-        && chars.next() == Some('"')
+    matches!(first.to_ascii_lowercase(), 'x' | 'b' | 'o' | 'd') && chars.next() == Some('"')
 }
 
 fn validate_rhs(name: &str, rhs: &str) -> Result<String, String> {
@@ -356,7 +359,11 @@ pub fn split_consumer_slice(lhs: &str) -> Option<(String, Option<(i32, i32)>)> {
 /// Handles both binding shapes: VHDL `name => <cursor>` and SV
 /// `.name(<cursor>`.
 pub fn completion_context(line_before_cursor: &str) -> CompletionCtx {
-    let none = CompletionCtx { kind: 0, prefix: String::new(), instance: String::new() };
+    let none = CompletionCtx {
+        kind: 0,
+        prefix: String::new(),
+        instance: String::new(),
+    };
     let rhs = if let Some(arrow) = line_before_cursor.find("=>") {
         &line_before_cursor[arrow + 2..]
     } else if line_before_cursor.trim_start().starts_with('.')
@@ -381,7 +388,11 @@ pub fn completion_context(line_before_cursor: &str) -> CompletionCtx {
             prefix: prefix.to_string(),
             instance: inst.to_string(),
         },
-        None => CompletionCtx { kind: 1, prefix: tail.to_string(), instance: String::new() },
+        None => CompletionCtx {
+            kind: 1,
+            prefix: tail.to_string(),
+            instance: String::new(),
+        },
     }
 }
 
@@ -511,7 +522,8 @@ mod tests {
 
     #[test]
     fn parse_sv_form() {
-        let text = "fifo #(\n  .WIDTH(16),\n) u_fifo (\n  .clk(clk_sys),\n  .din(u_a.dout[3]),\n);\n";
+        let text =
+            "fifo #(\n  .WIDTH(16),\n) u_fifo (\n  .clk(clk_sys),\n  .din(u_a.dout[3]),\n);\n";
         let parsed = parse_instance_buffer(text);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         assert_eq!(parsed.generic_commits, vec![("WIDTH".into(), "16".into())]);
@@ -546,8 +558,14 @@ mod tests {
     #[test]
     fn consumer_slice_split() {
         assert_eq!(split_consumer_slice("din"), Some(("din".into(), None)));
-        assert_eq!(split_consumer_slice("din[3]"), Some(("din".into(), Some((3, 3)))));
-        assert_eq!(split_consumer_slice("din[7:4]"), Some(("din".into(), Some((7, 4)))));
+        assert_eq!(
+            split_consumer_slice("din[3]"),
+            Some(("din".into(), Some((3, 3))))
+        );
+        assert_eq!(
+            split_consumer_slice("din[7:4]"),
+            Some(("din".into(), Some((7, 4))))
+        );
         assert_eq!(split_consumer_slice("din[x]"), None);
         assert_eq!(split_consumer_slice("din[3"), None);
     }
@@ -556,7 +574,10 @@ mod tests {
     fn completion_contexts() {
         assert_eq!(completion_context("    clk => ").kind, 1);
         let c = completion_context("    din => u_a.do");
-        assert_eq!((c.kind, c.instance.as_str(), c.prefix.as_str()), (2, "u_a", "do"));
+        assert_eq!(
+            (c.kind, c.instance.as_str(), c.prefix.as_str()),
+            (2, "u_a", "do")
+        );
         assert_eq!(completion_context("no arrow here").kind, 0);
         let c = completion_context("  x => u_cnt");
         assert_eq!((c.kind, c.prefix.as_str()), (1, "u_cnt"));
@@ -566,7 +587,10 @@ mod tests {
     fn completion_contexts_sv_form() {
         assert_eq!(completion_context("  .clk(").kind, 1);
         let c = completion_context("  .din(u_a.do");
-        assert_eq!((c.kind, c.instance.as_str(), c.prefix.as_str()), (2, "u_a", "do"));
+        assert_eq!(
+            (c.kind, c.instance.as_str(), c.prefix.as_str()),
+            (2, "u_a", "do")
+        );
         let c = completion_context("  .clk(clk_s");
         assert_eq!((c.kind, c.prefix.as_str()), (1, "clk_s"));
         // A closed binding on the same line offers nothing.

@@ -314,10 +314,7 @@ mod tests {
             "dout".into(),
             SliceExpr::Range { high: 7, low: 4 },
         );
-        assert_eq!(
-            nr.base(),
-            NetRef::InstancePort("u_a".into(), "dout".into())
-        );
+        assert_eq!(nr.base(), NetRef::InstancePort("u_a".into(), "dout".into()));
         assert_eq!(
             NetRef::TopPortSlice("bus".into(), SliceExpr::Bit(3)).base(),
             NetRef::TopPort("bus".into())

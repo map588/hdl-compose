@@ -33,7 +33,10 @@ pub fn validate_groups(s: &Schematic, library: &[ModuleDef]) -> Vec<Diagnostic> 
     let mut member_of: HashMap<&str, &str> = HashMap::new();
     for g in &s.groups {
         if !seen_groups.insert(&g.name) {
-            diags.push(Diagnostic::error(format!("duplicate group name '{}'", g.name)));
+            diags.push(Diagnostic::error(format!(
+                "duplicate group name '{}'",
+                g.name
+            )));
         }
         if instance_names.contains(g.name.as_str()) {
             diags.push(Diagnostic::error(format!(
@@ -48,7 +51,10 @@ pub fn validate_groups(s: &Schematic, library: &[ModuleDef]) -> Vec<Diagnostic> 
             )));
         }
         if g.members.is_empty() {
-            diags.push(Diagnostic::error(format!("group '{}' has no members", g.name)));
+            diags.push(Diagnostic::error(format!(
+                "group '{}' has no members",
+                g.name
+            )));
         }
         for m in &g.members {
             if !instance_names.contains(m.as_str()) {
@@ -130,8 +136,7 @@ pub fn derive_boundary(
     library: &[ModuleDef],
     inside: &HashSet<String>,
 ) -> (Vec<BoundaryPort>, HashMap<NetRef, String>) {
-    let lib_map: HashMap<&str, &ModuleDef> =
-        library.iter().map(|m| (m.name.as_str(), m)).collect();
+    let lib_map: HashMap<&str, &ModuleDef> = library.iter().map(|m| (m.name.as_str(), m)).collect();
     let nets = resolve_nets(s, library);
     let is_inside = |r: &NetRef| match r {
         NetRef::InstancePort(i, _) => inside.contains(i),
@@ -204,7 +209,11 @@ pub fn transitive_members(s: &Schematic, group_name: &str) -> HashSet<String> {
         if let Some(g) = s.groups.iter().find(|g| g.name == gname) {
             out.extend(g.members.iter().cloned());
         }
-        for child in s.groups.iter().filter(|c| c.parent.as_deref() == Some(gname)) {
+        for child in s
+            .groups
+            .iter()
+            .filter(|c| c.parent.as_deref() == Some(gname))
+        {
             queue.push(&child.name);
         }
     }
@@ -220,8 +229,11 @@ pub fn expand_hierarchy(schematic: &Schematic, library: &[ModuleDef]) -> Hierarc
     let mut out_groups: Vec<(String, Schematic)> = Vec::new();
 
     // Children first: deeper parent chains collapse earlier.
-    let by_name: HashMap<&str, &Group> =
-        schematic.groups.iter().map(|g| (g.name.as_str(), g)).collect();
+    let by_name: HashMap<&str, &Group> = schematic
+        .groups
+        .iter()
+        .map(|g| (g.name.as_str(), g))
+        .collect();
     let mut order: Vec<&Group> = schematic.groups.iter().collect();
     order.sort_by_key(|g| std::cmp::Reverse(depth(g, &by_name)));
 
@@ -395,7 +407,11 @@ pub fn expand_hierarchy(schematic: &Schematic, library: &[ModuleDef]) -> Hierarc
         out_groups.push((g.name.clone(), gs));
     }
 
-    HierarchyPlan { groups: out_groups, top: cur, library: lib }
+    HierarchyPlan {
+        groups: out_groups,
+        top: cur,
+        library: lib,
+    }
 }
 
 #[cfg(test)]
@@ -465,8 +481,14 @@ mod tests {
             position: (0.0, 0.0),
         });
         let lib = vec![
-            module("mod_a", vec![("clk", Direction::In), ("dout", Direction::Out)]),
-            module("mod_b", vec![("din", Direction::In), ("dout", Direction::Out)]),
+            module(
+                "mod_a",
+                vec![("clk", Direction::In), ("dout", Direction::Out)],
+            ),
+            module(
+                "mod_b",
+                vec![("din", Direction::In), ("dout", Direction::Out)],
+            ),
         ];
         (s, lib)
     }
@@ -490,7 +512,10 @@ mod tests {
         });
         let diags = validate_groups(&s, &lib);
         let msgs: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
-        assert!(msgs.iter().any(|m| m.contains("not an instance")), "{msgs:?}");
+        assert!(
+            msgs.iter().any(|m| m.contains("not an instance")),
+            "{msgs:?}"
+        );
         assert!(msgs.iter().any(|m| m.contains("cyclic")), "{msgs:?}");
     }
 
@@ -538,7 +563,11 @@ mod tests {
         let plan = expand_hierarchy(&s, &lib);
         let top = &plan.top;
         // Members replaced by one instance of the synthesized module.
-        assert!(top.instances.iter().all(|i| i.name != "u_a" && i.name != "u_b"));
+        assert!(
+            top.instances
+                .iter()
+                .all(|i| i.name != "u_a" && i.name != "u_b")
+        );
         let gi = top.instances.iter().find(|i| i.name == "u_chain").unwrap();
         assert_eq!(gi.module_ref, "chain");
         // Group instance connects its In port to the top clk.

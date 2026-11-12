@@ -79,7 +79,11 @@ pub struct RouteResult {
 }
 
 fn gutter_index(col: i32, exits_right: bool) -> i32 {
-    if exits_right { 2 * col + 1 } else { 2 * col - 1 }
+    if exits_right {
+        2 * col + 1
+    } else {
+        2 * col - 1
+    }
 }
 
 fn gutter_center_x(idx: i32, pitch: f64) -> f64 {
@@ -95,7 +99,11 @@ struct GutterInfo {
 
 impl Default for GutterInfo {
     fn default() -> Self {
-        GutterInfo { safe_min: -1e18, safe_max: 1e18, nets_using: 0 }
+        GutterInfo {
+            safe_min: -1e18,
+            safe_max: 1e18,
+            nets_using: 0,
+        }
     }
 }
 
@@ -262,9 +270,17 @@ pub fn plan_routes(nets: &[Net], obstacles: &[Rect], p: Params) -> RouteResult {
             }
             let lo = ys.iter().cloned().fold(f64::INFINITY, f64::min);
             let hi = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            per_gutter.entry(g).or_default().push((net_idx, (lo + hi) / 2.0));
+            per_gutter
+                .entry(g)
+                .or_default()
+                .push((net_idx, (lo + hi) / 2.0));
         }
-        plans.push(NetPlan { g_d, g_l, unique_g, hy });
+        plans.push(NetPlan {
+            g_d,
+            g_l,
+            unique_g,
+            hy,
+        });
     }
 
     // Phase 2: crossing-aware lane assignment per gutter.
@@ -286,7 +302,10 @@ pub fn plan_routes(nets: &[Net], obstacles: &[Rect], p: Params) -> RouteResult {
             let gx = lanes[&(net_idx, g_d)];
             for l in &net.loads {
                 result.wires.push(vec![
-                    Point { x: driver.x, y: driver.y },
+                    Point {
+                        x: driver.x,
+                        y: driver.y,
+                    },
                     Point { x: gx, y: driver.y },
                     Point { x: gx, y: l.y },
                     Point { x: l.x, y: l.y },
@@ -334,8 +353,14 @@ pub fn plan_routes(nets: &[Net], obstacles: &[Rect], p: Params) -> RouteResult {
             for (i, l) in net.loads.iter().enumerate() {
                 let lgx = gx_for_idx[&g_l[i]];
                 let mut wp = vec![
-                    Point { x: driver.x, y: driver.y },
-                    Point { x: dgx, y: driver.y },
+                    Point {
+                        x: driver.x,
+                        y: driver.y,
+                    },
+                    Point {
+                        x: dgx,
+                        y: driver.y,
+                    },
                     Point { x: dgx, y: hy },
                 ];
                 if lgx != dgx {
@@ -383,7 +408,11 @@ pub fn plan_routes(nets: &[Net], obstacles: &[Rect], p: Params) -> RouteResult {
         for pt in dot_points {
             let key = (pt.x.round() as i64, pt.y.round() as i64);
             if seen.insert(key) {
-                result.dots.push(Dot { x: pt.x, y: pt.y, net: net_idx });
+                result.dots.push(Dot {
+                    x: pt.x,
+                    y: pt.y,
+                    net: net_idx,
+                });
             }
         }
     }
@@ -565,7 +594,11 @@ pub fn optimize_positions(
     let mut used: Vec<i32> = col.clone();
     used.sort_unstable();
     used.dedup();
-    let rank: HashMap<i32, i32> = used.iter().enumerate().map(|(r, &c)| (c, r as i32)).collect();
+    let rank: HashMap<i32, i32> = used
+        .iter()
+        .enumerate()
+        .map(|(r, &c)| (c, r as i32))
+        .collect();
     let precap: Vec<i32> = col.iter().map(|c| rank[c]).collect();
     for c in col.iter_mut() {
         *c = rank[c];
@@ -595,12 +628,10 @@ pub fn optimize_positions(
                     h(a.1).partial_cmp(&h(b.1)).unwrap()
                 })
                 .map(|(&c, m)| (c, m.clone()));
-            let Some((tc, mut members)) = tallest else { break };
-            members.sort_by(|&a, &b| {
-                precap[a]
-                    .cmp(&precap[b])
-                    .then(a.cmp(&b))
-            });
+            let Some((tc, mut members)) = tallest else {
+                break;
+            };
+            members.sort_by(|&a, &b| precap[a].cmp(&precap[b]).then(a.cmp(&b)));
             for c in col.iter_mut() {
                 if *c > tc {
                     *c += 1;
@@ -632,9 +663,10 @@ pub fn optimize_positions(
         // drift; restores the minimum gap.
         let mut m: Vec<usize> = members.to_vec();
         m.sort_by(|&a, &b| y[a].partial_cmp(&y[b]).unwrap().then(a.cmp(&b)));
-        let total: f64 =
-            m.iter().map(|&i| nodes[i].height).sum::<f64>() + gap * (m.len().saturating_sub(1)) as f64;
-        let mean: f64 = m.iter().map(|&i| y[i] + nodes[i].height / 2.0).sum::<f64>() / m.len() as f64;
+        let total: f64 = m.iter().map(|&i| nodes[i].height).sum::<f64>()
+            + gap * (m.len().saturating_sub(1)) as f64;
+        let mean: f64 =
+            m.iter().map(|&i| y[i] + nodes[i].height / 2.0).sum::<f64>() / m.len() as f64;
         let mut cur = mean - total / 2.0;
         for &i in &m {
             y[i] = cur;
@@ -693,9 +725,8 @@ pub fn optimize_positions(
     for &c in &cols_sorted[1..] {
         let members = orders.get(&c).cloned().unwrap_or_default();
         for &i in &members {
-            if let Some(&(f, fdy, _, tdy, _)) = edges
-                .iter()
-                .find(|&&(f, _, t, _, _)| t == i && col[f] < c)
+            if let Some(&(f, fdy, _, tdy, _)) =
+                edges.iter().find(|&&(f, _, t, _, _)| t == i && col[f] < c)
             {
                 y[i] = y[f] + fdy - tdy;
             }
@@ -743,9 +774,9 @@ pub fn resolve_clear_y(
     let clear_at = |y: f64| -> bool {
         let top = y - margin;
         let bottom = y + height + margin;
-        !blocking
-            .iter()
-            .any(|b| b.left < probe_right && b.right > probe_left && b.top < bottom && b.bottom > top)
+        !blocking.iter().any(|b| {
+            b.left < probe_right && b.right > probe_left && b.top < bottom && b.bottom > top
+        })
     };
 
     if clear_at(proposed_y) {
@@ -768,20 +799,26 @@ pub fn resolve_clear_y(
             return y;
         }
     }
-    blocking
-        .iter()
-        .map(|b| b.bottom)
-        .fold(proposed_y, f64::max)
+    blocking.iter().map(|b| b.bottom).fold(proposed_y, f64::max)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const P: Params = Params { column_pitch: 480.0, lane_step: 12.0, stub_min: 40.0 };
+    const P: Params = Params {
+        column_pitch: 480.0,
+        lane_step: 12.0,
+        stub_min: 40.0,
+    };
 
     fn ep(x: f64, y: f64, exits_right: bool, col: i32) -> Endpoint {
-        Endpoint { x, y, exits_right, col }
+        Endpoint {
+            x,
+            y,
+            exits_right,
+            col,
+        }
     }
 
     #[test]
@@ -826,8 +863,14 @@ mod tests {
     #[test]
     fn two_nets_in_one_gutter_get_distinct_lanes() {
         let nets = [
-            Net { driver: ep(180.0, 100.0, true, 0), loads: vec![ep(300.0, 150.0, false, 1)] },
-            Net { driver: ep(180.0, 200.0, true, 0), loads: vec![ep(300.0, 250.0, false, 1)] },
+            Net {
+                driver: ep(180.0, 100.0, true, 0),
+                loads: vec![ep(300.0, 150.0, false, 1)],
+            },
+            Net {
+                driver: ep(180.0, 200.0, true, 0),
+                loads: vec![ep(300.0, 250.0, false, 1)],
+            },
         ];
         let r = plan_routes(&nets, &[], P);
         assert_ne!(r.wires[0][1].x, r.wires[1][1].x, "lanes must not coincide");
@@ -864,9 +907,18 @@ mod tests {
         // Two nets flowing top→top and bottom→bottom through one gutter.
         // Order-blind lane allocation used to weave these.
         let nets = [
-            Net { driver: ep(180.0, 100.0, true, 0), loads: vec![ep(300.0, 120.0, false, 1)] },
-            Net { driver: ep(180.0, 200.0, true, 0), loads: vec![ep(300.0, 220.0, false, 1)] },
-            Net { driver: ep(180.0, 300.0, true, 0), loads: vec![ep(300.0, 320.0, false, 1)] },
+            Net {
+                driver: ep(180.0, 100.0, true, 0),
+                loads: vec![ep(300.0, 120.0, false, 1)],
+            },
+            Net {
+                driver: ep(180.0, 200.0, true, 0),
+                loads: vec![ep(300.0, 220.0, false, 1)],
+            },
+            Net {
+                driver: ep(180.0, 300.0, true, 0),
+                loads: vec![ep(300.0, 320.0, false, 1)],
+            },
         ];
         let r = plan_routes(&nets, &[], P);
         for i in 0..r.wires.len() {
@@ -885,8 +937,14 @@ mod tests {
         // Two long bridges with identical mean Y and overlapping X span
         // must not collapse onto one horizontal line.
         let nets = [
-            Net { driver: ep(20.0, 100.0, false, 0), loads: vec![ep(1660.0, 300.0, true, 3)] },
-            Net { driver: ep(20.0, 150.0, false, 0), loads: vec![ep(1660.0, 250.0, true, 3)] },
+            Net {
+                driver: ep(20.0, 100.0, false, 0),
+                loads: vec![ep(1660.0, 300.0, true, 3)],
+            },
+            Net {
+                driver: ep(20.0, 150.0, false, 0),
+                loads: vec![ep(1660.0, 250.0, true, 3)],
+            },
         ];
         let r = plan_routes(&nets, &[], P);
         let hy0 = r.wires[0][2].y;
@@ -906,7 +964,12 @@ mod tests {
             driver: ep(20.0, 100.0, false, 0),
             loads: vec![ep(700.0, 300.0, true, 1)],
         }];
-        let block = Rect { left: 100.0, top: 150.0, right: 600.0, bottom: 250.0 };
+        let block = Rect {
+            left: 100.0,
+            top: 150.0,
+            right: 600.0,
+            bottom: 250.0,
+        };
         let r = plan_routes(&nets, &[block], P);
         let hy = r.wires[0][2].y; // bridge Y
         assert!(
@@ -916,7 +979,13 @@ mod tests {
     }
 
     fn ci(id: i32, top: f64, height: f64, fixed: bool) -> ColItem {
-        ColItem { id, col: 0, top, height, fixed }
+        ColItem {
+            id,
+            col: 0,
+            top,
+            height,
+            fixed,
+        }
     }
 
     #[test]
@@ -959,7 +1028,13 @@ mod tests {
         PlaceNode { id, height }
     }
     fn pe(from: i32, from_dy: f64, to: i32, to_dy: f64) -> PlaceEdge {
-        PlaceEdge { from, from_dy, to, to_dy, directed: true }
+        PlaceEdge {
+            from,
+            from_dy,
+            to,
+            to_dy,
+            directed: true,
+        }
     }
 
     #[test]
@@ -989,7 +1064,11 @@ mod tests {
     fn optimize_fanout_stacks_with_gap() {
         // One driver, three loads in the same column: loads stacked, gapped.
         let nodes = [pn(0, 100.0), pn(1, 100.0), pn(2, 100.0), pn(3, 100.0)];
-        let edges = [pe(0, 50.0, 1, 50.0), pe(0, 50.0, 2, 50.0), pe(0, 50.0, 3, 50.0)];
+        let edges = [
+            pe(0, 50.0, 1, 50.0),
+            pe(0, 50.0, 2, 50.0),
+            pe(0, 50.0, 3, 50.0),
+        ];
         let r = optimize_positions(&nodes, &edges, 60.0, 0);
         let mut load_ys: Vec<f64> = r.iter().filter(|e| e.0 != 0).map(|e| e.2).collect();
         load_ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -1014,9 +1093,18 @@ mod tests {
         // Two loads sharing a net (no driver direction): stay in one column,
         // pulled adjacent by the barycenter.
         let nodes = [pn(0, 100.0), pn(1, 100.0)];
-        let edges = [PlaceEdge { from: 0, from_dy: 50.0, to: 1, to_dy: 50.0, directed: false }];
+        let edges = [PlaceEdge {
+            from: 0,
+            from_dy: 50.0,
+            to: 1,
+            to_dy: 50.0,
+            directed: false,
+        }];
         let r = optimize_positions(&nodes, &edges, 60.0, 0);
-        assert_eq!(r[0].1, r[1].1, "undirected edge must not split columns: {r:?}");
+        assert_eq!(
+            r[0].1, r[1].1,
+            "undirected edge must not split columns: {r:?}"
+        );
     }
 
     #[test]
@@ -1071,7 +1159,12 @@ mod tests {
 
     #[test]
     fn resolve_clear_y_shoves_off_overlap() {
-        let other = Rect { left: 0.0, top: 0.0, right: 200.0, bottom: 100.0 };
+        let other = Rect {
+            left: 0.0,
+            top: 0.0,
+            right: 200.0,
+            bottom: 100.0,
+        };
         let y = resolve_clear_y(0.0, 200.0, 100.0, 50.0, 30.0, &[other]);
         // Contract: no raw overlap with the other module. (The double-margin
         // candidate rejection means the fallback can yield half-gap
@@ -1085,7 +1178,10 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn next(&mut self) -> u64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             self.0 >> 33
         }
         fn range(&mut self, lo: i64, hi: i64) -> i64 {
@@ -1134,7 +1230,12 @@ mod tests {
                 let left = col * P.column_pitch - w / 2.0;
                 let y0 = rng.range(-400, 400) as f64;
                 let y = resolve_clear_y(left, w, h, y0, 30.0, &mods);
-                mods.push(Rect { left, top: y, right: left + w, bottom: y + h });
+                mods.push(Rect {
+                    left,
+                    top: y,
+                    right: left + w,
+                    bottom: y + h,
+                });
             }
             // 1–4 nets between random module edge pins.
             let n_nets = rng.range(1, 4);
@@ -1146,7 +1247,12 @@ mod tests {
                     let x = if right_edge { m.right } else { m.left };
                     let y = m.top + 20.0 + rng.range(0, (m.bottom - m.top - 40.0) as i64) as f64;
                     let col = (((m.left + m.right) / 2.0) / P.column_pitch).round() as i32;
-                    Endpoint { x, y, exits_right: right_edge, col }
+                    Endpoint {
+                        x,
+                        y,
+                        exits_right: right_edge,
+                        col,
+                    }
                 };
                 let driver = pin(&mut rng, &mods);
                 let n_loads = rng.range(1, 2);

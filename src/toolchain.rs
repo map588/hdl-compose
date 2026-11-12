@@ -217,13 +217,11 @@ pub fn stage(
         }
         sources.push(copy_in(&src)?);
     }
-    for (fname, code) in design
-        .files
-        .iter()
-        .chain(std::iter::once(&(design.top_filename.clone(), design.top_code.clone())))
-    {
-        std::fs::write(dir.join(fname), code)
-            .map_err(|e| format!("cannot write {fname}: {e}"))?;
+    for (fname, code) in design.files.iter().chain(std::iter::once(&(
+        design.top_filename.clone(),
+        design.top_code.clone(),
+    ))) {
+        std::fs::write(dir.join(fname), code).map_err(|e| format!("cannot write {fname}: {e}"))?;
         sources.push(fname.clone());
     }
 
@@ -271,11 +269,7 @@ pub fn run_check(staged: &StagedBuild) -> Result<bool, String> {
             if !run_tool("ghdl", &args, &staged.dir)? {
                 return Ok(false);
             }
-            run_tool(
-                "ghdl",
-                ["-e", "--std=08", &staged.top_name],
-                &staged.dir,
-            )
+            run_tool("ghdl", ["-e", "--std=08", &staged.top_name], &staged.dir)
         }
         Language::SystemVerilog => {
             require_tools(&["verilator"])?;
@@ -298,7 +292,10 @@ fn ghdl_prefix() -> Option<String> {
     let out = Command::new("ghdl").arg("--disp-config").output().ok()?;
     String::from_utf8_lossy(&out.stdout)
         .lines()
-        .find_map(|l| l.strip_prefix("library directory:").map(|v| v.trim().to_string()))
+        .find_map(|l| {
+            l.strip_prefix("library directory:")
+                .map(|v| v.trim().to_string())
+        })
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("GHDL_PREFIX").ok())
 }
@@ -782,7 +779,11 @@ pub fn fpga_scaffold(
         ),
         FpgaFamily::Ecp5 => (
             "# Pin constraints — uncomment and set a site per top-level port.\n",
-            |p| format!("# LOCATE COMP \"{p}\" SITE \"<site>\";\n# IOBUF PORT \"{p}\" IO_TYPE=LVCMOS33;\n"),
+            |p| {
+                format!(
+                    "# LOCATE COMP \"{p}\" SITE \"<site>\";\n# IOBUF PORT \"{p}\" IO_TYPE=LVCMOS33;\n"
+                )
+            },
         ),
         FpgaFamily::Gowin => (
             "# Pin constraints — uncomment and set a pin per top-level port.\n",
@@ -806,12 +807,10 @@ fn find_clock(schematic: &Schematic) -> Option<&str> {
         .top_ports
         .iter()
         .find(|p| {
-            matches!(p.direction, Direction::In)
-                && matches!(p.port_type, PortType::StdLogic)
-                && {
-                    let n = p.name.to_lowercase();
-                    n.contains("clk") || n.contains("clock")
-                }
+            matches!(p.direction, Direction::In) && matches!(p.port_type, PortType::StdLogic) && {
+                let n = p.name.to_lowercase();
+                n.contains("clk") || n.contains("clock")
+            }
         })
         .map(|p| p.name.as_str())
 }
@@ -959,7 +958,10 @@ mod tests {
             module("x", "x.vhd", &[]),
         ];
         let order = dependency_ordered_sources(&lib);
-        assert_eq!(order, vec![PathBuf::from("x.vhd"), PathBuf::from("util.vhd")]);
+        assert_eq!(
+            order,
+            vec![PathBuf::from("x.vhd"), PathBuf::from("util.vhd")]
+        );
     }
 
     #[test]
@@ -1034,7 +1036,12 @@ mod config_tests {
         let tmp = std::env::temp_dir().join(format!("hdlc-cfgtest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("rtl")).unwrap();
-        for f in ["rtl/pkg.vhd", "rtl/leaf.vhd", "rtl/mod_a.vhd", "rtl/vendor.v"] {
+        for f in [
+            "rtl/pkg.vhd",
+            "rtl/leaf.vhd",
+            "rtl/mod_a.vhd",
+            "rtl/vendor.v",
+        ] {
             std::fs::write(tmp.join(f), "-- test").unwrap();
         }
 
@@ -1072,7 +1079,10 @@ mod config_tests {
         .unwrap();
 
         let staged = stage(&schematic, &library, &design, &config, &tmp).unwrap();
-        assert_eq!(staged.libraries, vec![("loot".to_string(), vec!["pkg.vhd".to_string()])]);
+        assert_eq!(
+            staged.libraries,
+            vec![("loot".to_string(), vec!["pkg.vhd".to_string()])]
+        );
         assert_eq!(staged.sources, vec!["leaf.vhd", "mod_a.vhd", "top.vhd"]);
         let _ = std::fs::remove_dir_all(&tmp);
     }

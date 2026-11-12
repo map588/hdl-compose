@@ -100,8 +100,7 @@ pub fn pin_check(schematic: &Schematic, names: &HashSet<String>) -> Vec<String> 
         let n = &port.name;
         match &port.port_type {
             PortType::StdLogicVector(range) => {
-                let (RangeExpr::Literal(high), RangeExpr::Literal(low)) =
-                    (&range.high, &range.low)
+                let (RangeExpr::Literal(high), RangeExpr::Literal(low)) = (&range.high, &range.low)
                 else {
                     continue;
                 };
@@ -173,7 +172,11 @@ LOCATE COMP "led[1]" SITE "D14";
         let names = constraint_port_names(LPF, FpgaFamily::Ecp5);
         assert_eq!(
             names,
-            HashSet::from(["clk".to_string(), "led[0]".to_string(), "led[1]".to_string()])
+            HashSet::from([
+                "clk".to_string(),
+                "led[0]".to_string(),
+                "led[1]".to_string()
+            ])
         );
     }
 

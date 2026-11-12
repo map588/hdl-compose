@@ -119,7 +119,11 @@ impl Schematic {
         Ok(self.instances.last_mut().unwrap())
     }
 
-    pub fn rename_instance(&mut self, old_name: &str, new_name: &str) -> Result<(), SchematicError> {
+    pub fn rename_instance(
+        &mut self,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<(), SchematicError> {
         if self.instances.iter().any(|i| i.name == new_name) {
             return Err(SchematicError::DuplicateInstance(new_name.to_string()));
         }
@@ -272,10 +276,8 @@ impl Schematic {
         new_generics: Vec<GenericDef>,
         new_ports: Vec<PortDef>,
     ) -> Vec<String> {
-        let old_names: HashSet<String> =
-            self.top_ports.iter().map(|p| p.name.clone()).collect();
-        let new_names: HashSet<String> =
-            new_ports.iter().map(|p| p.name.clone()).collect();
+        let old_names: HashSet<String> = self.top_ports.iter().map(|p| p.name.clone()).collect();
+        let new_names: HashSet<String> = new_ports.iter().map(|p| p.name.clone()).collect();
         let removed: Vec<String> = old_names.difference(&new_names).cloned().collect();
         for inst in self.instances.iter_mut() {
             for entry in inst.port_map.values_mut() {
@@ -316,8 +318,7 @@ impl Schematic {
             }
         }
         // Drop any aliases whose key referenced the removed instance as driver.
-        self.aliases
-            .retain(|k, _| k.instance_name() != Some(name));
+        self.aliases.retain(|k, _| k.instance_name() != Some(name));
         // Group membership follows the instance; empty groups dissolve.
         for g in self.groups.iter_mut() {
             g.members.retain(|m| m != name);
@@ -544,16 +545,15 @@ impl Schematic {
                             .with_port(port_name),
                         );
                     } else if let Some(inst_port) = module_ports.get(port_name.as_str())
-                        && let Some(top_port) =
-                            self.top_ports.iter().find(|p| p.name == *top_name)
-                        {
-                            driver_port_def = Some(top_port);
-                            if slice_opt.is_none() {
-                                check_compatibility(
-                                    &mut diags, &inst.name, port_name, inst_port, top_port,
-                                );
-                            }
+                        && let Some(top_port) = self.top_ports.iter().find(|p| p.name == *top_name)
+                    {
+                        driver_port_def = Some(top_port);
+                        if slice_opt.is_none() {
+                            check_compatibility(
+                                &mut diags, &inst.name, port_name, inst_port, top_port,
+                            );
                         }
+                    }
                 } else if let Some((ref_inst, ref_port)) = &inst_ref_opt {
                     if !instance_names.contains(ref_inst.as_str()) {
                         diags.push(
@@ -566,8 +566,7 @@ impl Schematic {
                         continue;
                     }
 
-                    let ref_instance =
-                        self.instances.iter().find(|i| i.name == *ref_inst).unwrap();
+                    let ref_instance = self.instances.iter().find(|i| i.name == *ref_inst).unwrap();
                     if let Some(ref_module) = lib_map.get(ref_instance.module_ref.as_str()) {
                         if let Some(driver_port) =
                             ref_module.ports.iter().find(|p| p.name == *ref_port)
@@ -624,9 +623,7 @@ impl Schematic {
             if let Some(m) = module_def {
                 for port in &m.ports {
                     let pin = NetRef::InstancePort(inst.name.clone(), port.name.clone());
-                    if !inst.port_map.contains_key(&port.name)
-                        && nets.net_for(&pin).is_none()
-                    {
+                    if !inst.port_map.contains_key(&port.name) && nets.net_for(&pin).is_none() {
                         diags.push(
                             unconnected_diag(&port.name, Some(port))
                                 .with_instance(&inst.name)
@@ -662,8 +659,7 @@ impl Schematic {
                     .drivers
                     .iter()
                     .filter(|r| {
-                        crate::nets::pin_direction(self, &lib_map, r)
-                            != Some(Direction::InOut)
+                        crate::nets::pin_direction(self, &lib_map, r) != Some(Direction::InOut)
                     })
                     .collect();
                 // Disjoint slices of one vector port are legitimate fan-in
@@ -683,8 +679,7 @@ impl Schematic {
                     }
                 }
                 if !conflicting.is_empty() {
-                    let pins: Vec<String> =
-                        conflicting.iter().map(|r| r.to_key()).collect();
+                    let pins: Vec<String> = conflicting.iter().map(|r| r.to_key()).collect();
                     diags.push(Diagnostic::error(format!(
                         "net '{}' has multiple drivers: {}",
                         net.name,
@@ -692,8 +687,7 @@ impl Schematic {
                     )));
                 }
                 if net.drivers.is_empty() {
-                    let pins: Vec<String> =
-                        net.members.iter().map(|r| r.to_key()).collect();
+                    let pins: Vec<String> = net.members.iter().map(|r| r.to_key()).collect();
                     diags.push(Diagnostic::warning(format!(
                         "net '{}' has no driver (pins: {})",
                         net.name,

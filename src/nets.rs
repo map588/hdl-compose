@@ -174,11 +174,7 @@ pub fn driver_target(schematic: &Schematic, driver: &NetRef) -> (NetRef, Option<
 /// Do two drivers conflict? Only when they push onto the same target base
 /// with overlapping bits; disjoint slices of one vector port are fine.
 /// Different bases merged into one net stay conservative (conflict).
-pub fn drivers_conflict(
-    schematic: &Schematic,
-    a: &NetRef,
-    b: &NetRef,
-) -> bool {
+pub fn drivers_conflict(schematic: &Schematic, a: &NetRef, b: &NetRef) -> bool {
     let (base_a, slice_a) = driver_target(schematic, a);
     let (base_b, slice_b) = driver_target(schematic, b);
     if base_a != base_b {
@@ -211,8 +207,7 @@ pub(crate) fn has_literal_bounds(pt: &PortType) -> bool {
 
 /// Resolve all nets of the schematic.
 pub fn resolve_nets(schematic: &Schematic, library: &[ModuleDef]) -> Nets {
-    let lib_map: HashMap<&str, &ModuleDef> =
-        library.iter().map(|m| (m.name.as_str(), m)).collect();
+    let lib_map: HashMap<&str, &ModuleDef> = library.iter().map(|m| (m.name.as_str(), m)).collect();
 
     // Intern every pin seen in a port_map relationship and unite the two
     // sides of each entry.
@@ -262,8 +257,7 @@ pub fn resolve_nets(schematic: &Schematic, library: &[ModuleDef]) -> Nets {
             .iter()
             .filter(|r| {
                 let is_top = matches!(r, NetRef::TopPort(_));
-                pin_direction(schematic, &lib_map, r)
-                    .is_some_and(|d| is_driver_capable(&d, is_top))
+                pin_direction(schematic, &lib_map, r).is_some_and(|d| is_driver_capable(&d, is_top))
             })
             .cloned()
             .collect();
@@ -292,9 +286,7 @@ pub fn resolve_nets(schematic: &Schematic, library: &[ModuleDef]) -> Nets {
             .filter_map(|r| member_type(schematic, &lib_map, r));
         let first = candidates.next();
         let port_type = match &first {
-            Some(pt) if !has_literal_bounds(pt) => {
-                candidates.find(has_literal_bounds).or(first)
-            }
+            Some(pt) if !has_literal_bounds(pt) => candidates.find(has_literal_bounds).or(first),
             _ => first,
         };
 
@@ -370,7 +362,10 @@ mod tests {
         assert_eq!(nets.nets.len(), 1);
         let net = &nets.nets[0];
         assert_eq!(net.members.len(), 2);
-        assert_eq!(net.drivers, vec![NetRef::InstancePort("u_a".into(), "dout".into())]);
+        assert_eq!(
+            net.drivers,
+            vec![NetRef::InstancePort("u_a".into(), "dout".into())]
+        );
         assert_eq!(net.name, "u_a_dout");
     }
 
@@ -502,7 +497,10 @@ mod tests {
         assert!(net.has_top);
         assert_eq!(net.name, "led_s");
         // Instance output drives; top Out port is a load.
-        assert_eq!(net.drivers, vec![NetRef::InstancePort("u_a".into(), "dout".into())]);
+        assert_eq!(
+            net.drivers,
+            vec![NetRef::InstancePort("u_a".into(), "dout".into())]
+        );
     }
 
     #[test]

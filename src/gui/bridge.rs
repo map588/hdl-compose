@@ -82,12 +82,7 @@ pub mod qobject {
         fn instance_source_path(self: &AppState, index: i32) -> QString;
 
         #[qinvokable]
-        fn set_instance_position(
-            self: Pin<&mut AppState>,
-            name: &QString,
-            x: f64,
-            y: f64,
-        ) -> bool;
+        fn set_instance_position(self: Pin<&mut AppState>, name: &QString, x: f64, y: f64) -> bool;
 
         #[qinvokable]
         fn instance_pos_x(self: &AppState, index: i32) -> f64;
@@ -180,11 +175,7 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
-        fn consumer_slice(
-            self: &AppState,
-            instance: &QString,
-            port: &QString,
-        ) -> QString;
+        fn consumer_slice(self: &AppState, instance: &QString, port: &QString) -> QString;
 
         #[qinvokable]
         fn clear_port_map_entry(
@@ -194,11 +185,7 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
-        fn port_map_entry(
-            self: &AppState,
-            instance: &QString,
-            port: &QString,
-        ) -> QString;
+        fn port_map_entry(self: &AppState, instance: &QString, port: &QString) -> QString;
 
         #[qinvokable]
         fn reload_library(self: Pin<&mut AppState>) -> bool;
@@ -225,11 +212,8 @@ pub mod qobject {
         fn module_generic_count(self: &AppState, instance_index: i32) -> i32;
 
         #[qinvokable]
-        fn module_generic_name(
-            self: &AppState,
-            instance_index: i32,
-            generic_index: i32,
-        ) -> QString;
+        fn module_generic_name(self: &AppState, instance_index: i32, generic_index: i32)
+        -> QString;
 
         #[qinvokable]
         fn module_generic_default(
@@ -264,18 +248,11 @@ pub mod qobject {
         fn manual_bundle_count(self: &AppState, instance_index: i32) -> i32;
 
         #[qinvokable]
-        fn manual_bundle_name(
-            self: &AppState,
-            instance_index: i32,
-            bundle_index: i32,
-        ) -> QString;
+        fn manual_bundle_name(self: &AppState, instance_index: i32, bundle_index: i32) -> QString;
 
         #[qinvokable]
-        fn manual_bundle_port_count(
-            self: &AppState,
-            instance_index: i32,
-            bundle_index: i32,
-        ) -> i32;
+        fn manual_bundle_port_count(self: &AppState, instance_index: i32, bundle_index: i32)
+        -> i32;
 
         #[qinvokable]
         fn manual_bundle_port_name(
@@ -307,32 +284,16 @@ pub mod qobject {
         fn instance_port_count(self: &AppState, instance_index: i32) -> i32;
 
         #[qinvokable]
-        fn instance_port_name(
-            self: &AppState,
-            instance_index: i32,
-            port_index: i32,
-        ) -> QString;
+        fn instance_port_name(self: &AppState, instance_index: i32, port_index: i32) -> QString;
 
         #[qinvokable]
-        fn instance_port_direction(
-            self: &AppState,
-            instance_index: i32,
-            port_index: i32,
-        ) -> i32;
+        fn instance_port_direction(self: &AppState, instance_index: i32, port_index: i32) -> i32;
 
         #[qinvokable]
-        fn instance_port_width(
-            self: &AppState,
-            instance_index: i32,
-            port_index: i32,
-        ) -> i32;
+        fn instance_port_width(self: &AppState, instance_index: i32, port_index: i32) -> i32;
 
         #[qinvokable]
-        fn instance_port_bundle(
-            self: &AppState,
-            instance_index: i32,
-            port_index: i32,
-        ) -> QString;
+        fn instance_port_bundle(self: &AppState, instance_index: i32, port_index: i32) -> QString;
 
         #[qinvokable]
         fn instance_dependency_count(self: &AppState, instance_index: i32) -> i32;
@@ -376,11 +337,7 @@ pub mod qobject {
         fn wire_width(self: &AppState, index: i32) -> i32;
 
         #[qinvokable]
-        fn set_alias(
-            self: Pin<&mut AppState>,
-            net_key: &QString,
-            alias: &QString,
-        ) -> bool;
+        fn set_alias(self: Pin<&mut AppState>, net_key: &QString, alias: &QString) -> bool;
 
         /// Current alias for a net key (empty if none). Slice suffixes are
         /// normalized away, matching set_alias.
@@ -444,11 +401,7 @@ pub mod qobject {
         fn remove_group(self: Pin<&mut AppState>, name: &QString) -> bool;
 
         #[qinvokable]
-        fn set_group_collapsed(
-            self: Pin<&mut AppState>,
-            name: &QString,
-            collapsed: bool,
-        ) -> bool;
+        fn set_group_collapsed(self: Pin<&mut AppState>, name: &QString, collapsed: bool) -> bool;
 
         #[qsignal]
         fn groups_changed(self: Pin<&mut AppState>);
@@ -784,7 +737,11 @@ fn resolve_library_cached(
                 if let Some(mt) = mtime {
                     cache.insert(
                         path.clone(),
-                        ParseCacheEntry { mtime: mt, modules: defs.clone(), error: None },
+                        ParseCacheEntry {
+                            mtime: mt,
+                            modules: defs.clone(),
+                            error: None,
+                        },
                     );
                 }
                 modules.extend(defs);
@@ -794,7 +751,11 @@ fn resolve_library_cached(
                 if let Some(mt) = mtime {
                     cache.insert(
                         path.clone(),
-                        ParseCacheEntry { mtime: mt, modules: Vec::new(), error: Some(msg.clone()) },
+                        ParseCacheEntry {
+                            mtime: mt,
+                            modules: Vec::new(),
+                            error: Some(msg.clone()),
+                        },
                     );
                 }
                 errors.push((path.clone(), msg));
@@ -846,13 +807,22 @@ fn plan_routes_ffi(
         dots: result
             .dots
             .into_iter()
-            .map(|d| qobject::FfiDot { x: d.x, y: d.y, net: d.net as i32 })
+            .map(|d| qobject::FfiDot {
+                x: d.x,
+                y: d.y,
+                net: d.net as i32,
+            })
             .collect(),
     }
 }
 
 fn conv_rect(r: &qobject::FfiRect) -> routing::Rect {
-    routing::Rect { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
+    routing::Rect {
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+    }
 }
 
 // --- connect_pins helpers ----------------------------------------------------
@@ -866,11 +836,19 @@ struct PinInfo {
 }
 
 fn refuse(error: &str) -> qobject::FfiConnectResult {
-    qobject::FfiConnectResult { committed: false, sticky: false, error: error.to_string() }
+    qobject::FfiConnectResult {
+        committed: false,
+        sticky: false,
+        error: error.to_string(),
+    }
 }
 
 fn done(committed: bool, sticky: bool) -> qobject::FfiConnectResult {
-    qobject::FfiConnectResult { committed, sticky: committed && sticky, error: String::new() }
+    qobject::FfiConnectResult {
+        committed,
+        sticky: committed && sticky,
+        error: String::new(),
+    }
 }
 
 fn legalize_columns_ffi(items: Vec<qobject::FfiColItem>, gap: f64) -> Vec<qobject::FfiColMove> {
@@ -898,7 +876,10 @@ fn optimize_positions_ffi(
 ) -> Vec<qobject::FfiPlaceResult> {
     let ns: Vec<routing::PlaceNode> = nodes
         .into_iter()
-        .map(|n| routing::PlaceNode { id: n.id, height: n.height })
+        .map(|n| routing::PlaceNode {
+            id: n.id,
+            height: n.height,
+        })
         .collect();
     let es: Vec<routing::PlaceEdge> = edges
         .into_iter()
@@ -927,7 +908,11 @@ fn editor_issues(errors: &[(usize, String)]) -> qobject::FfiEditorIssues {
 
 fn completion_context_ffi(line_before_cursor: &str) -> qobject::FfiCompletionContext {
     let ctx = editor::completion_context(line_before_cursor);
-    qobject::FfiCompletionContext { kind: ctx.kind, prefix: ctx.prefix, instance: ctx.instance }
+    qobject::FfiCompletionContext {
+        kind: ctx.kind,
+        prefix: ctx.prefix,
+        instance: ctx.instance,
+    }
 }
 
 const UNDO_STACK_LIMIT: usize = 100;
@@ -1077,12 +1062,12 @@ impl qobject::AppState {
     /// Port at a canvas index — owned, because group ports are synthesized.
     fn canvas_port_at(&self, instance_index: i32, port_index: i32) -> Option<PortDef> {
         match self.canvas_ref_at(instance_index)? {
-            CanvasRef::Inst(_) => self
-                .instance_port_at(instance_index, port_index)
-                .cloned(),
+            CanvasRef::Inst(_) => self.instance_port_at(instance_index, port_index).cloned(),
             CanvasRef::Group(i) => {
                 let g = self.rust().schematic.as_ref()?.groups.get(i)?;
-                self.group_ports(&g.name).into_iter().nth(port_index as usize)
+                self.group_ports(&g.name)
+                    .into_iter()
+                    .nth(port_index as usize)
             }
         }
     }
@@ -1151,14 +1136,14 @@ impl qobject::AppState {
             let msg = d.message.clone();
             self.as_mut().record_error(msg);
         }
-        let (pin_issues, (pin_exposed, pin_origin)) =
-            match self.as_ref().rust().schematic.as_ref() {
-                Some(s) => (
-                    compute_pin_issues(s, &library, &diagnostics),
-                    compute_pin_exposed(s, &library),
-                ),
-                None => (HashMap::new(), (HashMap::new(), HashMap::new())),
-            };
+        let (pin_issues, (pin_exposed, pin_origin)) = match self.as_ref().rust().schematic.as_ref()
+        {
+            Some(s) => (
+                compute_pin_issues(s, &library, &diagnostics),
+                compute_pin_exposed(s, &library),
+            ),
+            None => (HashMap::new(), (HashMap::new(), HashMap::new())),
+        };
         {
             let m = self.as_mut().rust_mut().get_mut();
             m.library = library;
@@ -1400,7 +1385,8 @@ impl qobject::AppState {
                 true
             }
             Err(e) => {
-                self.as_mut().record_error(format!("write {}: {e}", path_buf.display()));
+                self.as_mut()
+                    .record_error(format!("write {}: {e}", path_buf.display()));
                 false
             }
         }
@@ -1666,8 +1652,13 @@ impl qobject::AppState {
     }
 
     pub fn instance_is_dirty(&self, index: i32) -> bool {
-        let Some(s) = self.rust().schematic.as_ref() else { return false };
-        s.instances.get(index as usize).map(|i| i.dirty).unwrap_or(false)
+        let Some(s) = self.rust().schematic.as_ref() else {
+            return false;
+        };
+        s.instances
+            .get(index as usize)
+            .map(|i| i.dirty)
+            .unwrap_or(false)
     }
 
     pub fn instance_index(&self, name: &QString) -> i32 {
@@ -1690,12 +1681,7 @@ impl qobject::AppState {
             .unwrap_or(false)
     }
 
-    pub fn set_instance_position(
-        mut self: Pin<&mut Self>,
-        name: &QString,
-        x: f64,
-        y: f64,
-    ) -> bool {
+    pub fn set_instance_position(mut self: Pin<&mut Self>, name: &QString, x: f64, y: f64) -> bool {
         let name_s = name.to_string();
         let (is_inst, is_group) = self
             .as_ref()
@@ -1726,8 +1712,7 @@ impl qobject::AppState {
         }
         self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
-        self.as_mut()
-            .instance_moved(QString::from(&name_s), x, y);
+        self.as_mut().instance_moved(QString::from(&name_s), x, y);
         true
     }
 
@@ -1805,7 +1790,11 @@ impl qobject::AppState {
         let Some(s) = r.schematic.as_ref() else {
             return QString::default();
         };
-        QString::from(&editor::render_instance_buffer(s, &r.library, &instance.to_string()))
+        QString::from(&editor::render_instance_buffer(
+            s,
+            &r.library,
+            &instance.to_string(),
+        ))
     }
 
     pub fn check_instance_buffer(&self, buffer: &QString) -> qobject::FfiEditorIssues {
@@ -1844,7 +1833,8 @@ impl qobject::AppState {
                 .set_port_map_entry(instance, &port_q, &QString::from(rhs));
             match slice {
                 Some((high, low)) => {
-                    self.as_mut().set_consumer_slice(instance, &port_q, high, low);
+                    self.as_mut()
+                        .set_consumer_slice(instance, &port_q, high, low);
                 }
                 None => {
                     self.as_mut().clear_consumer_slice(instance, &port_q);
@@ -1966,9 +1956,7 @@ impl qobject::AppState {
         };
         // Collapsed-group pins are derived, not stored — wiring through them
         // would silently vanish on expand.
-        let is_group_pin = |p: &PinInfo| {
-            !p.is_top && !self.has_instance(&p.instance)
-        };
+        let is_group_pin = |p: &PinInfo| !p.is_top && !self.has_instance(&p.instance);
         if is_group_pin(&pa) || is_group_pin(&pb) {
             return refuse("expand the group to edit its wiring");
         }
@@ -1986,7 +1974,13 @@ impl qobject::AppState {
             return refuse("type mismatch: vector cannot drive scalar");
         }
         if sw >= 0 && dw >= 0 && sw != dw {
-            let label = |w: i32| if w == 0 { "scalar".to_string() } else { w.to_string() };
+            let label = |w: i32| {
+                if w == 0 {
+                    "scalar".to_string()
+                } else {
+                    w.to_string()
+                }
+            };
             return refuse(&format!("width mismatch: {} vs {}", label(sw), label(dw)));
         }
 
@@ -2008,7 +2002,11 @@ impl qobject::AppState {
         }
 
         let can_drive = |d: i32| d == 1 || d == 2;
-        let (driver, load) = if can_drive(pa.direction) { (&pa, &pb) } else { (&pb, &pa) };
+        let (driver, load) = if can_drive(pa.direction) {
+            (&pa, &pb)
+        } else {
+            (&pb, &pa)
+        };
         // A 1-bit vector driving a scalar gets an implicit [0] slice.
         if driver.width == 1 && load.width == 0 && !driver.is_top {
             let committed = self.as_mut().set_port_map_entry_slice(
@@ -2098,7 +2096,9 @@ impl qobject::AppState {
         }
         self.as_mut().snapshot_for_mutation();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
-            Some(s) => s.set_port_map_entry(&inst, port_s.clone(), parsed).map(|_| ()),
+            Some(s) => s
+                .set_port_map_entry(&inst, port_s.clone(), parsed)
+                .map(|_| ()),
             None => {
                 self.as_mut().record_error("no project loaded");
                 return false;
@@ -2272,23 +2272,21 @@ impl qobject::AppState {
             let r = this.rust();
             match r.schematic.as_ref() {
                 None => Err("no project loaded".to_string()),
-                Some(schematic) => {
-                    match schematic.instances.iter().find(|i| i.name == inst_s) {
-                        None => Err(format!("instance not found: {inst_s}")),
-                        Some(inst) => match r.library.iter().find(|m| m.name == inst.module_ref) {
-                            None => Err(format!("module not in library: {}", inst.module_ref)),
-                            Some(module) => match module.ports.iter().find(|p| p.name == port_s) {
-                                None => Err(format!("port not found: {inst_s}.{port_s}")),
-                                Some(p) => {
-                                    let pd = p.clone();
-                                    let (name, create) =
-                                        resolve_top_port_name(&schematic.top_ports, &pd);
-                                    Ok((pd, name, create))
-                                }
-                            },
+                Some(schematic) => match schematic.instances.iter().find(|i| i.name == inst_s) {
+                    None => Err(format!("instance not found: {inst_s}")),
+                    Some(inst) => match r.library.iter().find(|m| m.name == inst.module_ref) {
+                        None => Err(format!("module not in library: {}", inst.module_ref)),
+                        Some(module) => match module.ports.iter().find(|p| p.name == port_s) {
+                            None => Err(format!("port not found: {inst_s}.{port_s}")),
+                            Some(p) => {
+                                let pd = p.clone();
+                                let (name, create) =
+                                    resolve_top_port_name(&schematic.top_ports, &pd);
+                                Ok((pd, name, create))
+                            }
                         },
-                    }
-                }
+                    },
+                },
             }
         };
         let (port_def, resolved_name, need_create) = match lookup {
@@ -2336,11 +2334,7 @@ impl qobject::AppState {
                 }
             }
             // Finally set the promoted pin itself to the new top-port.
-            if let Err(e) = s.set_port_map_entry(
-                &inst_s,
-                port_s.clone(),
-                Some(new_top),
-            ) {
+            if let Err(e) = s.set_port_map_entry(&inst_s, port_s.clone(), Some(new_top)) {
                 self.as_mut().record_error(e.to_string());
                 return QString::default();
             }
@@ -2501,21 +2495,13 @@ impl qobject::AppState {
         Some((key, ports))
     }
 
-    pub fn manual_bundle_name(
-        &self,
-        instance_index: i32,
-        bundle_index: i32,
-    ) -> QString {
+    pub fn manual_bundle_name(&self, instance_index: i32, bundle_index: i32) -> QString {
         self.manual_bundle_at(instance_index, bundle_index)
             .map(|(k, _)| QString::from(k))
             .unwrap_or_default()
     }
 
-    pub fn manual_bundle_port_count(
-        &self,
-        instance_index: i32,
-        bundle_index: i32,
-    ) -> i32 {
+    pub fn manual_bundle_port_count(&self, instance_index: i32, bundle_index: i32) -> i32 {
         self.manual_bundle_at(instance_index, bundle_index)
             .map(|(_, ports)| ports.len() as i32)
             .unwrap_or(0)
@@ -2561,7 +2547,9 @@ impl qobject::AppState {
                 .iter()
                 .filter_map(|p| {
                     // Only consider unconnected ports.
-                    if let Some(Some(_)) = inst.port_map.get(&p.name) { return None }
+                    if let Some(Some(_)) = inst.port_map.get(&p.name) {
+                        return None;
+                    }
                     // Look for a top-port with same name and compatible dir/type.
                     let tp = s.top_ports.iter().find(|tp| {
                         tp.name == p.name
@@ -2668,13 +2656,7 @@ impl qobject::AppState {
     pub fn clear_instance_dirty(mut self: Pin<&mut Self>, name: &QString) -> bool {
         let name_s = name.to_string();
         let was_dirty = {
-            let Some(s) = self
-                .as_mut()
-                .rust_mut()
-                .get_mut()
-                .schematic
-                .as_mut()
-            else {
+            let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut() else {
                 return false;
             };
             s.clear_instance_dirty(&name_s)
@@ -2794,22 +2776,14 @@ impl qobject::AppState {
             .unwrap_or(0)
     }
 
-    pub fn module_generic_name(
-        &self,
-        instance_index: i32,
-        generic_index: i32,
-    ) -> QString {
+    pub fn module_generic_name(&self, instance_index: i32, generic_index: i32) -> QString {
         self.instance_module_def(instance_index)
             .and_then(|m| m.generics.get(generic_index as usize))
             .map(|g| QString::from(&g.name))
             .unwrap_or_default()
     }
 
-    pub fn module_generic_default(
-        &self,
-        instance_index: i32,
-        generic_index: i32,
-    ) -> QString {
+    pub fn module_generic_default(&self, instance_index: i32, generic_index: i32) -> QString {
         self.instance_module_def(instance_index)
             .and_then(|m| m.generics.get(generic_index as usize))
             .and_then(|g| g.default_value.as_ref())
@@ -2850,8 +2824,9 @@ impl qobject::AppState {
                     // Slice variants: encode with bracket suffix. parse_net_rhs
                     // doesn't currently parse these back — future slice-connect
                     // work will round-trip via a different invokable.
-                    NetRef::InstancePortSlice(_, _, _)
-                    | NetRef::TopPortSlice(_, _) => QString::from(&net.to_key()),
+                    NetRef::InstancePortSlice(_, _, _) | NetRef::TopPortSlice(_, _) => {
+                        QString::from(&net.to_key())
+                    }
                     // Literal in the form parse_net_rhs accepts.
                     NetRef::Constant(lit) => QString::from(lit),
                 }
@@ -2874,7 +2849,9 @@ impl qobject::AppState {
         }
         self.as_mut().snapshot_for_mutation();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
-            Some(s) => s.set_port_map_entry(&inst, port_s.clone(), None).map(|_| ()),
+            Some(s) => s
+                .set_port_map_entry(&inst, port_s.clone(), None)
+                .map(|_| ()),
             None => {
                 self.as_mut().record_error("no project loaded");
                 return false;
@@ -2966,7 +2943,9 @@ impl qobject::AppState {
             let Some(module) = r.library.iter().find(|m| m.name == inst.module_ref) else {
                 return 0;
             };
-            let Some(port) = module.ports.get(port_index as usize) else { return 0 };
+            let Some(port) = module.ports.get(port_index as usize) else {
+                return 0;
+            };
             return resolve_port_width(&port.port_type, &module.generics, &inst.generic_map);
         }
         // Group block: boundary types are already resolved.
@@ -3060,11 +3039,7 @@ impl qobject::AppState {
             .unwrap_or(0)
     }
 
-    pub fn set_alias(
-        mut self: Pin<&mut Self>,
-        net_key: &QString,
-        alias: &QString,
-    ) -> bool {
+    pub fn set_alias(mut self: Pin<&mut Self>, net_key: &QString, alias: &QString) -> bool {
         let key_s = net_key.to_string();
         let alias_s = alias.to_string();
         // Wire keys off the canvas can carry a slice suffix, but aliases are
@@ -3203,7 +3178,12 @@ impl qobject::AppState {
             .filter(|d| d.is_error())
             .map(|d| d.to_string())
             .collect();
-        out.extend(diags.iter().filter(|d| !d.is_error()).map(|d| d.to_string()));
+        out.extend(
+            diags
+                .iter()
+                .filter(|d| !d.is_error())
+                .map(|d| d.to_string()),
+        );
         out
     }
 
@@ -3321,7 +3301,8 @@ impl qobject::AppState {
             .as_ref()
             .is_some_and(|s| s.groups.iter().any(|g| g.name == name_s));
         if !exists {
-            self.as_mut().record_error(format!("no such group: {name_s}"));
+            self.as_mut()
+                .record_error(format!("no such group: {name_s}"));
             return false;
         }
         self.as_mut().snapshot_for_mutation();
@@ -3341,11 +3322,7 @@ impl qobject::AppState {
         self.as_mut().finish_group_mutation()
     }
 
-    pub fn set_group_collapsed(
-        mut self: Pin<&mut Self>,
-        name: &QString,
-        collapsed: bool,
-    ) -> bool {
+    pub fn set_group_collapsed(mut self: Pin<&mut Self>, name: &QString, collapsed: bool) -> bool {
         let name_s = name.to_string();
         let exists = self
             .as_ref()
@@ -3354,7 +3331,8 @@ impl qobject::AppState {
             .as_ref()
             .is_some_and(|s| s.groups.iter().any(|g| g.name == name_s));
         if !exists {
-            self.as_mut().record_error(format!("no such group: {name_s}"));
+            self.as_mut()
+                .record_error(format!("no such group: {name_s}"));
             return false;
         }
         self.as_mut().snapshot_for_mutation();
@@ -3393,11 +3371,7 @@ impl qobject::AppState {
                     .unwrap_or(centroid);
                 let delta = (g_pos.0 - centroid.0, g_pos.1 - centroid.1);
                 if delta.0.abs() > 0.5 || delta.1.abs() > 0.5 {
-                    for inst in s
-                        .instances
-                        .iter_mut()
-                        .filter(|i| members.contains(&i.name))
-                    {
+                    for inst in s.instances.iter_mut().filter(|i| members.contains(&i.name)) {
                         inst.position.0 += delta.0;
                         inst.position.1 += delta.1;
                     }
@@ -3476,7 +3450,11 @@ impl qobject::AppState {
             if let Some(g) = s.groups.iter().find(|g| g.name == gname) {
                 out.extend(g.members.iter().cloned());
             }
-            for child in s.groups.iter().filter(|c| c.parent.as_deref() == Some(gname)) {
+            for child in s
+                .groups
+                .iter()
+                .filter(|c| c.parent.as_deref() == Some(gname))
+            {
                 if child.collapsed {
                     out.push(child.name.clone());
                 } else {
@@ -3524,7 +3502,8 @@ impl qobject::AppState {
     pub fn set_instance_locked(mut self: Pin<&mut Self>, name: &QString, locked: bool) -> bool {
         let n = name.to_string();
         if !self.has_instance(&n) {
-            self.as_mut().record_error(format!("instance not found: {n}"));
+            self.as_mut()
+                .record_error(format!("instance not found: {n}"));
             return false;
         }
         self.as_mut().snapshot_for_mutation();
@@ -3560,8 +3539,7 @@ fn compute_pin_issues(
             add(&mut map, format!("{i}.{p}"), level, &d.message);
         }
     }
-    let lib_map: HashMap<&str, &ModuleDef> =
-        library.iter().map(|m| (m.name.as_str(), m)).collect();
+    let lib_map: HashMap<&str, &ModuleDef> = library.iter().map(|m| (m.name.as_str(), m)).collect();
     let nets = crate::nets::resolve_nets(s, library);
     for net in &nets.nets {
         let hard: Vec<&NetRef> = net
@@ -3664,14 +3642,9 @@ fn direction_code(d: &Direction) -> i32 {
 /// If an existing top-port with matching name AND direction+type+bundle exists,
 /// it is reused; otherwise a numeric suffix (`_1`, `_2`, …) is appended until
 /// the name is unique.
-pub(super) fn resolve_top_port_name(
-    existing: &[PortDef],
-    src: &PortDef,
-) -> (String, bool) {
+pub(super) fn resolve_top_port_name(existing: &[PortDef], src: &PortDef) -> (String, bool) {
     let matches = |tp: &PortDef| {
-        tp.direction == src.direction
-            && tp.port_type == src.port_type
-            && tp.bundle == src.bundle
+        tp.direction == src.direction && tp.port_type == src.port_type && tp.bundle == src.bundle
     };
     if let Some(tp) = existing.iter().find(|tp| tp.name == src.name) {
         if matches(tp) {
@@ -3694,9 +3667,7 @@ fn port_type_width(t: &PortType) -> i32 {
     match t {
         PortType::StdLogic => 0,
         PortType::StdLogicVector(Range { high, low, .. }) => match (high, low) {
-            (RangeExpr::Literal(h), RangeExpr::Literal(l)) => {
-                ((h - l).abs() as i32 + 1).max(1)
-            }
+            (RangeExpr::Literal(h), RangeExpr::Literal(l)) => ((h - l).abs() as i32 + 1).max(1),
             _ => -1,
         },
         _ => 0,
@@ -3926,11 +3897,7 @@ fn parse_port_type(s: &str) -> Result<PortType, String> {
                 RangeDir::To,
             )
         } else if let Some((h, l)) = inside.split_once(':') {
-            (
-                h.trim().to_string(),
-                l.trim().to_string(),
-                RangeDir::Downto,
-            )
+            (h.trim().to_string(), l.trim().to_string(), RangeDir::Downto)
         } else {
             return Err(format!(
                 "type '{s}': expected '<h>:<l>' or '<h> downto <l>' inside parentheses"
@@ -3998,12 +3965,7 @@ mod tests {
 
     #[test]
     fn resolve_reuses_matching_top_port() {
-        let existing = vec![pd(
-            "clk",
-            Direction::In,
-            PortType::StdLogic,
-            None,
-        )];
+        let existing = vec![pd("clk", Direction::In, PortType::StdLogic, None)];
         let src = pd("clk", Direction::In, PortType::StdLogic, None);
         let (name, create) = resolve_top_port_name(&existing, &src);
         assert_eq!(name, "clk");
@@ -4012,12 +3974,7 @@ mod tests {
 
     #[test]
     fn resolve_creates_suffixed_name_on_direction_mismatch() {
-        let existing = vec![pd(
-            "clk",
-            Direction::Out,
-            PortType::StdLogic,
-            None,
-        )];
+        let existing = vec![pd("clk", Direction::Out, PortType::StdLogic, None)];
         let src = pd("clk", Direction::In, PortType::StdLogic, None);
         let (name, create) = resolve_top_port_name(&existing, &src);
         assert_eq!(name, "clk_1");
@@ -4217,8 +4174,12 @@ mod tests {
             .unwrap()
             .replace("counter", "counter2");
         std::fs::write(&path, renamed).unwrap();
-        let f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
-        f.set_modified(SystemTime::now() + Duration::from_secs(5)).unwrap();
+        let f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.set_modified(SystemTime::now() + Duration::from_secs(5))
+            .unwrap();
 
         let (mods, errs) = resolve_library_cached(&mut cache, &paths);
         assert_eq!(errs.len(), 0);
