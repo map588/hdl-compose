@@ -105,6 +105,14 @@ class CanvasView : public QGraphicsView {
     void setWireTool(WireTool *wt) { m_wire_tool = wt; }
     void setCanvasLayer(CanvasLayer *layer) { m_canvas_layer = layer; }
 
+    // Add an instance of a library module at a scene position. Returns
+    // false when the model refused the instance.
+    bool placeModule(const QString &module, const QPointF &scene_pos);
+    // Same, at the middle of the visible canvas (Library double-click).
+    bool placeModuleAtCenter(const QString &module) {
+        return placeModule(module, mapToScene(viewport()->rect().center()));
+    }
+
     void zoomToFit() {
         if (!scene())
             return;
@@ -288,6 +296,31 @@ class CanvasView : public QGraphicsView {
     }
 
     void dropEvent(QDropEvent *event) override;
+
+    // One hint line in the middle of an empty canvas: the next step the
+    // user must take. Painted in viewport coordinates so zoom and pan do
+    // not move it.
+    void drawForeground(QPainter *painter, const QRectF &rect) override {
+        QGraphicsView::drawForeground(painter, rect);
+        QString hint;
+        if (!m_state->has_project()) {
+            hint = QStringLiteral("Create a project (File \u2192 New) or open one (File \u2192 Open)");
+        } else if (m_state->instance_count() > 0) {
+            return;
+        } else if (m_state->library_module_count() == 0) {
+            hint = QStringLiteral("Add your HDL sources: File \u2192 Add HDL Source or Add HDL Folder");
+        } else {
+            hint = QStringLiteral("Drag a module from the Library onto the canvas, or double-click it");
+        }
+        painter->save();
+        painter->resetTransform();
+        QFont f = painter->font();
+        f.setPointSize(15);
+        painter->setFont(f);
+        painter->setPen(QColor(255, 255, 255, 110));
+        painter->drawText(viewport()->rect(), Qt::AlignCenter, hint);
+        painter->restore();
+    }
 
     void drawBackground(QPainter *painter, const QRectF &rect) override {
         QGraphicsView::drawBackground(painter, rect);

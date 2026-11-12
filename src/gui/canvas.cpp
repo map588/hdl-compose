@@ -289,15 +289,19 @@ void CanvasView::dropEvent(QDropEvent *event) {
     if (data.isEmpty()) {
         return;
     }
-    QString module = QString::fromUtf8(data);
+    if (placeModule(QString::fromUtf8(data), mapToScene(event->position().toPoint()))) {
+        event->acceptProposedAction();
+    }
+}
+
+bool CanvasView::placeModule(const QString &module, const QPointF &scene_pos) {
     QString inst_name = allocate_instance_name(m_state, module);
     // Batch so add + initial position form a single undo step.
     m_state->begin_batch();
     if (!m_state->add_instance(inst_name, module)) {
         m_state->end_batch();
-        return;
+        return false;
     }
-    QPointF scene_pos = mapToScene(event->position().toPoint());
     // Resolve placement here so the MODEL gets the corrected position — the
     // itemChange hook only corrects the visual item, and an uncorrected
     // model position reloads as overlapping modules after save.
@@ -314,7 +318,7 @@ void CanvasView::dropEvent(QDropEvent *event) {
         m_state->set_instance_position(inst_name, pos.x(), pos.y());
     }
     m_state->end_batch();
-    event->acceptProposedAction();
+    return true;
 }
 
 } // namespace hdlc

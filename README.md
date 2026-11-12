@@ -138,7 +138,8 @@ synthesized by the tools above.
 The window opens maximized with the canvas front and center.
 
 - **Left sidebar:** project tree (instances) above the module library. Drag a
-  module from the library onto the canvas to add an instance.
+  module from the library onto the canvas to add an instance, or double-click
+  it. **File > Add HDL Folder** adds every HDL source below a directory.
 - **Canvas:** instances as boxes, top-level ports on the edges, wires routed
   through gutters between columns. Click a pin, then click another pin to
   connect, or drag pin to pin. While a pin is armed (dashed cyan ring,

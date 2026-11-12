@@ -7,6 +7,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDirIterator>
 #include <QDrag>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
@@ -212,7 +213,24 @@ class LibraryView : public QListView {
         setSelectionBehavior(QAbstractItemView::SelectRows);
     }
 
+    // Called with the module name on double-click or Return/Enter.
+    void setOnActivate(std::function<void(const QString &)> cb) { m_on_activate = std::move(cb); }
+
   protected:
+    void mouseDoubleClickEvent(QMouseEvent *event) override {
+        activate(indexAt(event->pos()));
+        event->accept();
+    }
+
+    void keyPressEvent(QKeyEvent *event) override {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            activate(currentIndex());
+            event->accept();
+            return;
+        }
+        QListView::keyPressEvent(event);
+    }
+
     void startDrag(Qt::DropActions supportedActions) override {
         QModelIndexList indexes = selectedIndexes();
         if (indexes.isEmpty()) {
@@ -226,6 +244,15 @@ class LibraryView : public QListView {
         drag->setMimeData(mime);
         drag->exec(supportedActions, Qt::CopyAction);
     }
+
+  private:
+    void activate(const QModelIndex &index) {
+        if (index.isValid() && m_on_activate) {
+            m_on_activate(index.data(Qt::DisplayRole).toString());
+        }
+    }
+
+    std::function<void(const QString &)> m_on_activate;
 };
 
 // --- Sidebar model rebuild helpers ------------------------------------------
@@ -644,6 +671,11 @@ class MainWindow : public QMainWindow {
         canvas->setWireTool(m_canvas_layer->wireTool());
         canvas->setCanvasLayer(m_canvas_layer.get());
         m_canvas = canvas;
+        library_view->setOnActivate([this](const QString &module) {
+            if (!m_canvas->placeModuleAtCenter(module)) {
+                show_state_error(this, m_state, QStringLiteral("Add Instance"));
+            }
+        });
 
         // Mini editor panel: toggle row above the buffer. Toggle flips
         // between per-instance editing (default) and top-level entity
@@ -699,6 +731,7 @@ class MainWindow : public QMainWindow {
         connect(m_recent_menu, &QMenu::aboutToShow, this, &MainWindow::rebuildRecentMenu);
         auto *addSourceAct = fileMenu->addAction(QStringLiteral("&Add HDL Source..."));
         addSourceAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+        auto *addFolderAct = fileMenu->addAction(QStringLiteral("Add HDL &Folder..."));
         auto *reloadAct = fileMenu->addAction(QStringLiteral("&Refresh Library"));
         reloadAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
         auto *copySourcesAct = fileMenu->addAction(QStringLiteral("&Copy Sources to Project Dir"));
@@ -807,6 +840,7 @@ class MainWindow : public QMainWindow {
         connect(newAct, &QAction::triggered, this, &MainWindow::onNewProject);
         connect(openAct, &QAction::triggered, this, &MainWindow::onOpenProject);
         connect(addSourceAct, &QAction::triggered, this, &MainWindow::onAddSource);
+        connect(addFolderAct, &QAction::triggered, this, &MainWindow::onAddFolder);
         connect(saveAct, &QAction::triggered, this, &MainWindow::onSaveProject);
         connect(saveAsAct, &QAction::triggered, this, [this]() { saveAsProject(); });
         connect(generateAct, &QAction::triggered, this, [this]() { onGenerate(false); });
@@ -1167,6 +1201,9 @@ class MainWindow : public QMainWindow {
         rebuild_tree_model(m_tree_model, m_state, m_dirty_icon);
         rebuild_library_model(m_library_model, m_state);
         m_tree_view->expandAll();
+        // The empty-canvas hint depends on project, library and instances.
+        if (m_canvas)
+            m_canvas->viewport()->update();
     }
 
     void refreshUndoActions() {
@@ -1372,6 +1409,37 @@ class MainWindow : public QMainWindow {
         QStringList paths =
             QFileDialog::getOpenFileNames(this, QStringLiteral("Add HDL Source(s)"), dialog_start_dir(m_state),
                                           QStringLiteral("HDL sources (*.vhd *.vhdl *.v *.sv);;All files (*)"));
+        addSourcePaths(paths);
+    }
+
+    // Add every HDL source below a directory (recursive).
+    void onAddFolder() {
+        if (!m_state->has_project()) {
+            QMessageBox::information(this, QStringLiteral("Add HDL Folder"),
+                                     QStringLiteral("Create or open a project first."));
+            return;
+        }
+        QString dir = QFileDialog::getExistingDirectory(this, QStringLiteral("Add HDL Folder"),
+                                                        dialog_start_dir(m_state));
+        if (dir.isEmpty()) {
+            return;
+        }
+        QStringList paths;
+        QDirIterator it(dir, {QStringLiteral("*.vhd"), QStringLiteral("*.vhdl"), QStringLiteral("*.v"),
+                              QStringLiteral("*.sv")},
+                        QDir::Files, QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            paths << it.next();
+        }
+        paths.sort();
+        if (paths.isEmpty()) {
+            statusBar()->showMessage(QStringLiteral("No HDL sources found in %1").arg(dir), 4000);
+            return;
+        }
+        addSourcePaths(paths);
+    }
+
+    void addSourcePaths(const QStringList &paths) {
         if (paths.isEmpty()) {
             return;
         }
@@ -1386,8 +1454,14 @@ class MainWindow : public QMainWindow {
             }
         }
         if (!failed.isEmpty()) {
+            // A folder can hold many files that fail; keep the dialog short.
+            const int kMaxShown = 12;
+            QString list = failed.mid(0, kMaxShown).join(QChar('\n'));
+            if (failed.size() > kMaxShown) {
+                list += QStringLiteral("\n... and %1 more").arg(failed.size() - kMaxShown);
+            }
             QMessageBox::warning(this, QStringLiteral("Add HDL Source"),
-                                 QStringLiteral("Failed to add:\n%1").arg(failed.join(QChar('\n'))));
+                                 QStringLiteral("Failed to add:\n%1").arg(list));
         }
         statusBar()->showMessage(QStringLiteral("Added %1 source(s)").arg(added), 3000);
     }
@@ -1616,7 +1690,7 @@ class MainWindow : public QMainWindow {
             "Ctrl+Return or focus-out commits. Tab accepts a completion.<br>"
             "\"Top Level\" button edits the top entity's ports and generics.<br><br>"
             "<b>Sidebar</b><br>"
-            "Drag a library module onto the canvas to place it.<br>"
+            "Drag a library module onto the canvas to place it, or double-click it.<br>"
             "Double-click an instance to open its source (File &rarr; Preferences sets the editor)."));
         box.exec();
     }
