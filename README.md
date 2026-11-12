@@ -94,7 +94,7 @@ wherever you like, typically next to the board's own repository.
   "family": "ecp5",
   "device": "25k",
   "package": "CABGA256",
-  "constraints": "icepi-zero/gateware/icepi-zero.lpf",
+  "constraints": "icepi-zero.lpf",
   "pack_args": ["--compress"],
   "prog_args": ["-b", "icepi-zero"]
 }
@@ -105,7 +105,9 @@ wherever you like, typically next to the board's own repository.
 Before place and route, `build` checks every top-level port against the
 constraints file and warns about ports the board has no pin for. A working
 example for the [Icepi Zero](https://github.com/cheyao/icepi-zero) is at
-`tests/hardware/icepi-zero.board.json`.
+`tests/hardware/icepi-zero.board.json`. The constraints file next to it is an
+unmodified copy from that repository (`gateware/icepi-zero.lpf`, revision
+`f3da0ad`); its license is in `tests/hardware/icepi-zero.lpf.LICENSE`.
 
 ### Per-project toolchain config
 
