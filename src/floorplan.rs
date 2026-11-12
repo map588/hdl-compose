@@ -72,6 +72,39 @@ pub struct Usage {
     pub available: u64,
 }
 
+/// One step of a timing path: a delay inside a cell, or a net between two
+/// cells.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Hop {
+    /// nextpnr step type: `clk-to-q`, `routing`, `logic`, `setup`, `source`.
+    pub kind: String,
+    pub delay_ns: f32,
+    pub from_cell: String,
+    /// Tile column and row of `from_cell`.
+    pub from: (u32, u32),
+    pub to_cell: String,
+    pub to: (u32, u32),
+    /// Net name. Only a `routing` hop has one.
+    pub net: Option<String>,
+    /// HDL source location of the net (`top.v:8.13-8.14`).
+    pub source: Option<String>,
+}
+
+/// The slowest path between two clock events, from the nextpnr report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CriticalPath {
+    /// Launch event (`posedge clk`, or `<async>` for an input).
+    pub from: String,
+    /// Capture event.
+    pub to: String,
+    /// Sum of the hop delays.
+    pub delay_ns: f32,
+    /// Clock period of the constraint. Present only when one clock both
+    /// launches and captures the path; other paths have no period.
+    pub budget_ns: Option<f32>,
+    pub hops: Vec<Hop>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Floorplan {
     pub tile_pitch: f32,
@@ -86,6 +119,9 @@ pub struct Floorplan {
     pub utilization: BTreeMap<String, Usage>,
     /// Clock net to achieved frequency in MHz.
     pub fmax: BTreeMap<String, f32>,
+    /// Slowest path for each pair of clock events, in report order.
+    #[serde(default)]
+    pub critical_paths: Vec<CriticalPath>,
 }
 
 /// Split a bel name into tile and local name. nextpnr-ecp5 and
@@ -136,6 +172,57 @@ pub fn parse_cells(pnr_json: &str) -> Result<Vec<PlacedCell>, String> {
     }
     cells.sort_by(|a, b| (a.y, a.x, &a.bel).cmp(&(b.y, b.x, &b.bel)));
     Ok(cells)
+}
+
+fn parse_hop(hop: &serde_json::Value) -> Option<Hop> {
+    let end = |key: &str| {
+        let loc = &hop[key]["loc"];
+        let tile = (loc[0].as_u64()? as u32, loc[1].as_u64()? as u32);
+        Some((hop[key]["cell"].as_str()?.to_owned(), tile))
+    };
+    let (from_cell, from) = end("from")?;
+    let (to_cell, to) = end("to")?;
+    Some(Hop {
+        kind: hop["type"].as_str()?.to_owned(),
+        delay_ns: hop["delay"].as_f64()? as f32,
+        from_cell,
+        from,
+        to_cell,
+        to,
+        net: hop["net"].as_str().map(str::to_owned),
+        source: hop["sources"][0].as_str().map(str::to_owned),
+    })
+}
+
+/// Read `critical_paths` from the nextpnr report. A hop that does not have
+/// the expected fields is left out; the path keeps its other hops.
+fn parse_critical_paths(report: &serde_json::Value) -> Vec<CriticalPath> {
+    let paths = report["critical_paths"].as_array().into_iter().flatten();
+    paths
+        .map(|p| {
+            let from = p["from"].as_str().unwrap_or_default().to_owned();
+            let to = p["to"].as_str().unwrap_or_default().to_owned();
+            let hops: Vec<Hop> = p["path"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(parse_hop)
+                .collect();
+            // `from` is `posedge <clock net>`; the constraint is in MHz.
+            let clock = from.split_once(' ').map_or("", |(_, net)| net);
+            let budget_ns = report["fmax"][clock]["constraint"]
+                .as_f64()
+                .filter(|mhz| from == to && *mhz > 0.0)
+                .map(|mhz| (1000.0 / mhz) as f32);
+            CriticalPath {
+                delay_ns: hops.iter().map(|h| h.delay_ns).sum(),
+                from,
+                to,
+                budget_ns,
+                hops,
+            }
+        })
+        .collect()
 }
 
 fn attr<'a>(line: &'a str, key: &str) -> Option<&'a str> {
@@ -202,6 +289,7 @@ impl Floorplan {
                     plan.fmax.insert(clock.clone(), mhz as f32);
                 }
             }
+            plan.critical_paths = parse_critical_paths(&report);
         }
         Ok(plan)
     }
@@ -240,8 +328,21 @@ mod tests {
 <rect x="12.000000" y="707.500000" width="-9.500000" height="3.999996" stroke="#FF3030" fill="#FF8080"/>
 </svg>"##;
 
+    // The path hops are copied from a nextpnr-0.10 report.
     const REPORT: &str = r#"{"fmax":{"clk":{"achieved":122.25,"constraint":12}},
-        "utilization":{"TRELLIS_FF":{"available":24288,"used":42}}}"#;
+        "utilization":{"TRELLIS_FF":{"available":24288,"used":42}},
+        "critical_paths":[
+          {"from":"posedge clk","to":"posedge clk","path":[
+            {"delay":0.5,"type":"clk-to-q",
+             "from":{"cell":"a_FF","loc":[17,12],"port":"Q"},
+             "to":{"cell":"a_FF","loc":[17,12],"port":"Q"}},
+            {"delay":1.25,"type":"routing","net":"a[4]","sources":["top.v:8.13-8.14"],
+             "from":{"cell":"a_FF","loc":[17,12],"port":"Q"},
+             "to":{"cell":"u_mul.b_MULT","loc":[17,13],"port":"A4"}},
+            {"delay":4.0,"type":"logic","from":{"cell":"u_mul.b_MULT"}}
+          ]},
+          {"from":"<async>","to":"posedge clk","path":[]}
+        ]}"#;
 
     #[test]
     fn merges_the_three_files() {
@@ -270,6 +371,33 @@ mod tests {
             .find(|c| c.kind == CellKind::Clock)
             .unwrap();
         assert!(buf.path.is_empty(), "a `$` name has no owner");
+    }
+
+    #[test]
+    fn critical_paths_keep_tiles_delay_and_source() {
+        let plan = Floorplan::from_nextpnr(PNR, SVG, Some(REPORT)).unwrap();
+        let [clocked, input] = &plan.critical_paths[..] else {
+            panic!("two paths expected");
+        };
+        assert_eq!(clocked.hops.len(), 2, "the hop with no tile is left out");
+        assert_eq!(clocked.delay_ns, 1.75);
+        // 12 MHz is a period of 83.33 ns.
+        assert!((clocked.budget_ns.unwrap() - 83.333).abs() < 0.01);
+        let net = &clocked.hops[1];
+        assert_eq!((net.from, net.to), ((17, 12), (17, 13)));
+        assert_eq!(net.to_cell, "u_mul.b_MULT");
+        assert_eq!(net.net.as_deref(), Some("a[4]"));
+        assert_eq!(net.source.as_deref(), Some("top.v:8.13-8.14"));
+        assert_eq!(clocked.hops[0].net, None);
+        assert_eq!(input.budget_ns, None, "an input path has no clock period");
+    }
+
+    #[test]
+    fn an_old_chip_view_file_loads_without_paths() {
+        let mut value = serde_json::to_value(Floorplan::default()).unwrap();
+        value.as_object_mut().unwrap().remove("critical_paths");
+        let plan: Floorplan = serde_json::from_value(value).unwrap();
+        assert!(plan.critical_paths.is_empty());
     }
 
     #[test]
