@@ -40,13 +40,13 @@ make help                 # all targets
 hdl-compose new demo -l vhdl --example   # working two-module example project
 hdl-compose codegen demo.hdlc            # print the generated top level
 hdl-compose check demo.hdlc              # elaborate it with ghdl (needs oss-cad-suite)
-hdl-compose                              # open the GUI, then File > Open demo.hdlc
+hdl-compose demo.hdlc                    # open it in the GUI
 ```
 
 ## CLI
 
 ```sh
-hdl-compose                              # launch GUI (default)
+hdl-compose [project.hdlc]               # launch GUI; no path reopens the most recent project
 hdl-compose parse <file.vhd|.sv|.v>      # print a file's module ports + generics
 hdl-compose new <name> -l vhdl|sv        # create a project (--example adds demo modules)
 hdl-compose validate <project.hdlc>      # report diagnostics (exit 0/1/2)

@@ -13,12 +13,17 @@ use hdl_compose::types::{Language, Schematic};
 #[command(
     name = "hdl-compose",
     version,
-    about = "Structural HDL composition tool"
+    about = "Structural HDL composition tool",
+    args_conflicts_with_subcommands = true
 )]
 struct Cli {
     /// Enable verbose (debug) output
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Project to open in the GUI (.hdlc). Without it, the GUI reopens the
+    /// most recent project.
+    project: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -160,7 +165,10 @@ enum Command {
     },
 
     /// Launch the Qt GUI (default when no subcommand is given)
-    Gui,
+    Gui {
+        /// Project to open (.hdlc)
+        project: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, ValueEnum)]
@@ -211,7 +219,8 @@ fn main() -> ExitCode {
         .init();
 
     match cli.command {
-        None | Some(Command::Gui) => cmd_gui(),
+        None => cmd_gui(cli.project.as_deref()),
+        Some(Command::Gui { project }) => cmd_gui(project.as_deref()),
         Some(Command::Parse { file }) => cmd_parse(&file),
         Some(Command::New {
             name,
@@ -446,8 +455,8 @@ fn cmd_migrate(projects: &[PathBuf]) -> ExitCode {
     }
 }
 
-fn cmd_gui() -> ExitCode {
-    let code = hdl_compose::gui::run();
+fn cmd_gui(project: Option<&std::path::Path>) -> ExitCode {
+    let code = hdl_compose::gui::run(project);
     if code == 0 {
         ExitCode::SUCCESS
     } else {
@@ -1026,4 +1035,42 @@ fn load_project(path: &std::path::Path) -> Result<(Schematic, Vec<String>), Exit
         eprintln!("error: {e}");
         ExitCode::from(2)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_definition_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn bare_project_path_opens_the_gui() {
+        let cli = Cli::try_parse_from(["hdl-compose", "demo.hdlc"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.project, Some(PathBuf::from("demo.hdlc")));
+    }
+
+    #[test]
+    fn gui_subcommand_takes_an_optional_project() {
+        let cli = Cli::try_parse_from(["hdl-compose", "gui", "demo.hdlc"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Gui { project: Some(p) }) if p.as_os_str() == "demo.hdlc"
+        ));
+        let cli = Cli::try_parse_from(["hdl-compose", "gui"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Gui { project: None })));
+    }
+
+    #[test]
+    fn subcommands_still_take_precedence_over_the_project_path() {
+        let cli = Cli::try_parse_from(["hdl-compose", "codegen", "demo.hdlc"]).unwrap();
+        assert!(cli.project.is_none());
+        assert!(matches!(cli.command, Some(Command::Codegen { .. })));
+        let cli = Cli::try_parse_from(["hdl-compose"]).unwrap();
+        assert!(cli.project.is_none() && cli.command.is_none());
+    }
 }

@@ -590,6 +590,19 @@ class MainWindow : public QMainWindow {
         update_window_title(this, m_state);
     }
 
+    // Startup: open the project given on the command line. Without one,
+    // reopen the most recent project that still exists.
+    void openInitialProject(const QString &path) {
+        if (!path.isEmpty()) {
+            openProjectPath(path);
+            return;
+        }
+        const QStringList recents = recent_projects();
+        if (!recents.isEmpty() && QFileInfo::exists(recents.first())) {
+            openProjectPath(recents.first());
+        }
+    }
+
   private:
     // --- UI construction ------------------------------------------------
 
@@ -1305,6 +1318,9 @@ class MainWindow : public QMainWindow {
             return;
         }
         add_recent_project(path);
+        // A freshly opened design can lie outside the default viewport.
+        if (m_canvas)
+            m_canvas->zoomToFit();
         statusBar()->showMessage(QStringLiteral("Opened %1").arg(path), 3000);
     }
 
@@ -1812,7 +1828,13 @@ extern "C" int run_gui(int *argc, char **argv) {
     app.setStyle(QStringLiteral("Fusion"));
     apply_material_dark_theme(app);
 
+    // argv is [program, optional project path]; see gui::run in mod.rs.
+    const QString initial_project = *argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString();
+
     MainWindow window;
     window.showMaximized();
+    // After the first event-loop turn, so the viewport has its final size
+    // when the project is fitted to it.
+    QTimer::singleShot(0, &window, [&window, initial_project]() { window.openInitialProject(initial_project); });
     return app.exec();
 }
