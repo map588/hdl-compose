@@ -35,6 +35,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QListWidget>
 #include <QMainWindow>
 #include <QMap>
 #include <QMenu>
@@ -1874,7 +1875,27 @@ class MainWindow : public QMainWindow {
         const bool ok = m_chip_view->load(chipViewPath());
         m_chip_info->setText(ok ? m_chip_view->summary()
                                 : QStringLiteral("No placement yet. Run Toolchain > Build Bitstream."));
+        // The view shows the first path after a load; the report puts the
+        // clock-to-clock path first.
+        {
+            QSignalBlocker b(m_chip_paths);
+            m_chip_paths->clear();
+            m_chip_paths->addItems(m_chip_view->pathLabels());
+            m_chip_paths->addItem(QStringLiteral("No critical path"));
+        }
+        showChipPath(0);
         return ok;
+    }
+
+    // Draw one critical path and list its hops. The last combo entry draws
+    // no path.
+    void showChipPath(int index) {
+        const bool none = index < 0 || index >= m_chip_paths->count() - 1;
+        m_chip_view->showPath(none ? -1 : index);
+        QSignalBlocker b(m_chip_hops);
+        m_chip_hops->clear();
+        m_chip_hops->addItems(m_chip_view->hopLabels(none ? -1 : index));
+        m_chip_hops->setVisible(m_chip_hops->count() > 0);
     }
 
     // Right dock with the device and the placed design. Created on first use.
@@ -1912,12 +1933,23 @@ class MainWindow : public QMainWindow {
                         return;
                     }
                 }
-                statusBar()->showMessage(QStringLiteral("No instance of the schematic owns the cells of this tile"),
-                                         5000);
+                statusBar()->showMessage(QStringLiteral("No instance of the schematic owns these cells"), 5000);
             };
+            // Critical paths: a combo to pick the path, and its hops in a
+            // list below the device. A click on a hop selects the instance
+            // that owns the destination cell.
+            m_chip_paths = new QComboBox(body);
+            m_chip_hops = new QListWidget(body);
+            m_chip_hops->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+            m_chip_hops->setMaximumHeight(170);
+            connect(m_chip_paths, &QComboBox::currentIndexChanged, this, [this](int i) { showChipPath(i); });
+            connect(m_chip_hops, &QListWidget::currentRowChanged, this,
+                    [this](int row) { m_chip_view->selectHop(row); });
             layout->addWidget(m_chip_info);
             layout->addWidget(legend_label);
+            layout->addWidget(m_chip_paths);
             layout->addWidget(m_chip_view, 1);
+            layout->addWidget(m_chip_hops);
             m_chip_dock->setWidget(body);
             addDockWidget(Qt::RightDockWidgetArea, m_chip_dock);
             // The device is wider than the minimum dock width shows well.
@@ -2084,6 +2116,8 @@ class MainWindow : public QMainWindow {
     QDockWidget *m_chip_dock = nullptr;
     QLabel *m_chip_info = nullptr;
     chipview::FloorplanView *m_chip_view = nullptr;
+    QComboBox *m_chip_paths = nullptr;
+    QListWidget *m_chip_hops = nullptr;
 
     // Mini-editor state.
     bool m_top_level_mode = false;

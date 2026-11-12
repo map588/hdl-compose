@@ -165,8 +165,14 @@ The window opens maximized with the canvas front and center.
   colored square: logic, register, I/O, DSP, memory, or clock. Select an
   instance on the canvas to mark its tiles on the chip. Click a tile to
   select the instance that its cells come from. Hover a tile to list its
-  cells. `Ctrl`+wheel or pinch zooms, drag pans, double-click fits. The view
-  shows placement only, not routing. Build Bitstream opens it.
+  cells. `Ctrl`+wheel or pinch zooms, drag pans, double-click fits. Build
+  Bitstream opens it. The view shows placement, not routing.
+  The list above the device holds the slowest path for each clock pair, with
+  its delay and its slack against the constraint. The view draws the chosen
+  path: a line for a net between two tiles, a ring for a delay inside a
+  cell, from yellow to red with the share of the delay. The hops are in the
+  list below the device with the net name and its HDL source line. Click a
+  hop to select the instance that owns its cells.
 - **Editor panel** (hidden by default, `Ctrl+\` or the Editor toolbar
   button): per-instance `port map` / `generic map` in a VHDL-shaped text
   buffer. Commits on Ctrl+Return or focus-out, Tab completes signal names.
