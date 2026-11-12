@@ -500,6 +500,13 @@ pub fn run_build(
             "pnr.json",
         ),
     };
+    // The chip view reads these three files. The Gowin flow already
+    // writes `pnr.json` as the input of its pack step.
+    let mut pnr_args = pnr_args;
+    if !matches!(board.family, FpgaFamily::Gowin) {
+        pnr_args.extend(["--write".into(), "pnr.json".into()]);
+    }
+    pnr_args.extend(["--report", "report.json", "--placed-svg", "placed.svg"].map(String::from));
     require_tools(&[pnr_tool])?;
     if !run_tool(pnr_tool, &pnr_args, &staged.dir)? {
         return Ok(false);
@@ -527,7 +534,40 @@ pub fn run_build(
 
     std::fs::copy(staged.dir.join(bit_name), out_bit)
         .map_err(|e| format!("cannot write {}: {e}", out_bit.display()))?;
+    // A chip view failure must not fail a build that made a bitstream.
+    match write_floorplan(&staged.dir, &floorplan_path(out_bit)) {
+        Ok(()) => println!("chip view written to {}", floorplan_path(out_bit).display()),
+        Err(msg) => println!("warning: no chip view: {msg}"),
+    }
     Ok(true)
+}
+
+/// The chip view file that belongs to a bitstream: `<top>.floorplan.json`.
+pub fn floorplan_path(bitstream: &Path) -> PathBuf {
+    bitstream.with_extension("floorplan.json")
+}
+
+/// Merge the nextpnr outputs in `dir` into one chip view file at `out`.
+fn write_floorplan(dir: &Path, out: &Path) -> Result<(), String> {
+    let read = |name: &str| {
+        std::fs::read_to_string(dir.join(name)).map_err(|e| format!("cannot read {name}: {e}"))
+    };
+    let plan = crate::floorplan::Floorplan::from_nextpnr(
+        &read("pnr.json")?,
+        &read("placed.svg")?,
+        read("report.json").ok().as_deref(),
+    )?;
+    let unmatched = plan.unmatched_tiles();
+    if !unmatched.is_empty() {
+        println!(
+            "warning: chip view: {} tiles hold cells that the drawing does not show (first: X{}/Y{})",
+            unmatched.len(),
+            unmatched[0].0,
+            unmatched[0].1
+        );
+    }
+    let text = serde_json::to_string(&plan).map_err(|e| e.to_string())?;
+    std::fs::write(out, text).map_err(|e| format!("cannot write {}: {e}", out.display()))
 }
 
 /// Program a bitstream with openFPGALoader. SRAM load by default (volatile);

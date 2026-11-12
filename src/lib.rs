@@ -1,5 +1,6 @@
 pub mod board;
 pub mod codegen;
+pub mod floorplan;
 pub mod groups;
 pub mod gui;
 pub mod nets;

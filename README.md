@@ -82,6 +82,9 @@ Notes:
 - For VHDL synthesis the ghdl-yosys-plugin is tried first; if it fails on a
   construct it does not support, the tool falls back to `ghdl synth
   --out=verilog` and feeds the netlist to yosys, with a note in the output.
+- `build` also writes `<top>.floorplan.json` next to the bitstream. It
+  records where nextpnr placed each cell, the device utilization, and the
+  maximum clock frequency. The GUI Chip View reads it.
 - `fpga` writes a Makefile (codegen, yosys, nextpnr, pack, openFPGALoader)
   plus a per-port constraints placeholder. Edit the `DEVICE` / `PACKAGE`
   variables for your part. `--force` overwrites.

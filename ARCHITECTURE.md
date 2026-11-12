@@ -326,6 +326,7 @@ src/
   routing.rs           — placement (legalize, Tidy) and the channel wire router
   toolchain.rs         — check/synth/sim/fpga/build/flash via external tools
   board.rs             — board definition files, constraint pin check
+  floorplan.rs         — chip view data from the nextpnr outputs of `build`
   codegen/
     mod.rs             — generate_design (flat + grouped) and shared helpers
                           (resolve_port_type, collect_internal_nets,
