@@ -829,8 +829,11 @@ class CanvasLayer {
         if (m_hovered_net == base)
             return;
         m_hovered_net = base;
-        for (auto *w : m_wires)
-            w->setNetHover(!base.isEmpty() && baseKey(w->sourceKey()) == base);
+        for (auto *w : m_wires) {
+            const bool on_net = !base.isEmpty() && baseKey(w->sourceKey()) == base;
+            w->setNetHover(on_net);
+            w->setNetDimmed(!base.isEmpty() && !on_net);
+        }
     }
 
     // Net hover from a PIN: a load pin's key differs from the net's source

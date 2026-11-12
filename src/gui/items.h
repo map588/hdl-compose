@@ -212,6 +212,16 @@ class WireItem : public QGraphicsPathItem {
         refreshPen();
     }
 
+    // While another net is hovered, this wire fades so the hovered net
+    // can be followed through a dense area. Driven by
+    // CanvasLayer::setHoveredNet.
+    void setNetDimmed(bool dimmed) {
+        if (m_net_dimmed == dimmed)
+            return;
+        m_net_dimmed = dimmed;
+        refreshPen();
+    }
+
     // Base weight scales with bus width so buses read heavier than scalars.
     void refreshPen() {
         QColor c = colorForNet(m_source_key);
@@ -219,6 +229,8 @@ class WireItem : public QGraphicsPathItem {
         if (m_net_hover) {
             c = QColor::fromHsv(c.hue(), 160, 255);
             base += 1.0;
+        } else if (m_net_dimmed) {
+            c.setAlpha(55);
         }
         QPen p(c, base);
         p.setCosmetic(true);
@@ -325,6 +337,7 @@ class WireItem : public QGraphicsPathItem {
     CanvasLayer *m_layer = nullptr;
     int m_width = 1;
     bool m_net_hover = false;
+    bool m_net_dimmed = false;
     QVector<QPointF> m_waypoints;
 };
 
