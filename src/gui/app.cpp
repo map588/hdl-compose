@@ -1899,6 +1899,22 @@ class MainWindow : public QMainWindow {
             }
             auto *legend_label = new QLabel(legend, body);
             m_chip_view = new chipview::FloorplanView(body);
+            // A click on a tile selects the instance that owns most of its
+            // cells. The owners also hold group names and names from inside
+            // a module; only an instance of this schematic is in the tree.
+            m_chip_view->onTilePicked = [this](const QStringList &owners) {
+                for (const QString &name : owners) {
+                    const auto hits = m_tree_model->match(m_tree_model->index(0, 0), Qt::UserRole, name, 1,
+                                                          Qt::MatchExactly | Qt::MatchRecursive);
+                    if (!hits.isEmpty()) {
+                        m_state->set_selected_instance(name);
+                        statusBar()->showMessage(QStringLiteral("Tile cells come from %1").arg(name), 5000);
+                        return;
+                    }
+                }
+                statusBar()->showMessage(QStringLiteral("No instance of the schematic owns the cells of this tile"),
+                                         5000);
+            };
             layout->addWidget(m_chip_info);
             layout->addWidget(legend_label);
             layout->addWidget(m_chip_view, 1);

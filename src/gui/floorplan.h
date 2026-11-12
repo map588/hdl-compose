@@ -22,7 +22,10 @@
 #include <QStyleOptionGraphicsItem>
 #include <QVector>
 #include <QWheelEvent>
+#include <QMouseEvent>
+#include <algorithm>
 #include <cmath>
+#include <functional>
 
 namespace chipview {
 
@@ -126,7 +129,7 @@ namespace chipview {
             struct Tile {
                 int kinds[7] = {};
                 QStringList lines;
-                QSet<QString> owners;
+                QHash<QString, int> owners;
             };
             QHash<QPair<int, int>, Tile> tiles;
             const QJsonArray cells = root.value(QStringLiteral("cells")).toArray();
@@ -141,7 +144,7 @@ namespace chipview {
                                    c.value(QStringLiteral("cell_type")).toString(),
                                    c.value(QStringLiteral("name")).toString());
                 for (const QJsonValue& seg : c.value(QStringLiteral("path")).toArray())
-                    t.owners.insert(seg.toString());
+                    t.owners[seg.toString()]++;
             }
             for (auto it = tiles.cbegin(); it != tiles.cend(); ++it) {
                 const Tile& t = it.value();
@@ -205,6 +208,11 @@ namespace chipview {
             }
         }
 
+        // Called when the user clicks a tile that holds cells. The argument
+        // holds each hierarchy name that owns a cell of the tile; the name
+        // that owns the most cells is first.
+        std::function<void(const QStringList&)> onTilePicked;
+
         void fit() {
             if (scene()->items().isEmpty())
                 return;
@@ -240,6 +248,32 @@ namespace chipview {
 
         void mouseDoubleClickEvent(QMouseEvent*) override { fit(); }
 
+        void mousePressEvent(QMouseEvent* event) override {
+            m_press = event->pos();
+            QGraphicsView::mousePressEvent(event);
+        }
+
+        // A press and a release at one point is a click on a tile. A longer
+        // move is a pan.
+        void mouseReleaseEvent(QMouseEvent* event) override {
+            QGraphicsView::mouseReleaseEvent(event);
+            if (event->button() != Qt::LeftButton || !onTilePicked
+                || (event->pos() - m_press).manhattanLength() > 3)
+                return;
+            const QPointF at = mapToScene(event->pos());
+            for (const TileItem& t : std::as_const(m_tiles)) {
+                if (!t.item->rect().contains(at))
+                    continue;
+                QStringList names = t.owners.keys();
+                std::sort(names.begin(), names.end(), [&](const QString& a, const QString& b) {
+                    const int ca = t.owners.value(a), cb = t.owners.value(b);
+                    return ca != cb ? ca > cb : a < b;
+                });
+                onTilePicked(names);
+                return;
+            }
+        }
+
         // Keep the whole device in view until the user zooms. The dock gets
         // its size after the first load.
         void resizeEvent(QResizeEvent* event) override {
@@ -254,7 +288,7 @@ namespace chipview {
 
         struct TileItem {
             QGraphicsRectItem* item;
-            QSet<QString> owners;
+            QHash<QString, int> owners; // Hierarchy name to cell count.
         };
 
         void zoomBy(double factor) {
@@ -269,6 +303,7 @@ namespace chipview {
         QVector<TileItem> m_tiles;
         QString m_summary;
         QString m_highlighted;
+        QPoint m_press;
         bool m_auto_fit = true;
     };
 
