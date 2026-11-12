@@ -341,6 +341,7 @@ src/
     canvas.h/.cpp      — WireTool (interactive wiring), CanvasView
                           (zoom/pan/drops/keys), CanvasLayer (scene↔state
                           sync + channel routing)
+    floorplan.h        — Chip View dock: device bels and placed cells
     items.h/.cpp       — scene items: InstanceItem, PortPinItem,
                           BundlePinItem, TopPortItem, WireItem, junction
                           dots; NetKey codec

@@ -85,6 +85,7 @@
 
 #include "canvas_constants.h"
 #include "canvas.h"
+#include "floorplan.h"
 #include "items.h"
 
 namespace {
@@ -821,6 +822,8 @@ class MainWindow : public QMainWindow {
         auto *buildAct = toolMenu->addAction(QStringLiteral("&Build Bitstream"));
         auto *flashAct = toolMenu->addAction(QStringLiteral("&Flash (SRAM)"));
         auto *flashPersistAct = toolMenu->addAction(QStringLiteral("Flash (&Persistent)"));
+        auto *chipAct = toolMenu->addAction(QStringLiteral("Chip &View"));
+        chipAct->setToolTip(QStringLiteral("Show where the last build placed the design on the device"));
         toolMenu->addSeparator();
         m_select_board_act = toolMenu->addAction(QStringLiteral("Select Boar&d..."));
         m_toolchain_actions = {checkAct, synthAct, buildAct, flashAct, flashPersistAct};
@@ -831,6 +834,7 @@ class MainWindow : public QMainWindow {
         connect(flashPersistAct, &QAction::triggered, this,
                 [this]() { runTool(QStringLiteral("flash"), {QStringLiteral("--flash")}, true); });
         connect(m_select_board_act, &QAction::triggered, this, [this]() { selectBoard(); });
+        connect(chipAct, &QAction::triggered, this, [this]() { showChipView(); });
 
         // Help menu — the canvas is gesture-heavy; give the gestures a home.
         auto *helpMenu = menuBar()->addMenu(QStringLiteral("&Help"));
@@ -1069,6 +1073,11 @@ class MainWindow : public QMainWindow {
         m_fs_watcher = new QFileSystemWatcher(this);
         connect(m_state, &AppState::library_changed, this, &MainWindow::refreshWatcher);
         connect(m_state, &AppState::project_loaded, this, &MainWindow::refreshWatcher);
+        // Another project has another placement.
+        connect(m_state, &AppState::project_loaded, this, [this]() {
+            if (m_chip_dock && m_chip_dock->isVisible())
+                loadChipView();
+        });
         connect(m_fs_watcher, &QFileSystemWatcher::fileChanged, this, [this](const QString &path) {
             // Some editors rename-swap to save — re-add the path after a
             // brief delay in case the watcher lost it.
@@ -1289,6 +1298,8 @@ class MainWindow : public QMainWindow {
     }
 
     void onSelectionChanged(const QString &name) {
+        if (m_chip_view)
+            m_chip_view->highlight(name);
         // Commit any outgoing edit against the previous instance before
         // switching so the user doesn't lose work.
         commitEditor();
@@ -1836,9 +1847,66 @@ class MainWindow : public QMainWindow {
                     for (QAction *a : std::as_const(m_toolchain_actions)) {
                         a->setEnabled(true);
                     }
+                    // A build or a flash makes a new placement.
+                    if (ok && m_chip_dock && m_chip_dock->isVisible())
+                        loadChipView();
                 });
         connect(m_tool_cancel, &QPushButton::clicked, this, [this]() { m_tool_proc->kill(); });
         connect(clear, &QPushButton::clicked, this, [this]() { m_tool_output->clear(); });
+    }
+
+    // --- Chip view ------------------------------------------------------
+
+    // `build` writes `<top>.floorplan.json` next to the project file, the
+    // same place as the default bitstream.
+    QString chipViewPath() {
+        const QFileInfo generated(m_state->suggest_codegen_path());
+        return QFileInfo(m_state->current_project_path())
+            .dir()
+            .filePath(generated.completeBaseName() + QStringLiteral(".floorplan.json"));
+    }
+
+    bool loadChipView() {
+        const bool ok = m_chip_view->load(chipViewPath());
+        m_chip_info->setText(ok ? m_chip_view->summary()
+                                : QStringLiteral("No placement yet. Run Toolchain > Build Bitstream."));
+        return ok;
+    }
+
+    // Right dock with the device and the placed design. Created on first use.
+    void showChipView() {
+        if (!m_state->has_project() || m_state->current_project_path().isEmpty()) {
+            statusBar()->showMessage(QStringLiteral("Chip View needs a saved project"), 4000);
+            return;
+        }
+        if (!m_chip_dock) {
+            m_chip_dock = new QDockWidget(QStringLiteral("Chip View"), this);
+            m_chip_dock->setObjectName(QStringLiteral("ChipViewDock"));
+            auto *body = new QWidget(m_chip_dock);
+            auto *layout = new QVBoxLayout(body);
+            layout->setContentsMargins(4, 4, 4, 4);
+            m_chip_info = new QLabel(body);
+            m_chip_info->setWordWrap(true);
+            m_chip_info->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            QString legend;
+            for (int k = 0; k < chipview::kindNames().size(); ++k) {
+                legend += QStringLiteral("<span style=\"color:%1\">&#9632;</span> %2 &nbsp; ")
+                              .arg(chipview::kindColor(k).name(), chipview::kindNames().at(k));
+            }
+            auto *legend_label = new QLabel(legend, body);
+            m_chip_view = new chipview::FloorplanView(body);
+            layout->addWidget(m_chip_info);
+            layout->addWidget(legend_label);
+            layout->addWidget(m_chip_view, 1);
+            m_chip_dock->setWidget(body);
+            addDockWidget(Qt::RightDockWidgetArea, m_chip_dock);
+            // The device is wider than the minimum dock width shows well.
+            resizeDocks({m_chip_dock}, {width() * 2 / 5}, Qt::Horizontal);
+        }
+        m_chip_dock->show();
+        m_chip_dock->raise();
+        loadChipView();
+        m_chip_view->highlight(m_state->selected_instance());
     }
 
     // The CLI reads the project from disk — an unsaved buffer would silently
@@ -1991,6 +2059,11 @@ class MainWindow : public QMainWindow {
     QList<QAction *> m_toolchain_actions;
     QAction *m_select_board_act = nullptr;
     QString m_tool_verb;
+
+    // Chip view state.
+    QDockWidget *m_chip_dock = nullptr;
+    QLabel *m_chip_info = nullptr;
+    chipview::FloorplanView *m_chip_view = nullptr;
 
     // Mini-editor state.
     bool m_top_level_mode = false;
