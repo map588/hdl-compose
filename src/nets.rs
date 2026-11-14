@@ -329,13 +329,21 @@ pub fn resolve_nets(schematic: &Schematic, library: &[ModuleDef]) -> Nets {
         let has_top = members.iter().any(|r| matches!(r, NetRef::TopPort(_)));
 
         // Canonical pin for naming: aliased member (drivers preferred) >
-        // top-port member > driver > first member. `signal_name` then applies
-        // alias / top-intermediate / driver-derived naming for that pin.
+        // top-port member > pin on the full net (drivers preferred) > driver
+        // > first member. `signal_name` then applies alias / top-intermediate
+        // / driver-derived naming for that pin. A pin on a slice of the net
+        // has only part of it, so its name on the full net would mislead.
         let canonical = drivers
             .iter()
             .chain(members.iter())
             .find(|r| schematic.aliases.contains_key(r))
             .or_else(|| members.iter().find(|r| matches!(r, NetRef::TopPort(_))))
+            .or_else(|| {
+                drivers
+                    .iter()
+                    .chain(members.iter())
+                    .find(|r| net_bits(schematic, r).is_none())
+            })
             .or_else(|| drivers.first())
             .or_else(|| members.first())
             .cloned()

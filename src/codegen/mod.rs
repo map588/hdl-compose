@@ -558,15 +558,16 @@ mod tests {
         let diags = s.validate(&lib);
         assert!(diags.is_empty(), "{diags:?}");
         let vhdl = generate_design(&s, &lib).unwrap().top_code;
-        let signals: Vec<&str> = vhdl
-            .lines()
-            .filter(|l| l.trim_start().starts_with("signal ") && l.contains("count"))
-            .collect();
-        assert_eq!(signals.len(), 1, "{vhdl}");
+        // Regression: the signal had the name of one of the two outputs
+        // (`u_hi_count`). The pin on the full net gives the name.
         assert!(
-            signals[0].ends_with(": std_logic_vector(7 downto 0);"),
+            vhdl.contains("signal u_led_value : std_logic_vector(7 downto 0);"),
             "{vhdl}"
         );
+        assert!(vhdl.contains("count => u_led_value(7 downto 4)"), "{vhdl}");
+        assert!(vhdl.contains("count => u_led_value(3 downto 0)"), "{vhdl}");
+        assert!(vhdl.contains("value => u_led_value,"), "{vhdl}");
+        assert!(!vhdl.contains("u_hi_count"), "{vhdl}");
     }
 
     // --- Widths that depend on generics ---

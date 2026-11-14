@@ -35,7 +35,9 @@ Each resolved net gets one signal in the generated HDL, named:
 1. the net's **alias**, if one is set (`aliases` map, keyed by any pin of the
    net in string form, e.g. `"u_a.dout": "data_bus"`), else
 2. `<top port>_s` when the net touches a top-level port, else
-3. `<driver instance>_<driver port>`.
+3. `<driver instance>_<driver port>`. When each driver is on a slice of the
+   net, the name comes from the pin that has the full net:
+   `<instance>_<port>` of the input that the slices drive.
 
 Validation is net-level: a net with **two or more hard drivers** (instance
 outputs / top inputs, InOut excluded) is an error; a net with **no driver**
