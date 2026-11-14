@@ -164,45 +164,21 @@ fn member_type(
     }
 }
 
-/// The target a driver pin pushes onto: the base ref from its own port_map
-/// entry plus the slice of that target it occupies (None = the whole thing).
-/// Non-instance drivers (top In ports) and self-references drive their base
-/// in full.
-pub fn driver_target(schematic: &Schematic, driver: &NetRef) -> (NetRef, Option<SliceExpr>) {
-    if let NetRef::InstancePort(inst_name, port_name) = driver
-        && let Some(inst) = schematic.instances.iter().find(|i| &i.name == inst_name)
-        && let Some(Some(target)) = inst.port_map.get(port_name)
-    {
-        return match target {
-            NetRef::TopPortSlice(n, s) => (NetRef::TopPort(n.clone()), Some(s.clone())),
-            NetRef::InstancePortSlice(i, p, s) => {
-                (NetRef::InstancePort(i.clone(), p.clone()), Some(s.clone()))
-            }
-            other => (other.base(), None),
-        };
-    }
-    (driver.base(), None)
-}
-
-/// Do two drivers conflict? Only when they push onto the same target base
-/// with overlapping bits; disjoint slices of one vector port are fine.
-/// Different bases merged into one net stay conservative (conflict).
+/// Do two drivers of one net conflict? Each driver is on the bits of the
+/// net that `net_bits` gives, through each pin between it and the net. The
+/// drivers conflict when those bits overlap; disjoint slices of one vector
+/// are fine. A driver on the full net conflicts with each other driver.
 pub fn drivers_conflict(schematic: &Schematic, a: &NetRef, b: &NetRef) -> bool {
-    let (base_a, slice_a) = driver_target(schematic, a);
-    let (base_b, slice_b) = driver_target(schematic, b);
-    if base_a != base_b {
-        return true;
-    }
     fn bits(s: &SliceExpr) -> (i32, i32) {
         match s {
             SliceExpr::Bit(i) => (*i, *i),
             SliceExpr::Range { high, low } => (*low.min(high), *high.max(low)),
         }
     }
-    match (&slice_a, &slice_b) {
+    match (net_bits(schematic, a), net_bits(schematic, b)) {
         (Some(x), Some(y)) => {
-            let (al, ah) = bits(x);
-            let (bl, bh) = bits(y);
+            let (al, ah) = bits(&x);
+            let (bl, bh) = bits(&y);
             al <= bh && bl <= ah
         }
         _ => true,
@@ -693,5 +669,83 @@ mod tests {
         s.set_port_map_entry("u_a", "dout", Some(pin("u_a", "dout")))
             .unwrap();
         assert_eq!(net_bits(&s, &pin("u_a", "dout")), None);
+    }
+
+    // --- drivers_conflict ---
+
+    fn range(high: i32, low: i32) -> SliceExpr {
+        SliceExpr::Range { high, low }
+    }
+
+    /// `u_c.din` (32 bits) is on `bus[offset + 31 : offset]`. The output
+    /// `u_x.dout` drives the slice `x` of `u_c.din`, and the output
+    /// `u_y.dout` drives the slice `y` of `bus`.
+    fn two_drivers(offset: i32, x: SliceExpr, y: SliceExpr) -> Schematic {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.add_instance("u_x", "mod_a").unwrap();
+        s.add_instance("u_y", "mod_a").unwrap();
+        s.add_instance("u_c", "mod_b").unwrap();
+        s.set_port_map_entry(
+            "u_c",
+            "din",
+            Some(NetRef::TopPortSlice(
+                "bus".into(),
+                range(offset + 31, offset),
+            )),
+        )
+        .unwrap();
+        s.set_port_map_entry(
+            "u_x",
+            "dout",
+            Some(NetRef::InstancePortSlice("u_c".into(), "din".into(), x)),
+        )
+        .unwrap();
+        s.set_port_map_entry("u_y", "dout", Some(NetRef::TopPortSlice("bus".into(), y)))
+            .unwrap();
+        s
+    }
+
+    fn x_and_y_conflict(s: &Schematic) -> bool {
+        drivers_conflict(s, &pin("u_x", "dout"), &pin("u_y", "dout"))
+    }
+
+    /// Regression: the two drivers reach `bus` through different pins, and
+    /// that alone was a conflict. `u_x` is on `bus[7:0]`, `u_y` on
+    /// `bus[15:8]`.
+    #[test]
+    fn drivers_on_different_bits_through_a_chain_do_not_conflict() {
+        let s = two_drivers(0, range(7, 0), range(15, 8));
+        assert!(!x_and_y_conflict(&s));
+        let s = two_drivers(0, range(7, 0), range(8, 4));
+        assert!(x_and_y_conflict(&s));
+    }
+
+    proptest::proptest! {
+        /// Two drivers conflict when, and only when, their bits on the net
+        /// overlap. The place of `u_x` goes through the place of `u_c.din`.
+        #[test]
+        fn drivers_conflict_when_their_net_bits_overlap(
+            offset in 0i32..64,
+            x_low in 0i32..32,
+            x_len in 1i32..16,
+            y_low in 0i32..128,
+            y_len in 1i32..16,
+        ) {
+            let x = range(x_low + x_len - 1, x_low);
+            let y = range(y_low + y_len - 1, y_low);
+            let s = two_drivers(offset, x, y);
+            let x_bits = (offset + x_low)..(offset + x_low + x_len);
+            let y_bits = y_low..(y_low + y_len);
+            let overlap = x_bits.start < y_bits.end && y_bits.start < x_bits.end;
+            proptest::prop_assert_eq!(x_and_y_conflict(&s), overlap);
+        }
+    }
+
+    #[test]
+    fn driver_on_the_full_net_conflicts_with_each_other_driver() {
+        let mut s = two_drivers(0, range(7, 0), range(15, 8));
+        s.set_port_map_entry("u_y", "dout", Some(NetRef::TopPort("bus".into())))
+            .unwrap();
+        assert!(x_and_y_conflict(&s));
     }
 }
