@@ -89,6 +89,10 @@ enum Command {
         output: Option<PathBuf>,
     },
 
+    /// Print the guide that an agent needs to write a .hdlc project:
+    /// the procedure, a complete example, and the format reference
+    Guide,
+
     /// Elaborate the generated HDL with a real frontend (ghdl / verilator).
     /// Requires oss-cad-suite (or the tools) on PATH.
     /// Exit code: 0 = clean, 1 = tool reported errors, 2 = tool missing or codegen failed.
@@ -232,6 +236,10 @@ fn main() -> ExitCode {
         Some(Command::Inspect { project }) => cmd_inspect(&project),
         Some(Command::Migrate { projects }) => cmd_migrate(&projects),
         Some(Command::Schema { output }) => cmd_schema(output.as_deref()),
+        Some(Command::Guide) => {
+            print!("{AGENT_GUIDE}\n{FORMAT_REFERENCE}");
+            ExitCode::SUCCESS
+        }
         Some(Command::Check { project }) => cmd_check(&project),
         Some(Command::Build {
             project,
@@ -253,6 +261,11 @@ fn main() -> ExitCode {
         }) => cmd_fpga(&project, family.into(), output.as_deref(), force),
     }
 }
+
+/// The two parts of the `guide` output. The build embeds them, so the
+/// installed binary needs no documentation files.
+const AGENT_GUIDE: &str = include_str!("../docs/AGENT_GUIDE.md");
+const FORMAT_REFERENCE: &str = include_str!("../docs/FORMAT.md");
 
 const EXAMPLE_PULSE_GEN_VHDL: &str = r#"library ieee;
 use ieee.std_logic_1164.all;
@@ -1071,5 +1084,54 @@ mod tests {
     fn the_binary_is_named_hdlc() {
         assert_eq!(Cli::command().get_name(), "hdlc");
         assert_eq!(env!("CARGO_BIN_NAME"), "hdlc");
+    }
+
+    #[test]
+    fn guide_subcommand_parses() {
+        let cli = Cli::try_parse_from(["hdlc", "guide"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Guide)));
+    }
+
+    /// The first `json` block of the guide is the project that the guide
+    /// tells an agent to copy.
+    fn guide_example_project() -> &'static str {
+        let (_, rest) = AGENT_GUIDE
+            .split_once("```json\n")
+            .expect("guide has a json block");
+        let (json, _) = rest.split_once("```").expect("json block ends");
+        json
+    }
+
+    /// The guide is only useful while its example is a correct project. Load
+    /// the example with the same code as the CLI, next to the `--example`
+    /// leaf modules, and require a clean validation and a successful codegen.
+    #[test]
+    fn guide_example_is_a_clean_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("demo.hdlc");
+        std::fs::write(&path, guide_example_project()).unwrap();
+        std::fs::write(dir.path().join("pulse_gen.vhd"), EXAMPLE_PULSE_GEN_VHDL).unwrap();
+        std::fs::write(dir.path().join("led_driver.vhd"), EXAMPLE_LED_DRIVER_VHDL).unwrap();
+
+        let (schematic, warnings) = project::load_project(&path).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let (library, lib_errors) = schematic.resolve_modules();
+        assert!(lib_errors.is_empty(), "{lib_errors:?}");
+        let diagnostics = schematic.validate(&library);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert!(codegen::generate_design(&schematic, &library).is_ok());
+    }
+
+    /// A format version change must update the guide.
+    #[test]
+    fn guide_example_uses_the_current_format_version() {
+        let version = |json: &str| -> serde_json::Value {
+            serde_json::from_str::<serde_json::Value>(json).unwrap()["version"].clone()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("current.hdlc");
+        project::save_project(&Schematic::new("current", Language::Vhdl), &path).unwrap();
+        let current = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(version(guide_example_project()), version(&current));
     }
 }

@@ -360,6 +360,7 @@ tests/
   projects/hdlc/       — realistic example project (two-voice synthesizer)
   hardware/            — board definition used for the hardware-verified flow
 docs/
-  FORMAT.md            — .hdlc file format reference
+  AGENT_GUIDE.md       — procedure for an agent that writes a project (first part of `hdlc guide`)
+  FORMAT.md            — .hdlc file format reference (second part of `hdlc guide`)
   hdlc.schema.json     — JSON Schema (output of `hdlc schema`)
 ```

@@ -57,6 +57,7 @@ hdlc codegen <project.hdlc> [-o out.vhd]
 hdlc inspect <project.hdlc>       # summary + library status
 hdlc migrate <a.hdlc> [b.hdlc ..] # rewrite older projects at the current version
 hdlc schema                       # JSON Schema for the .hdlc format
+hdlc guide                        # what an agent must know to write a project by hand
 ```
 
 ## Toolchain commands
