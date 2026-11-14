@@ -554,8 +554,8 @@ impl Schematic {
                     NetRef::Constant(_) => unreachable!("handled above"),
                 };
 
-                // The resolved driver port definition, if we can find one. Used for slice bounds.
-                let mut driver_port_def: Option<&PortDef> = None;
+                // The type of the referenced pin, if we can find one. Used for slice bounds.
+                let mut driver_type: Option<PortType> = None;
 
                 if let Some(top_name) = &top_name_opt {
                     // Check top port exists
@@ -570,7 +570,7 @@ impl Schematic {
                     } else if let Some(pin_type) = &pin_type
                         && let Some(top_port) = self.top_ports.iter().find(|p| p.name == *top_name)
                     {
-                        driver_port_def = Some(top_port);
+                        driver_type = Some(top_port.port_type.clone());
                         if slice_opt.is_none() {
                             check_compatibility(
                                 &mut diags,
@@ -579,6 +579,7 @@ impl Schematic {
                                 pin_type,
                                 &top_port.name,
                                 &top_port.port_type,
+                                &self.top_generics,
                             );
                         }
                     }
@@ -599,7 +600,14 @@ impl Schematic {
                         if let Some(driver_port) =
                             ref_module.ports.iter().find(|p| p.name == *ref_port)
                         {
-                            driver_port_def = Some(driver_port);
+                            // The bits that the referenced instance
+                            // connects: its generics and its consumer
+                            // slice count, not the port as written.
+                            let referenced = crate::nets::instance_pin_type(
+                                ref_instance,
+                                ref_module,
+                                driver_port,
+                            );
                             // Driver presence is checked net-wide below —
                             // referencing another input is fine as long as
                             // the merged net has a driver somewhere.
@@ -612,13 +620,11 @@ impl Schematic {
                                     port_name,
                                     pin_type,
                                     &driver_port.name,
-                                    &crate::nets::instance_pin_type(
-                                        ref_instance,
-                                        ref_module,
-                                        driver_port,
-                                    ),
+                                    &referenced,
+                                    &self.top_generics,
                                 );
                             }
+                            driver_type = Some(referenced);
                         } else {
                             diags.push(
                                 Diagnostic::error(format!(
@@ -632,9 +638,9 @@ impl Schematic {
                     }
                 }
 
-                // Slice-range check against resolved driver width.
-                if let (Some(slice), Some(dp)) = (slice_opt, driver_port_def)
-                    && let Some(dw) = port_width(&dp.port_type)
+                // Slice-range check against the width of the referenced pin.
+                if let (Some(slice), Some(driver_type)) = (slice_opt, &driver_type)
+                    && let Some(dw) = width_at_defaults(driver_type, &self.top_generics)
                 {
                     let (hi, lo) = match slice {
                         SliceExpr::Bit(i) => (*i, *i),
@@ -654,7 +660,9 @@ impl Schematic {
                 // A reference with a slice connects the pin to the bits of
                 // the slice.
                 if let Some(slice) = slice_opt
-                    && let Some(pin_width) = pin_type.as_ref().and_then(port_width)
+                    && let Some(pin_width) = pin_type
+                        .as_ref()
+                        .and_then(|t| width_at_defaults(t, &self.top_generics))
                     && pin_width != slice_width(slice)
                 {
                     diags.push(
@@ -812,6 +820,19 @@ fn unconnected_diag(port_name: &str, port_def: Option<&PortDef>) -> Diagnostic {
     }
 }
 
+/// The width of a type. A bound that uses a top-level generic is evaluated
+/// at the default value of that generic: `check`, `synth` and `build`
+/// elaborate the generated top level with the default values, so a
+/// mismatch there is a defect of the project. Returns None when a bound has
+/// no known value.
+fn width_at_defaults(port_type: &PortType, top_generics: &[GenericDef]) -> Option<u32> {
+    port_width(&crate::codegen::resolve_port_type(
+        port_type,
+        top_generics,
+        &HashMap::new(),
+    ))
+}
+
 /// Check width compatibility between the types of two connected ports.
 fn check_compatibility(
     diags: &mut Vec<Diagnostic>,
@@ -820,14 +841,23 @@ fn check_compatibility(
     consumer: &PortType,
     driver_name: &str,
     driver: &PortType,
+    top_generics: &[GenericDef],
 ) {
     // Both widths resolved and unequal -> mismatch
-    if let (Some(cw), Some(dw)) = (port_width(consumer), port_width(driver))
-        && cw != dw
+    if let (Some(cw), Some(dw)) = (
+        width_at_defaults(consumer, top_generics),
+        width_at_defaults(driver, top_generics),
+    ) && cw != dw
     {
+        // Tell the user when the numbers come from a default value.
+        let note = if port_width(consumer).is_none() || port_width(driver).is_none() {
+            " at the default value of the top-level generics"
+        } else {
+            ""
+        };
         diags.push(
             Diagnostic::error(format!(
-                "width mismatch: port is {cw} bits but driver '{driver_name}' is {dw} bits"
+                "width mismatch: port is {cw} bits but driver '{driver_name}' is {dw} bits{note}"
             ))
             .with_instance(inst_name)
             .with_port(port_name),
@@ -1531,6 +1561,149 @@ mod tests {
         let errors = consumer_slice_on_a_top_port(five_bits, literal_vector(7));
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(errors[0].contains("port is 5 bits"), "{errors:?}");
+    }
+
+    fn integer_generic(name: &str, default_value: Option<&str>) -> GenericDef {
+        GenericDef {
+            name: name.into(),
+            type_name: "integer".into(),
+            default_value: default_value.map(Into::into),
+        }
+    }
+
+    /// `pulse_gen` with `count : out std_logic_vector(WIDTH - 1 downto 0)`.
+    fn pulse_gen_module(width_default: &str) -> ModuleDef {
+        let mut module = make_module(
+            "pulse_gen",
+            vec![make_port(
+                "count",
+                Direction::Out,
+                PortType::StdLogicVector(Range {
+                    high: RangeExpr::Expr("WIDTH - 1".into()),
+                    low: RangeExpr::Literal(0),
+                    dir: RangeDir::Downto,
+                }),
+            )],
+        );
+        module
+            .generics
+            .push(integer_generic("WIDTH", Some(width_default)));
+        module
+    }
+
+    /// `u_gen.count` gets its width from the top-level generic `TOP_W`, and
+    /// drives the 8-bit input `u_led.value`.
+    fn top_generic_width_on_an_8_bit_input(top_default: Option<&str>) -> Vec<Diagnostic> {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.top_generics.push(integer_generic("TOP_W", top_default));
+        s.top_ports
+            .push(make_port("led", Direction::Out, PortType::StdLogic));
+        s.add_instance("u_gen", "pulse_gen").unwrap();
+        s.set_generic_map_entry("u_gen", "WIDTH", "TOP_W").unwrap();
+        s.add_instance("u_led", "led_driver").unwrap();
+        s.set_port_map_entry(
+            "u_led",
+            "value",
+            Some(NetRef::InstancePort("u_gen".into(), "count".into())),
+        )
+        .unwrap();
+        s.set_port_map_entry("u_led", "led", Some(NetRef::TopPort("led".into())))
+            .unwrap();
+        let lib = vec![
+            pulse_gen_module("8"),
+            make_module(
+                "led_driver",
+                vec![
+                    make_port("value", Direction::In, literal_vector(7)),
+                    make_port("led", Direction::Out, PortType::StdLogic),
+                ],
+            ),
+        ];
+        s.validate(&lib)
+    }
+
+    /// Regression: a width from a top-level generic was unknown, so a
+    /// 16-bit output on an 8-bit input passed. The HDL tool elaborates the
+    /// top level with the default values, and rejects it.
+    #[test]
+    fn width_from_a_top_generic_is_checked_at_its_default_value() {
+        let diags = top_generic_width_on_an_8_bit_input(Some("16"));
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert!(diags[0].is_error());
+        let message = &diags[0].message;
+        assert!(
+            message.contains("port is 8 bits") && message.contains("is 16 bits"),
+            "{message}"
+        );
+        assert!(message.contains("default value"), "{message}");
+
+        let diags = top_generic_width_on_an_8_bit_input(Some("8"));
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn width_from_a_top_generic_with_no_default_is_not_checked() {
+        let diags = top_generic_width_on_an_8_bit_input(None);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// `u_b.ena` (one bit) takes the bit `bit` of the pin `u_a.count`. The
+    /// port `count` has 32 bits before `configure` changes the instance.
+    fn bit_of_a_pin(bit: i32, configure: impl FnOnce(&mut Instance)) -> Vec<String> {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        configure(s.add_instance("u_a", "pulse_gen").unwrap());
+        s.add_instance("u_b", "gate").unwrap();
+        s.set_port_map_entry(
+            "u_b",
+            "ena",
+            Some(NetRef::InstancePortSlice(
+                "u_a".into(),
+                "count".into(),
+                SliceExpr::Bit(bit),
+            )),
+        )
+        .unwrap();
+        let lib = vec![
+            pulse_gen_module("32"),
+            make_module(
+                "gate",
+                vec![make_port("ena", Direction::In, PortType::StdLogic)],
+            ),
+        ];
+        s.validate(&lib)
+            .into_iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.message)
+            .collect()
+    }
+
+    /// Regression: the range check used the port as written, so it made no
+    /// check for a width from a generic.
+    #[test]
+    fn slice_range_uses_the_width_from_the_generic_map() {
+        let four_bits = |inst: &mut Instance| {
+            inst.generic_map.insert("WIDTH".into(), "4".into());
+        };
+        let errors = bit_of_a_pin(7, four_bits);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("out of range for driver of width 4"));
+        let errors = bit_of_a_pin(3, four_bits);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    /// Regression: the range check used the 32 bits of the port for a pin
+    /// that connects only five of them.
+    #[test]
+    fn slice_range_uses_the_width_of_the_consumer_slice() {
+        let five_bits = |inst: &mut Instance| {
+            inst.consumer_slices
+                .insert("count".into(), SliceExpr::Range { high: 28, low: 24 });
+        };
+        let errors = bit_of_a_pin(10, five_bits);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("out of range for driver of width 5"));
+        let errors = bit_of_a_pin(4, five_bits);
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     /// An 8-bit output on a slice of the 16-bit top-level port `wide`.
