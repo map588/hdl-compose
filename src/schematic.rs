@@ -1591,15 +1591,19 @@ mod tests {
         module
     }
 
-    /// `u_gen.count` gets its width from the top-level generic `TOP_W`, and
-    /// drives the 8-bit input `u_led.value`.
-    fn top_generic_width_on_an_8_bit_input(top_default: Option<&str>) -> Vec<Diagnostic> {
+    /// `u_gen.count` gets its width from the top-level generic `TOP_W`
+    /// (`WIDTH => <width_value>`), and drives the 8-bit input `u_led.value`.
+    fn top_generic_width_on_an_8_bit_input(
+        width_value: &str,
+        top_default: Option<&str>,
+    ) -> Vec<Diagnostic> {
         let mut s = Schematic::new("top", Language::Vhdl);
         s.top_generics.push(integer_generic("TOP_W", top_default));
         s.top_ports
             .push(make_port("led", Direction::Out, PortType::StdLogic));
         s.add_instance("u_gen", "pulse_gen").unwrap();
-        s.set_generic_map_entry("u_gen", "WIDTH", "TOP_W").unwrap();
+        s.set_generic_map_entry("u_gen", "WIDTH", width_value)
+            .unwrap();
         s.add_instance("u_led", "led_driver").unwrap();
         s.set_port_map_entry(
             "u_led",
@@ -1627,7 +1631,7 @@ mod tests {
     /// top level with the default values, and rejects it.
     #[test]
     fn width_from_a_top_generic_is_checked_at_its_default_value() {
-        let diags = top_generic_width_on_an_8_bit_input(Some("16"));
+        let diags = top_generic_width_on_an_8_bit_input("TOP_W", Some("16"));
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert!(diags[0].is_error());
         let message = &diags[0].message;
@@ -1637,13 +1641,28 @@ mod tests {
         );
         assert!(message.contains("default value"), "{message}");
 
-        let diags = top_generic_width_on_an_8_bit_input(Some("8"));
+        let diags = top_generic_width_on_an_8_bit_input("TOP_W", Some("8"));
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// Regression: a width from an expression, such as `2 * TOP_W`, had no
+    /// value, so the check made no claim for it.
+    #[test]
+    fn width_from_an_expression_of_a_top_generic_is_checked() {
+        let diags = top_generic_width_on_an_8_bit_input("2 * TOP_W", Some("8"));
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert!(
+            diags[0].message.contains("is 16 bits"),
+            "{}",
+            diags[0].message
+        );
+        let diags = top_generic_width_on_an_8_bit_input("2 * TOP_W", Some("4"));
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn width_from_a_top_generic_with_no_default_is_not_checked() {
-        let diags = top_generic_width_on_an_8_bit_input(None);
+        let diags = top_generic_width_on_an_8_bit_input("TOP_W", None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 

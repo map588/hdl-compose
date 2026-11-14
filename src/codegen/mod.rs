@@ -189,22 +189,116 @@ fn range_expr_to_string(expr: &RangeExpr) -> String {
     }
 }
 
-/// Evaluate a bound that holds only integers: a bare integer, or the simple
-/// `A - B` / `A + B` pattern. This is sufficient for the common `WIDTH-1` /
-/// `N+1` bounds after `substitute_generics`.
+/// Evaluate an integer expression: integers, `+ - * /`, `**`, a sign,
+/// parentheses, and `$clog2(...)`. This is sufficient for the bounds that
+/// HDL modules use (`WIDTH-1`, `2*N-1`, `$clog2(DEPTH)-1`) after
+/// `substitute_generics`.
+///
+/// Returns None for other text (a name with no value, a function call) and
+/// for an overflow, a division by zero, or a negative exponent.
 fn eval_int_expr(expr: &str) -> Option<i64> {
-    let s = expr.trim();
-    if let Ok(v) = s.parse::<i64>() {
-        return Some(v);
-    }
-    for op in ['-', '+'] {
-        if let Some(pos) = s.rfind(op) {
-            let lv = s[..pos].trim().parse::<i64>().ok()?;
-            let rv = s[pos + 1..].trim().parse::<i64>().ok()?;
-            return Some(if op == '-' { lv - rv } else { lv + rv });
+    let mut parser = IntExpr { rest: expr };
+    let value = parser.sum()?;
+    parser.rest.trim_start().is_empty().then_some(value)
+}
+
+/// Recursive-descent parser for `eval_int_expr`. `rest` is the text that
+/// is not yet read.
+struct IntExpr<'a> {
+    rest: &'a str,
+}
+
+impl IntExpr<'_> {
+    /// Read `token` if the text continues with it.
+    fn eat(&mut self, token: &str) -> bool {
+        match self.rest.trim_start().strip_prefix(token) {
+            Some(rest) => {
+                self.rest = rest;
+                true
+            }
+            None => false,
         }
     }
-    None
+
+    /// `product (('+' | '-') product)*`
+    fn sum(&mut self) -> Option<i64> {
+        let mut value = self.product()?;
+        loop {
+            if self.eat("+") {
+                value = value.checked_add(self.product()?)?;
+            } else if self.eat("-") {
+                value = value.checked_sub(self.product()?)?;
+            } else {
+                return Some(value);
+            }
+        }
+    }
+
+    /// `signed (('*' | '/') signed)*`
+    fn product(&mut self) -> Option<i64> {
+        let mut value = self.signed()?;
+        loop {
+            if self.eat("*") {
+                value = value.checked_mul(self.signed()?)?;
+            } else if self.eat("/") {
+                value = value.checked_div(self.signed()?)?;
+            } else {
+                return Some(value);
+            }
+        }
+    }
+
+    /// `('-' | '+') signed | primary ('**' signed)?`. The sign applies to
+    /// the full power, as in VHDL: `-2 ** 2` is -4.
+    fn signed(&mut self) -> Option<i64> {
+        if self.eat("-") {
+            return self.signed()?.checked_neg();
+        }
+        if self.eat("+") {
+            return self.signed();
+        }
+        let base = self.primary()?;
+        if self.eat("**") {
+            let exponent = u32::try_from(self.signed()?).ok()?;
+            return base.checked_pow(exponent);
+        }
+        Some(base)
+    }
+
+    /// `'(' sum ')' | '$clog2' '(' sum ')' | integer`
+    fn primary(&mut self) -> Option<i64> {
+        if self.eat("(") {
+            let value = self.sum()?;
+            return self.eat(")").then_some(value);
+        }
+        if self.eat("$clog2") {
+            if !self.eat("(") {
+                return None;
+            }
+            let value = self.sum()?;
+            if !self.eat(")") {
+                return None;
+            }
+            // IEEE 1800: the ceiling of log2, and 0 for the values 0 and 1.
+            return match value {
+                i64::MIN..=-1 => None,
+                0 | 1 => Some(0),
+                _ => Some(i64::from(64 - (value - 1).leading_zeros())),
+            };
+        }
+        let rest = self.rest.trim_start();
+        let len = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        let (digits, tail) = rest.split_at(len);
+        // `8abc` is not an integer.
+        if tail.starts_with(is_identifier_char) {
+            return None;
+        }
+        let value = digits.parse().ok()?;
+        self.rest = tail;
+        Some(value)
+    }
 }
 
 fn is_identifier_char(c: char) -> bool {
@@ -734,5 +828,122 @@ mod tests {
         );
         assert!(vhdl.contains("count(28 downto 24) => u_a_count"), "{vhdl}");
         assert!(vhdl.contains("value => u_a_count"), "{vhdl}");
+    }
+
+    // --- eval_int_expr ---
+
+    #[test]
+    fn integer_expressions_follow_the_usual_precedence() {
+        for (text, value) in [
+            ("7", 7),
+            ("8 - 1", 7),
+            ("8-1", 7),
+            // Regression: the bound `(2 * 16) - 1` stayed an expression.
+            ("(2 * 16) - 1", 31),
+            ("2 * 16 - 1", 31),
+            ("2 + 3 * 4", 14),
+            ("8 - 1 - 1", 6),
+            ("16 / 4 / 2", 2),
+            ("7 / 2", 3),
+            ("2 ** 10", 1024),
+            ("2 * 3 ** 2", 18),
+            ("-4 - 1", -5),
+            ("-2 ** 2", -4),
+            ("((3))", 3),
+            ("$clog2(1024) - 1", 9),
+            ("$clog2(1000)", 10),
+            ("$clog2(1)", 0),
+        ] {
+            assert_eq!(eval_int_expr(text), Some(value), "{text}");
+        }
+    }
+
+    #[test]
+    fn text_that_is_not_an_integer_expression_has_no_value() {
+        for text in [
+            "",
+            "WIDTH - 1",
+            "8 -",
+            "(8",
+            "8)",
+            "8abc",
+            "8 8",
+            "1 / 0",
+            "2 ** -1",
+            "9223372036854775807 + 1",
+            "f(8)",
+        ] {
+            assert_eq!(eval_int_expr(text), None, "{text}");
+        }
+    }
+
+    /// An expression tree, and the reference for its value.
+    #[derive(Debug, Clone)]
+    enum Tree {
+        Int(i64),
+        Neg(Box<Tree>),
+        Binary(Box<Tree>, &'static str, Box<Tree>),
+    }
+
+    impl Tree {
+        fn text(&self) -> String {
+            match self {
+                Tree::Int(v) => v.to_string(),
+                Tree::Neg(t) => format!("-({})", t.text()),
+                Tree::Binary(a, op, b) => format!("({}) {op} ({})", a.text(), b.text()),
+            }
+        }
+
+        fn value(&self) -> Option<i64> {
+            match self {
+                Tree::Int(v) => Some(*v),
+                Tree::Neg(t) => t.value()?.checked_neg(),
+                Tree::Binary(a, op, b) => {
+                    let (a, b) = (a.value()?, b.value()?);
+                    match *op {
+                        "+" => a.checked_add(b),
+                        "-" => a.checked_sub(b),
+                        "*" => a.checked_mul(b),
+                        "/" => a.checked_div(b),
+                        _ => a.checked_pow(u32::try_from(b).ok()?),
+                    }
+                }
+            }
+        }
+    }
+
+    fn tree() -> impl proptest::strategy::Strategy<Value = Tree> {
+        use proptest::prelude::*;
+        let leaf = (0i64..2000).prop_map(Tree::Int);
+        leaf.prop_recursive(5, 32, 2, |inner| {
+            prop_oneof![
+                inner.clone().prop_map(|t| Tree::Neg(Box::new(t))),
+                (
+                    inner.clone(),
+                    prop_oneof![Just("+"), Just("-"), Just("*"), Just("/"), Just("**")],
+                    inner
+                )
+                    .prop_map(|(a, op, b)| Tree::Binary(
+                        Box::new(a),
+                        op,
+                        Box::new(b)
+                    )),
+            ]
+        })
+    }
+
+    proptest::proptest! {
+        /// The value of the text of a tree is the value of the tree. A
+        /// tree with an overflow, a division by zero or a negative
+        /// exponent has no value.
+        #[test]
+        fn integer_expression_value_matches_the_tree(t in tree()) {
+            proptest::prop_assert_eq!(eval_int_expr(&t.text()), t.value());
+        }
+    }
+
+    #[test]
+    fn generic_value_that_is_an_integer_expression_gives_a_literal_bound() {
+        assert_eq!(resolved_high(Some("2 * 16")), RangeExpr::Literal(31));
     }
 }
