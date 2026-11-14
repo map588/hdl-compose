@@ -2148,7 +2148,9 @@ class FileOpenFilter : public QObject {
     std::function<void(const QString &)> m_on_open;
 };
 
-extern "C" int run_gui(int *argc, char **argv) {
+// `argv` holds the arguments of the process with no change; see gui::run in
+// mod.rs for the reason. `project` is the project to open, or null.
+extern "C" int run_gui(int *argc, char **argv, const char *project) {
     // HiDPI: pass-through fractional scale factors (e.g. 2x Retina) without
     // rounding — keeps fonts and pixmaps crisp on macOS.
     QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
@@ -2159,8 +2161,7 @@ extern "C" int run_gui(int *argc, char **argv) {
     app.setStyle(QStringLiteral("Fusion"));
     apply_material_dark_theme(app);
 
-    // argv is [program, optional project path]; see gui::run in mod.rs.
-    const QString initial_project = *argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString();
+    const QString initial_project = project ? QString::fromLocal8Bit(project) : QString();
 
     MainWindow window;
     app.installEventFilter(new FileOpenFilter([&window](const QString &path) { window.openFromSystem(path); }, &app));
