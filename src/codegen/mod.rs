@@ -256,6 +256,12 @@ fn substitute_generics(
     out
 }
 
+/// True when the expression `text` uses the identifier `name`.
+fn mentions_identifier(text: &str, name: &str) -> bool {
+    text.split(|c| !is_identifier_char(c))
+        .any(|word| word == name)
+}
+
 /// True when a bound of `port_type` uses the identifier `name`.
 pub(crate) fn port_type_mentions(port_type: &PortType, name: &str) -> bool {
     let PortType::StdLogicVector(range) = port_type else {
@@ -265,10 +271,16 @@ pub(crate) fn port_type_mentions(port_type: &PortType, name: &str) -> bool {
         .into_iter()
         .any(|bound| match bound {
             RangeExpr::Literal(_) => false,
-            RangeExpr::Expr(text) => text
-                .split(|c| !is_identifier_char(c))
-                .any(|word| word == name),
+            RangeExpr::Expr(text) => mentions_identifier(text, name),
         })
+}
+
+/// True when a generic_map value uses the identifier `name`: the value is
+/// the name, or an expression that contains it. A quoted string is text, so
+/// a word in it is not an identifier.
+pub(crate) fn generic_value_mentions(value: &str, name: &str) -> bool {
+    let value = value.trim();
+    !value.starts_with('"') && mentions_identifier(value, name)
 }
 
 /// Return a copy of `port_type` with the generics of the module resolved for

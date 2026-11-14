@@ -298,20 +298,22 @@ pub fn expand_hierarchy(schematic: &Schematic, library: &[ModuleDef]) -> Hierarc
 
         // Top generics referenced by member generic_maps travel with the
         // group: they become the group module's generics, and the parent
-        // instance passes them straight through by name. A top generic in
+        // instance passes them straight through by name. The value can be
+        // the name of the generic or an expression that uses it. A top generic in
         // the width of a boundary port travels too: the net can get its
         // width from an instance outside the group.
         let passthrough: Vec<GenericDef> = cur
             .top_generics
             .iter()
             .filter(|tg| {
-                gs.instances
+                gs.instances.iter().any(|i| {
+                    i.generic_map
+                        .values()
+                        .any(|v| crate::codegen::generic_value_mentions(v, &tg.name))
+                }) || gs
+                    .top_ports
                     .iter()
-                    .any(|i| i.generic_map.values().any(|v| v.trim() == tg.name))
-                    || gs
-                        .top_ports
-                        .iter()
-                        .any(|p| crate::codegen::port_type_mentions(&p.port_type, &tg.name))
+                    .any(|p| crate::codegen::port_type_mentions(&p.port_type, &tg.name))
             })
             .cloned()
             .collect();
@@ -714,5 +716,58 @@ mod tests {
         );
         assert!(inner.contains("T : integer := 16"), "{inner}");
         assert!(design.top_code.contains("T => T"), "{}", design.top_code);
+    }
+
+    /// Regression: `u_t` is in the group and sets `DIV` to the expression
+    /// `2 * TOP_DIV`. Only a value that was exactly the name of a top-level
+    /// generic carried the generic into the group, so the group used
+    /// `TOP_DIV` and did not declare it.
+    #[test]
+    fn top_generic_in_a_generic_map_expression_travels_with_the_group() {
+        let generic = |name: &str, default_value: &str| GenericDef {
+            name: name.into(),
+            type_name: "integer".into(),
+            default_value: Some(default_value.into()),
+        };
+        let mut timer = module(
+            "timer",
+            vec![("clk", Direction::In), ("tick", Direction::Out)],
+        );
+        timer.generics.push(generic("DIV", "1000"));
+
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.top_generics.push(generic("TOP_DIV", "500"));
+        for (name, direction) in [("clk", Direction::In), ("tick", Direction::Out)] {
+            s.top_ports.push(PortDef {
+                name: name.into(),
+                direction,
+                port_type: PortType::StdLogic,
+                bundle: None,
+            });
+        }
+        s.add_instance("u_t", "timer").unwrap();
+        s.set_generic_map_entry("u_t", "DIV", "2 * TOP_DIV")
+            .unwrap();
+        s.set_port_map_entry("u_t", "clk", Some(NetRef::TopPort("clk".into())))
+            .unwrap();
+        s.set_port_map_entry("u_t", "tick", Some(NetRef::TopPort("tick".into())))
+            .unwrap();
+        s.groups.push(Group {
+            name: "g".into(),
+            members: vec!["u_t".into()],
+            parent: None,
+            collapsed: false,
+            position: (0.0, 0.0),
+        });
+
+        let design = crate::codegen::generate_design(&s, &[timer]).unwrap();
+        let (_, group) = &design.files[0];
+        assert!(group.contains("DIV => 2 * TOP_DIV"), "{group}");
+        assert!(group.contains("TOP_DIV : integer := 500"), "{group}");
+        assert!(
+            design.top_code.contains("TOP_DIV => TOP_DIV"),
+            "{}",
+            design.top_code
+        );
     }
 }
