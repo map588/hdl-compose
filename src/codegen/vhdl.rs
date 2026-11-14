@@ -257,7 +257,7 @@ fn emit_instance(
         // references it) — connect it rather than leaving the net undriven.
         let pin = NetRef::InstancePort(inst.name.clone(), port.name.clone());
         let rhs = match inst.port_map.get(&port.name) {
-            Some(Some(net_ref)) => render_rhs_vhdl(nets, net_ref),
+            Some(Some(net_ref)) => render_rhs_vhdl(schematic, nets, net_ref),
             Some(None) | None => match nets.name_for(&pin) {
                 Some(name) => name.to_string(),
                 None => "open".to_string(),
@@ -275,9 +275,10 @@ fn emit_instance(
     writeln!(out, "    );").unwrap();
 }
 
-/// Render a NetRef as a VHDL association RHS. Slice variants use
-/// `(i)` for a single bit and `(high downto low)` for a range.
-fn render_rhs_vhdl(nets: &Nets, net_ref: &NetRef) -> String {
+/// Render a NetRef as a VHDL association RHS: the net, with `(i)` for a
+/// single bit and `(high downto low)` for a range when the reference
+/// selects part of the net (see `net_bits`).
+fn render_rhs_vhdl(schematic: &Schematic, nets: &Nets, net_ref: &NetRef) -> String {
     if let NetRef::Constant(lit) = net_ref {
         return lit.clone();
     }
@@ -285,15 +286,10 @@ fn render_rhs_vhdl(nets: &Nets, net_ref: &NetRef) -> String {
         .name_for(net_ref)
         .expect("rendered ref is always a net member")
         .to_string();
-    match net_ref {
-        NetRef::TopPort(_) | NetRef::InstancePort(_, _) => base_name,
-        NetRef::TopPortSlice(_, slice) | NetRef::InstancePortSlice(_, _, slice) => match slice {
-            SliceExpr::Bit(i) => format!("{base_name}({i})"),
-            SliceExpr::Range { high, low } => {
-                format!("{base_name}({high} downto {low})")
-            }
-        },
-        NetRef::Constant(_) => unreachable!("handled above"),
+    match crate::nets::net_bits(schematic, net_ref) {
+        None => base_name,
+        Some(SliceExpr::Bit(i)) => format!("{base_name}({i})"),
+        Some(SliceExpr::Range { high, low }) => format!("{base_name}({high} downto {low})"),
     }
 }
 

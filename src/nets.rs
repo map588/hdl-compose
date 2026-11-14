@@ -196,6 +196,57 @@ pub fn drivers_conflict(schematic: &Schematic, a: &NetRef, b: &NetRef) -> bool {
     }
 }
 
+/// The bits of its net that a reference selects. `None` is the full net.
+///
+/// A pin takes its place on the net from its own port_map entry: an entry
+/// with a slice puts the pin on those bits of the target, and the target can
+/// have a place of its own. A reference to the pin connects to the same
+/// bits, and a slice in the reference counts from the lowest bit of the pin.
+pub fn net_bits(schematic: &Schematic, reference: &NetRef) -> Option<SliceExpr> {
+    fn slice_of(r: &NetRef) -> Option<&SliceExpr> {
+        match r {
+            NetRef::TopPortSlice(_, s) | NetRef::InstancePortSlice(_, _, s) => Some(s),
+            _ => None,
+        }
+    }
+
+    let mut bits = slice_of(reference).cloned();
+    let mut pin = reference.base();
+    // References can form a loop (`a => b`, `b => a`). Stop at a pin that
+    // was already visited.
+    let mut visited = std::collections::HashSet::new();
+    while visited.insert(pin.clone()) {
+        let NetRef::InstancePort(inst_name, port_name) = &pin else {
+            break;
+        };
+        let entry = schematic
+            .instances
+            .iter()
+            .find(|i| &i.name == inst_name)
+            .and_then(|i| i.port_map.get(port_name));
+        let Some(Some(target)) = entry else { break };
+        if matches!(target, NetRef::Constant(_)) {
+            break;
+        }
+        if let Some(place) = slice_of(target) {
+            let lowest = match place {
+                SliceExpr::Bit(i) => *i,
+                SliceExpr::Range { high, low } => *high.min(low),
+            };
+            bits = Some(match bits {
+                None => place.clone(),
+                Some(SliceExpr::Bit(i)) => SliceExpr::Bit(lowest + i),
+                Some(SliceExpr::Range { high, low }) => SliceExpr::Range {
+                    high: lowest + high,
+                    low: lowest + low,
+                },
+            });
+        }
+        pin = target.base();
+    }
+    bits
+}
+
 pub(crate) fn has_literal_bounds(pt: &PortType) -> bool {
     match pt {
         PortType::StdLogicVector(r) => {
@@ -280,15 +331,23 @@ pub fn resolve_nets(schematic: &Schematic, library: &[ModuleDef]) -> Nets {
 
         // Declaration type: prefer the driver's resolved type, then any
         // member that resolves to literal bounds, then anything available.
-        let mut candidates = drivers
-            .iter()
-            .chain(members.iter())
-            .filter_map(|r| member_type(schematic, &lib_map, r));
-        let first = candidates.next();
-        let port_type = match &first {
-            Some(pt) if !has_literal_bounds(pt) => candidates.find(has_literal_bounds).or(first),
-            _ => first,
+        // A pin on a slice of the net has only part of the width, so the
+        // pins on the full net come first.
+        let type_from = |full_pins_only: bool| {
+            let mut candidates = drivers
+                .iter()
+                .chain(members.iter())
+                .filter(|r| !full_pins_only || net_bits(schematic, r).is_none())
+                .filter_map(|r| member_type(schematic, &lib_map, r));
+            let first = candidates.next();
+            match &first {
+                Some(pt) if !has_literal_bounds(pt) => {
+                    candidates.find(has_literal_bounds).or(first)
+                }
+                _ => first,
+            }
         };
+        let port_type = type_from(true).or_else(|| type_from(false));
 
         nets.push(Net {
             members,
@@ -524,5 +583,94 @@ mod tests {
         assert_eq!(nets.nets.len(), 1);
         assert_eq!(nets.nets[0].members.len(), 3);
         assert_eq!(nets.nets[0].name, "u_a_dout");
+    }
+
+    // --- net_bits ---
+
+    fn pin(inst: &str, port: &str) -> NetRef {
+        NetRef::InstancePort(inst.into(), port.into())
+    }
+
+    /// `u_a.dout` is on `bus[low + width - 1 : low]`. `u_b.din` connects to
+    /// `u_a.dout` through `reference`, and `u_c.din` references `u_b.din`.
+    fn placed(low: i32, width: i32, reference: NetRef) -> Schematic {
+        let mut s = ab_schematic();
+        s.add_instance("u_c", "mod_b").unwrap();
+        let place = SliceExpr::Range {
+            high: low + width - 1,
+            low,
+        };
+        s.set_port_map_entry(
+            "u_a",
+            "dout",
+            Some(NetRef::TopPortSlice("bus".into(), place)),
+        )
+        .unwrap();
+        s.set_port_map_entry("u_b", "din", Some(reference)).unwrap();
+        s.set_port_map_entry("u_c", "din", Some(pin("u_b", "din")))
+            .unwrap();
+        s
+    }
+
+    proptest::proptest! {
+        /// A reference to a pin that is on a slice of the net selects bits
+        /// of that slice, and a reference to the reference selects the same
+        /// bits.
+        #[test]
+        fn reference_to_a_placed_pin_stays_in_its_place(
+            low in 0i32..64,
+            width in 1i32..32,
+            x in 0i32..32,
+            y in 0i32..32,
+        ) {
+            let sub_low = x.min(y) % width;
+            let sub_high = sub_low + (x.max(y) - x.min(y)) % (width - sub_low);
+            let cases = [
+                (
+                    pin("u_a", "dout"),
+                    SliceExpr::Range { high: low + width - 1, low },
+                ),
+                (
+                    NetRef::InstancePortSlice("u_a".into(), "dout".into(), SliceExpr::Bit(sub_low)),
+                    SliceExpr::Bit(low + sub_low),
+                ),
+                (
+                    NetRef::InstancePortSlice(
+                        "u_a".into(),
+                        "dout".into(),
+                        SliceExpr::Range { high: sub_high, low: sub_low },
+                    ),
+                    SliceExpr::Range { high: low + sub_high, low: low + sub_low },
+                ),
+            ];
+            for (reference, expected) in cases {
+                let s = placed(low, width, reference.clone());
+                proptest::prop_assert_eq!(net_bits(&s, &reference), Some(expected.clone()));
+                proptest::prop_assert_eq!(net_bits(&s, &pin("u_b", "din")), Some(expected));
+            }
+        }
+    }
+
+    #[test]
+    fn net_bits_of_a_reference_without_a_slice_is_the_full_net() {
+        let mut s = ab_schematic();
+        s.set_port_map_entry("u_b", "din", Some(pin("u_a", "dout")))
+            .unwrap();
+        assert_eq!(net_bits(&s, &pin("u_a", "dout")), None);
+        assert_eq!(net_bits(&s, &NetRef::TopPort("clk".into())), None);
+    }
+
+    #[test]
+    fn net_bits_stops_on_a_reference_loop() {
+        let mut s = ab_schematic();
+        s.set_port_map_entry("u_a", "dout", Some(pin("u_b", "din")))
+            .unwrap();
+        s.set_port_map_entry("u_b", "din", Some(pin("u_a", "dout")))
+            .unwrap();
+        assert_eq!(net_bits(&s, &pin("u_a", "dout")), None);
+        // A pin that references itself only gives the net its name.
+        s.set_port_map_entry("u_a", "dout", Some(pin("u_a", "dout")))
+            .unwrap();
+        assert_eq!(net_bits(&s, &pin("u_a", "dout")), None);
     }
 }

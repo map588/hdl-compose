@@ -398,3 +398,147 @@ pub fn check_errors(diagnostics: &[Diagnostic]) -> Result<(), CodegenError> {
         Err(CodegenError::ValidationErrors(errors))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vector(high: i64) -> PortType {
+        PortType::StdLogicVector(Range {
+            high: RangeExpr::Literal(high),
+            low: RangeExpr::Literal(0),
+            dir: RangeDir::Downto,
+        })
+    }
+
+    fn port(name: &str, direction: Direction, port_type: PortType) -> PortDef {
+        PortDef {
+            name: name.into(),
+            direction,
+            port_type,
+            bundle: None,
+        }
+    }
+
+    fn module(name: &str, ports: Vec<PortDef>) -> ModuleDef {
+        ModuleDef {
+            name: name.into(),
+            generics: Vec::new(),
+            ports,
+            source_path: format!("{name}.vhd").into(),
+            source_hash: 0,
+            dependencies: Vec::new(),
+        }
+    }
+
+    /// The project from the defect report. Two 8-bit outputs drive the two
+    /// halves of the 16-bit top-level port `wide`, and `u_led.value` (8 bits)
+    /// references the output `u_hi.count`, which is on `wide[15:8]`.
+    fn slice_reference_project(language: Language) -> (Schematic, Vec<ModuleDef>) {
+        let mut s = Schematic::new("slices", language);
+        s.top_ports.push(port("wide", Direction::Out, vector(15)));
+        s.top_ports
+            .push(port("led", Direction::Out, PortType::StdLogic));
+        for (name, high, low) in [("u_lo", 7, 0), ("u_hi", 15, 8)] {
+            s.add_instance(name, "byte_source").unwrap();
+            s.set_port_map_entry(
+                name,
+                "count",
+                Some(NetRef::TopPortSlice(
+                    "wide".into(),
+                    SliceExpr::Range { high, low },
+                )),
+            )
+            .unwrap();
+        }
+        s.add_instance("u_led", "led_driver").unwrap();
+        s.set_port_map_entry(
+            "u_led",
+            "value",
+            Some(NetRef::InstancePort("u_hi".into(), "count".into())),
+        )
+        .unwrap();
+        s.set_port_map_entry("u_led", "led", Some(NetRef::TopPort("led".into())))
+            .unwrap();
+        let lib = vec![
+            module(
+                "byte_source",
+                vec![port("count", Direction::Out, vector(7))],
+            ),
+            module(
+                "led_driver",
+                vec![
+                    port("value", Direction::In, vector(7)),
+                    port("led", Direction::Out, PortType::StdLogic),
+                ],
+            ),
+        ];
+        (s, lib)
+    }
+
+    /// Regression: the reference connected `value` to all 16 bits of `wide_s`.
+    #[test]
+    fn reference_to_a_pin_on_a_slice_connects_to_that_slice() {
+        let (s, lib) = slice_reference_project(Language::Vhdl);
+        let diags = s.validate(&lib);
+        assert!(diags.is_empty(), "{diags:?}");
+        let vhdl = generate_design(&s, &lib).unwrap().top_code;
+        assert!(vhdl.contains("value => wide_s(15 downto 8)"), "{vhdl}");
+        assert!(vhdl.contains("count => wide_s(15 downto 8)"), "{vhdl}");
+        assert!(vhdl.contains("count => wide_s(7 downto 0)"), "{vhdl}");
+
+        let (s, lib) = slice_reference_project(Language::SystemVerilog);
+        let sv = generate_design(&s, &lib).unwrap().top_code;
+        assert!(sv.contains(".value(wide_s[15:8])"), "{sv}");
+    }
+
+    /// Regression: two 4-bit outputs drive the two halves of the 8-bit input
+    /// `u_led.value`. The signal took the width of one of the outputs.
+    #[test]
+    fn net_that_outputs_drive_in_slices_has_the_width_of_the_full_pin() {
+        let mut s = Schematic::new("inner", Language::Vhdl);
+        s.top_ports
+            .push(port("led", Direction::Out, PortType::StdLogic));
+        for (name, high, low) in [("u_lo", 3, 0), ("u_hi", 7, 4)] {
+            s.add_instance(name, "nibble_source").unwrap();
+            s.set_port_map_entry(
+                name,
+                "count",
+                Some(NetRef::InstancePortSlice(
+                    "u_led".into(),
+                    "value".into(),
+                    SliceExpr::Range { high, low },
+                )),
+            )
+            .unwrap();
+        }
+        s.add_instance("u_led", "led_driver").unwrap();
+        s.set_port_map_entry("u_led", "led", Some(NetRef::TopPort("led".into())))
+            .unwrap();
+        let lib = vec![
+            module(
+                "nibble_source",
+                vec![port("count", Direction::Out, vector(3))],
+            ),
+            module(
+                "led_driver",
+                vec![
+                    port("value", Direction::In, vector(7)),
+                    port("led", Direction::Out, PortType::StdLogic),
+                ],
+            ),
+        ];
+        let diags = s.validate(&lib);
+        assert!(diags.is_empty(), "{diags:?}");
+        let vhdl = generate_design(&s, &lib).unwrap().top_code;
+        let signals: Vec<&str> = vhdl
+            .lines()
+            .filter(|l| l.trim_start().starts_with("signal ") && l.contains("count"))
+            .collect();
+        assert_eq!(signals.len(), 1, "{vhdl}");
+        assert!(
+            signals[0].ends_with(": std_logic_vector(7 downto 0);"),
+            "{vhdl}"
+        );
+    }
+}
