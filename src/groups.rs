@@ -123,8 +123,10 @@ pub struct BoundaryPort {
     pub name: String,
     pub direction: Direction,
     pub port_type: PortType,
-    /// One representative pin outside the group on this net (driver
-    /// preferred) — what the parent-level group instance connects to.
+    /// One representative pin outside the group that is on the full net
+    /// (driver preferred) — what the parent-level group instance connects
+    /// to. None when each pin outside is on a slice of the net: those pins
+    /// reach the group through their own references.
     pub outside_ref: Option<NetRef>,
 }
 
@@ -163,11 +165,14 @@ pub fn derive_boundary(
         } else {
             Direction::In
         };
+        // The port of the group is the full net. A pin on a slice of the
+        // net cannot stand for it.
+        let full_outside = |r: &&NetRef| !is_inside(r) && nets.bits(s, r).is_none();
         let outside_ref = net
             .drivers
             .iter()
-            .find(|d| !is_inside(d))
-            .or(outs.first().copied())
+            .find(full_outside)
+            .or(outs.iter().copied().find(full_outside))
             .cloned();
         let port_type = net.port_type.clone().unwrap_or(PortType::StdLogic);
         // Port name: prefer the parent top port's bare name (a net named
@@ -256,6 +261,27 @@ pub fn expand_hierarchy(schematic: &Schematic, library: &[ModuleDef]) -> Hierarc
             _ => false, // top ports and constants are outside
         };
 
+        // A boundary port is the full net. A reference that crosses the
+        // boundary keeps the bits of the net that it selects: `on_port`
+        // gives those bits in the index numbers of the port, or None for
+        // the full port. The nets are those before this group collapses.
+        let before = cur.clone();
+        let nets = resolve_nets(&before, &lib);
+        let port_low: HashMap<&str, i32> = ports
+            .iter()
+            .map(|p| (p.name.as_str(), crate::nets::lowest_index(&p.port_type)))
+            .collect();
+        let on_port = |r: &NetRef, port_name: &str| {
+            let lowest = port_low.get(port_name).copied().unwrap_or(0);
+            nets.bits(&before, r).map(|offsets| match offsets {
+                SliceExpr::Bit(i) => SliceExpr::Bit(i + lowest),
+                SliceExpr::Range { high, low } => SliceExpr::Range {
+                    high: high + lowest,
+                    low: low + lowest,
+                },
+            })
+        };
+
         // Build the group schematic: member instances with outside refs
         // rewritten to the derived top ports.
         let mut gs = Schematic::new(&g.name, cur.language.clone());
@@ -278,12 +304,26 @@ pub fn expand_hierarchy(schematic: &Schematic, library: &[ModuleDef]) -> Hierarc
                 }
                 // Outside pin → the boundary port carrying that net.
                 if let Some(port_name) = port_for_pin.get(&r.base()) {
-                    *entry = Some(match r {
-                        NetRef::InstancePortSlice(_, _, s) | NetRef::TopPortSlice(_, s) => {
-                            NetRef::TopPortSlice(port_name.clone(), s.clone())
-                        }
-                        _ => NetRef::TopPort(port_name.clone()),
+                    *entry = Some(match on_port(r, port_name) {
+                        Some(slice) => NetRef::TopPortSlice(port_name.clone(), slice),
+                        None => NetRef::TopPort(port_name.clone()),
                     });
+                }
+            }
+            // A pin of this instance can be on a boundary net only because
+            // other pins reference it: it has no entry, or it references
+            // itself. In the group nothing would connect it to the boundary
+            // port, and the port would have nothing behind it.
+            for (pin, port_name) in &port_for_pin {
+                if let NetRef::InstancePort(inst_name, port) = pin
+                    && inst_name == &inst.name
+                    && match inst.port_map.get(port) {
+                        None | Some(None) => true,
+                        Some(Some(own)) => own.base() == *pin,
+                    }
+                {
+                    inst.port_map
+                        .insert(port.clone(), Some(NetRef::TopPort(port_name.clone())));
                 }
             }
             gs.instances.push(inst);
@@ -356,12 +396,10 @@ pub fn expand_hierarchy(schematic: &Schematic, library: &[ModuleDef]) -> Hierarc
         }
         let mut group_port_map: HashMap<String, Option<NetRef>> = HashMap::new();
         for p in &ports {
-            // Nets driven outside (or via a top port either way) get an
-            // explicit entry; inside-driven internal nets are connected by
-            // the outside consumers referencing the group pin.
-            if let Some(r) = &p.outside_ref
-                && (p.direction != Direction::Out || matches!(r, NetRef::TopPort(_)))
-            {
+            // The group pin references a pin outside that is on the full
+            // net. This connects the net also when no pin outside holds a
+            // reference to a pin in the group.
+            if let Some(r) = &p.outside_ref {
                 group_port_map.insert(p.name.clone(), Some(r.clone()));
             }
         }
@@ -390,13 +428,11 @@ pub fn expand_hierarchy(schematic: &Schematic, library: &[ModuleDef]) -> Hierarc
                     && inside.contains(i)
                     && let Some(port_name) = port_for_pin.get(&r.base())
                 {
-                    *entry = Some(match r {
-                        NetRef::InstancePortSlice(_, _, s) => NetRef::InstancePortSlice(
-                            inst_name.clone(),
-                            port_name.clone(),
-                            s.clone(),
-                        ),
-                        _ => NetRef::InstancePort(inst_name.clone(), port_name.clone()),
+                    *entry = Some(match on_port(r, port_name) {
+                        Some(slice) => {
+                            NetRef::InstancePortSlice(inst_name.clone(), port_name.clone(), slice)
+                        }
+                        None => NetRef::InstancePort(inst_name.clone(), port_name.clone()),
                     });
                 }
             }
@@ -766,6 +802,262 @@ mod tests {
         assert!(group.contains("TOP_DIV : integer := 500"), "{group}");
         assert!(
             design.top_code.contains("TOP_DIV => TOP_DIV"),
+            "{}",
+            design.top_code
+        );
+    }
+
+    // --- Nets that cross the boundary of a group ---
+
+    fn typed_module(name: &str, ports: Vec<(&str, Direction, PortType)>) -> ModuleDef {
+        let mut m = module(name, vec![]);
+        m.ports = ports
+            .into_iter()
+            .map(|(name, direction, port_type)| PortDef {
+                name: name.into(),
+                direction,
+                port_type,
+                bundle: None,
+            })
+            .collect();
+        m
+    }
+
+    fn bits(high: i64) -> PortType {
+        PortType::StdLogicVector(Range {
+            high: RangeExpr::Literal(high),
+            low: RangeExpr::Literal(0),
+            dir: RangeDir::Downto,
+        })
+    }
+
+    fn pin(inst: &str, port: &str) -> NetRef {
+        NetRef::InstancePort(inst.into(), port.into())
+    }
+
+    /// `u_pulse.count` (8 bits, output) feeds `u_led.value`, and `u_led.led`
+    /// is the top-level port `led`. `connect` writes the reference between
+    /// the two instances, and the group `core` holds `members`.
+    fn generate_grouped(
+        members: &[&str],
+        connect: impl FnOnce(&mut Schematic),
+    ) -> crate::codegen::GeneratedDesign {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.top_ports.push(PortDef {
+            name: "led".into(),
+            direction: Direction::Out,
+            port_type: PortType::StdLogic,
+            bundle: None,
+        });
+        s.add_instance("u_pulse", "pulse_gen").unwrap();
+        s.add_instance("u_led", "led_driver").unwrap();
+        s.set_port_map_entry("u_led", "led", Some(NetRef::TopPort("led".into())))
+            .unwrap();
+        connect(&mut s);
+        s.groups.push(Group {
+            name: "core".into(),
+            members: members.iter().map(|m| m.to_string()).collect(),
+            parent: None,
+            collapsed: false,
+            position: (0.0, 0.0),
+        });
+        let lib = vec![
+            typed_module("pulse_gen", vec![("count", Direction::Out, bits(7))]),
+            typed_module(
+                "led_driver",
+                vec![
+                    ("value", Direction::In, bits(7)),
+                    ("led", Direction::Out, PortType::StdLogic),
+                ],
+            ),
+        ];
+        let errors: Vec<_> = s
+            .validate(&lib)
+            .into_iter()
+            .filter(|d| d.is_error())
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}");
+        crate::codegen::generate_design(&s, &lib).unwrap()
+    }
+
+    /// No port of an instance may stay open, in the group or in the top.
+    fn assert_connected(design: &crate::codegen::GeneratedDesign) {
+        let (_, group) = &design.files[0];
+        assert!(!group.contains("open"), "{group}");
+        assert!(!design.top_code.contains("open"), "{}", design.top_code);
+    }
+
+    /// Regression: the driver is in the group, and only the consumer
+    /// outside the group holds the reference. In the group, `count` was
+    /// `open` and the output port of the group had no driver.
+    #[test]
+    fn output_of_a_group_is_driven_when_the_outside_holds_the_reference() {
+        let design = generate_grouped(&["u_pulse"], |s| {
+            s.set_port_map_entry("u_led", "value", Some(pin("u_pulse", "count")))
+                .unwrap();
+        });
+        assert_connected(&design);
+        let (_, group) = &design.files[0];
+        assert!(group.contains("count => u_pulse_count_s"), "{group}");
+        assert!(
+            group.contains("u_pulse_count <= u_pulse_count_s;"),
+            "{group}"
+        );
+    }
+
+    /// The same net with the reference on the driver, to itself. This is
+    /// the convention of `tests/projects/hdlc/gen_hdlc.py`.
+    #[test]
+    fn output_of_a_group_is_driven_when_the_driver_references_itself() {
+        let design = generate_grouped(&["u_pulse"], |s| {
+            s.set_port_map_entry("u_pulse", "count", Some(pin("u_pulse", "count")))
+                .unwrap();
+            s.set_port_map_entry("u_led", "value", Some(pin("u_pulse", "count")))
+                .unwrap();
+        });
+        assert_connected(&design);
+        let (_, group) = &design.files[0];
+        assert!(group.contains("count => u_pulse_count_s"), "{group}");
+        assert!(
+            group.contains("u_pulse_count <= u_pulse_count_s;"),
+            "{group}"
+        );
+    }
+
+    /// Regression: the driver in the group holds the reference to the
+    /// consumer outside. The top level did not connect the group to the
+    /// consumer.
+    #[test]
+    fn output_of_a_group_reaches_the_outside_when_the_driver_holds_the_reference() {
+        let design = generate_grouped(&["u_pulse"], |s| {
+            s.set_port_map_entry("u_pulse", "count", Some(pin("u_led", "value")))
+                .unwrap();
+        });
+        assert_connected(&design);
+    }
+
+    /// The consumer is in the group, and the driver outside holds no
+    /// reference.
+    #[test]
+    fn input_of_a_group_is_connected_when_the_inside_holds_the_reference() {
+        let design = generate_grouped(&["u_led"], |s| {
+            s.set_port_map_entry("u_led", "value", Some(pin("u_pulse", "count")))
+                .unwrap();
+        });
+        assert_connected(&design);
+    }
+
+    /// `u_lo.count` and `u_hi.count` drive the halves of the top-level
+    /// port `wide`, and `u_led.value` references `u_hi.count`, which is on
+    /// `wide[15:8]`. `members` are in the group `core`.
+    fn generate_sliced_group(members: &[&str]) -> crate::codegen::GeneratedDesign {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        for (name, port_type) in [("wide", bits(15)), ("led", PortType::StdLogic)] {
+            s.top_ports.push(PortDef {
+                name: name.into(),
+                direction: Direction::Out,
+                port_type,
+                bundle: None,
+            });
+        }
+        for (name, high, low) in [("u_lo", 7, 0), ("u_hi", 15, 8)] {
+            s.add_instance(name, "pulse_gen").unwrap();
+            s.set_port_map_entry(
+                name,
+                "count",
+                Some(NetRef::TopPortSlice(
+                    "wide".into(),
+                    SliceExpr::Range { high, low },
+                )),
+            )
+            .unwrap();
+        }
+        s.add_instance("u_led", "led_driver").unwrap();
+        s.set_port_map_entry("u_led", "value", Some(pin("u_hi", "count")))
+            .unwrap();
+        s.set_port_map_entry("u_led", "led", Some(NetRef::TopPort("led".into())))
+            .unwrap();
+        s.groups.push(Group {
+            name: "core".into(),
+            members: members.iter().map(|m| m.to_string()).collect(),
+            parent: None,
+            collapsed: false,
+            position: (0.0, 0.0),
+        });
+        let lib = vec![
+            typed_module("pulse_gen", vec![("count", Direction::Out, bits(7))]),
+            typed_module(
+                "led_driver",
+                vec![
+                    ("value", Direction::In, bits(7)),
+                    ("led", Direction::Out, PortType::StdLogic),
+                ],
+            ),
+        ];
+        crate::codegen::generate_design(&s, &lib).unwrap()
+    }
+
+    /// Regression: a reference from the group to a pin outside that is on
+    /// a slice of the net became a reference to the full boundary port.
+    #[test]
+    fn reference_into_a_group_keeps_the_bits_of_the_pin_outside() {
+        let design = generate_sliced_group(&["u_led"]);
+        let (_, group) = &design.files[0];
+        assert!(group.contains("value => wide_s(15 downto 8)"), "{group}");
+    }
+
+    /// Regression: a reference from outside to a pin in the group that is
+    /// on a slice of the net became a reference to the full group port.
+    /// `u_tap.value` (in the group) is on `wide[15:8]`, and `u_led.value`
+    /// (outside) references `u_tap.value`.
+    #[test]
+    fn reference_out_of_a_group_keeps_the_bits_of_the_pin_inside() {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        for (name, direction, port_type) in [
+            ("wide", Direction::In, bits(15)),
+            ("led", Direction::Out, PortType::StdLogic),
+        ] {
+            s.top_ports.push(PortDef {
+                name: name.into(),
+                direction,
+                port_type,
+                bundle: None,
+            });
+        }
+        s.add_instance("u_tap", "led_driver").unwrap();
+        s.set_port_map_entry(
+            "u_tap",
+            "value",
+            Some(NetRef::TopPortSlice(
+                "wide".into(),
+                SliceExpr::Range { high: 15, low: 8 },
+            )),
+        )
+        .unwrap();
+        s.add_instance("u_led", "led_driver").unwrap();
+        s.set_port_map_entry("u_led", "value", Some(pin("u_tap", "value")))
+            .unwrap();
+        s.set_port_map_entry("u_led", "led", Some(NetRef::TopPort("led".into())))
+            .unwrap();
+        s.groups.push(Group {
+            name: "core".into(),
+            members: vec!["u_tap".into()],
+            parent: None,
+            collapsed: false,
+            position: (0.0, 0.0),
+        });
+        let lib = vec![typed_module(
+            "led_driver",
+            vec![
+                ("value", Direction::In, bits(7)),
+                ("led", Direction::Out, PortType::StdLogic),
+            ],
+        )];
+        let design = crate::codegen::generate_design(&s, &lib).unwrap();
+        let (_, group) = &design.files[0];
+        assert!(group.contains("value => wide_s(15 downto 8)"), "{group}");
+        assert!(
+            design.top_code.contains("value => wide_s(15 downto 8)"),
             "{}",
             design.top_code
         );
