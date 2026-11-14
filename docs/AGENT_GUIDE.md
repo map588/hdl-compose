@@ -30,10 +30,14 @@
 5. Run `hdlc codegen <top>.hdlc -o <top>.vhd` (or `.sv`).
 6. Run `hdlc check <top>.hdlc`. It elaborates the generated top level and the
    leaf modules with ghdl (VHDL) or verilator (SystemVerilog). It finds what
-   only the HDL tool can know: an error in a leaf module, and a width that
-   `hdlc` cannot calculate (a width from a generic with no integer value, a
-   `Record` or `Other` type). Exit code 0 is clean, 1 is tool errors, 2 is a
-   missing tool or a codegen failure.
+   only the HDL tool can know, such as an error in a leaf module. Exit code
+   0 is clean, 1 is tool errors, 2 is a missing tool or a codegen failure.
+
+`hdlc validate` calculates a width from a generic when the generic has an
+integer value. For a top-level generic it uses the default value. It makes no
+check for a width that it cannot calculate: a generic with no integer value,
+a `Record` or `Other` type. ghdl can accept a mismatch of such a width in
+`hdlc check` and report it only when the simulation starts (`hdlc sim`).
 
 Other commands: `hdlc inspect <top>.hdlc` prints a summary, `hdlc synth` runs
 yosys, `hdlc sim` runs `<top>_tb`, and `hdlc schema` prints the JSON Schema.
