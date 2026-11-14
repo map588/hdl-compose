@@ -8,7 +8,7 @@ name = "hdl_compose"
 path = "src/lib.rs"
 
 [[bin]]
-name = "hdl-compose"
+name = "hdlc"
 path = "src/main.rs"
 
 [dependencies]

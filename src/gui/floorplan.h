@@ -1,6 +1,6 @@
 // Chip view: the device as nextpnr placed the design on it.
 //
-// The data is `<top>.floorplan.json`, which `hdl-compose build` writes (see
+// The data is `<top>.floorplan.json`, which `hdlc build` writes (see
 // `src/floorplan.rs`). Free bels are grey outlines. Each tile that holds
 // cells of the design gets a colored square; the color is the cell kind
 // that the tile holds most of. The used bels inside the tile are solid.

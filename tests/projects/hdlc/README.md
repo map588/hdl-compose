@@ -29,8 +29,8 @@ Regenerate after any structural change (run from this directory):
 
 ```sh
 python3 gen_hdlc.py
-hdl-compose codegen voice_chain.hdlc -o rtl/gen/voice_chain.vhd
-hdl-compose codegen synth_top.hdlc   -o rtl/gen/synth_top.vhd
+hdlc codegen voice_chain.hdlc -o rtl/gen/voice_chain.vhd
+hdlc codegen synth_top.hdlc   -o rtl/gen/synth_top.vhd
 ./run_sims.sh            # or ./run_sims.sh /path/to/ghdl
 ```
 
@@ -40,8 +40,8 @@ hdl-compose (CLI or GUI) with cwd here.
 Toolchain checks (oss-cad-suite on PATH):
 
 ```sh
-hdl-compose check synth_top.hdlc     # ghdl elaboration of the generated top
-hdl-compose synth synth_top.hdlc     # yosys synthesizability + cell stats
+hdlc check synth_top.hdlc     # ghdl elaboration of the generated top
+hdlc synth synth_top.hdlc     # yosys synthesizability + cell stats
 ```
 
 `*.toolchain.json` sidecars tell those commands what the .hdlc files can't:

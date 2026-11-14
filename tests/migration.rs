@@ -2,7 +2,7 @@
 //!
 //! `load_project` migrates older supported versions in-process (missing
 //! fields fill via serde defaults); `save_project` always writes
-//! CURRENT_VERSION. `hdl-compose migrate` is just load + save, so these
+//! CURRENT_VERSION. `hdlc migrate` is just load + save, so these
 //! tests pin the CLI's behavior too.
 
 use std::path::PathBuf;
@@ -58,7 +58,7 @@ fn migrate_rewrites_at_current_version() {
     let dir = TempDir::new().unwrap();
     let path = write_temp(&dir, "old.hdlc", V2_PROJECT);
 
-    // load + save is exactly what `hdl-compose migrate` does.
+    // load + save is exactly what `hdlc migrate` does.
     let (schematic, _) = load_project(&path).unwrap();
     save_project(&schematic, &path).unwrap();
 

@@ -1,6 +1,6 @@
 .PHONY: build release run gui check test fmt clippy clean app app-release app-debug app-bundle help
 
-BIN := hdl-compose
+BIN := hdlc
 APP_BUNDLE := /Applications/hdl-compose.app
 LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 

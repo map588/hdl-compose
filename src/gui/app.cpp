@@ -2053,7 +2053,7 @@ class MainWindow : public QMainWindow {
         m_tool_verb = verb;
         m_tool_dock->show();
         m_tool_output->appendPlainText(
-            QStringLiteral("== hdl-compose %1 ==").arg(args.join(QStringLiteral(" "))));
+            QStringLiteral("== hdlc %1 ==").arg(args.join(QStringLiteral(" "))));
         for (QAction *a : std::as_const(m_toolchain_actions)) {
             a->setEnabled(false);
         }

@@ -210,7 +210,7 @@ preserve mtime); the file watcher path goes through the same reload.
 ## Code generation
 
 Deterministic, readable, no tool-added metadata. One file per schematic.
-File → Generate HDL... in the GUI; `hdl-compose codegen` from the CLI.
+File → Generate HDL... in the GUI; `hdlc codegen` from the CLI.
 
 ### Top-level intermediate signals
 
@@ -267,7 +267,7 @@ from source on load.
 
 Loader supports v2 (no `manual_bundles`), v3 (no `consumer_slices`), and v4;
 older fields fill via serde defaults. Versions outside that window are
-rejected. `hdl-compose migrate <files>` rewrites projects in place at the
+rejected. `hdlc migrate <files>` rewrites projects in place at the
 current version (idempotent). Loader also runs `cleanup_stale_refs` to drop
 port_map / alias entries pointing at instances that no longer exist.
 
@@ -361,5 +361,5 @@ tests/
   hardware/            — board definition used for the hardware-verified flow
 docs/
   FORMAT.md            — .hdlc file format reference
-  hdlc.schema.json     — JSON Schema (output of `hdl-compose schema`)
+  hdlc.schema.json     — JSON Schema (output of `hdlc schema`)
 ```

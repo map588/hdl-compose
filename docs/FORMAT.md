@@ -2,11 +2,11 @@
 
 A `.hdlc` file is JSON: a `version` field plus the schematic, flattened into
 one object. The authoritative machine-readable schema is
-[`hdlc.schema.json`](hdlc.schema.json) (regenerate with `hdl-compose schema`).
+[`hdlc.schema.json`](hdlc.schema.json) (regenerate with `hdlc schema`).
 For a working starting point, run:
 
 ```sh
-hdl-compose new my_top -l vhdl --example
+hdlc new my_top -l vhdl --example
 ```
 
 which creates `my_top.hdlc` plus two example HDL sources, wired together.
@@ -26,7 +26,7 @@ the instance to a **reference**:
 | `null`                                       | explicitly unconnected        |
 
 **A reference is a connectivity statement, not a naming convention.**
-`hdl-compose` merges all mutually-reachable pins into one net, so
+`hdlc` merges all mutually-reachable pins into one net, so
 `B.din => A.dout` and `A.dout => B.din` describe the same wire — the
 direction you write it never matters, and you never need self-references.
 
@@ -81,5 +81,5 @@ emit first. With `-o <top file>`, group files are written next to it as
 
 ## CLI exit codes
 
-`hdl-compose validate` exits 0 when clean, 1 with warnings only, 2 with
+`hdlc validate` exits 0 when clean, 1 with warnings only, 2 with
 errors (or when the project fails to load/parse).

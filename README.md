@@ -40,23 +40,23 @@ starts from Finder and opens `.hdlc` files on double-click.
 ## Quick start
 
 ```sh
-hdl-compose new demo -l vhdl --example   # working two-module example project
-hdl-compose codegen demo.hdlc            # print the generated top level
-hdl-compose check demo.hdlc              # elaborate it with ghdl (needs oss-cad-suite)
-hdl-compose demo.hdlc                    # open it in the GUI
+hdlc new demo -l vhdl --example   # working two-module example project
+hdlc codegen demo.hdlc            # print the generated top level
+hdlc check demo.hdlc              # elaborate it with ghdl (needs oss-cad-suite)
+hdlc demo.hdlc                    # open it in the GUI
 ```
 
 ## CLI
 
 ```sh
-hdl-compose [project.hdlc]               # launch GUI; no path reopens the most recent project
-hdl-compose parse <file.vhd|.sv|.v>      # print a file's module ports + generics
-hdl-compose new <name> -l vhdl|sv        # create a project (--example adds demo modules)
-hdl-compose validate <project.hdlc>      # report diagnostics (exit 0/1/2)
-hdl-compose codegen <project.hdlc> [-o out.vhd]
-hdl-compose inspect <project.hdlc>       # summary + library status
-hdl-compose migrate <a.hdlc> [b.hdlc ..] # rewrite older projects at the current version
-hdl-compose schema                       # JSON Schema for the .hdlc format
+hdlc [project.hdlc]               # launch GUI; no path reopens the most recent project
+hdlc parse <file.vhd|.sv|.v>      # print a file's module ports + generics
+hdlc new <name> -l vhdl|sv        # create a project (--example adds demo modules)
+hdlc validate <project.hdlc>      # report diagnostics (exit 0/1/2)
+hdlc codegen <project.hdlc> [-o out.vhd]
+hdlc inspect <project.hdlc>       # summary + library status
+hdlc migrate <a.hdlc> [b.hdlc ..] # rewrite older projects at the current version
+hdlc schema                       # JSON Schema for the .hdlc format
 ```
 
 ## Toolchain commands
@@ -67,12 +67,12 @@ PATH only, so activate your
 first (or have the individual tools installed).
 
 ```sh
-hdl-compose check <project.hdlc>         # elaborate: ghdl (VHDL) / verilator --lint-only (SV)
-hdl-compose synth <project.hdlc>         # generic yosys synthesis + cell stats
-hdl-compose sim <project.hdlc> [--wave]  # run <top>_tb via ghdl / iverilog; --wave opens surfer or gtkwave
-hdl-compose fpga <project.hdlc> --family ice40|ecp5|gowin   # emit a Makefile + constraints skeleton
-hdl-compose build <project.hdlc> --board <x.board.json>     # bitstream: yosys, nextpnr, pack
-hdl-compose flash <project.hdlc> --board <x.board.json>     # program via openFPGALoader (SRAM; --flash writes config flash)
+hdlc check <project.hdlc>         # elaborate: ghdl (VHDL) / verilator --lint-only (SV)
+hdlc synth <project.hdlc>         # generic yosys synthesis + cell stats
+hdlc sim <project.hdlc> [--wave]  # run <top>_tb via ghdl / iverilog; --wave opens surfer or gtkwave
+hdlc fpga <project.hdlc> --family ice40|ecp5|gowin   # emit a Makefile + constraints skeleton
+hdlc build <project.hdlc> --board <x.board.json>     # bitstream: yosys, nextpnr, pack
+hdlc flash <project.hdlc> --board <x.board.json>     # program via openFPGALoader (SRAM; --flash writes config flash)
 ```
 
 Notes:
@@ -233,7 +233,7 @@ own generated module file, and the top level instantiates it.
 ## Project file (`.hdlc`)
 
 JSON via serde. Current schema version is 5 (adds hierarchical groups);
-versions 2 through 4 load with defaults and `hdl-compose migrate` rewrites
+versions 2 through 4 load with defaults and `hdlc migrate` rewrites
 them in place. Module definitions are never persisted; they are re-derived
 from source on every load so the tool notices when a source file changed.
 

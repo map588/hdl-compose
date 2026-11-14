@@ -11,7 +11,7 @@ use hdl_compose::types::{Language, Schematic};
 
 #[derive(Parser)]
 #[command(
-    name = "hdl-compose",
+    name = "hdlc",
     version,
     about = "Structural HDL composition tool",
     args_conflicts_with_subcommands = true
@@ -425,7 +425,7 @@ fn build_example_project(name: &str, language: &Language) -> Result<Schematic, S
 /// CURRENT_VERSION. Idempotent: files already current are rewritten as-is.
 fn cmd_migrate(projects: &[PathBuf]) -> ExitCode {
     if projects.is_empty() {
-        error!("usage: hdl-compose migrate <path.hdlc> [<path.hdlc> ...]");
+        error!("usage: hdlc migrate <path.hdlc> [<path.hdlc> ...]");
         return ExitCode::from(2);
     }
     let mut failed = 0;
@@ -1042,28 +1042,34 @@ mod tests {
 
     #[test]
     fn bare_project_path_opens_the_gui() {
-        let cli = Cli::try_parse_from(["hdl-compose", "demo.hdlc"]).unwrap();
+        let cli = Cli::try_parse_from(["hdlc", "demo.hdlc"]).unwrap();
         assert!(cli.command.is_none());
         assert_eq!(cli.project, Some(PathBuf::from("demo.hdlc")));
     }
 
     #[test]
     fn gui_subcommand_takes_an_optional_project() {
-        let cli = Cli::try_parse_from(["hdl-compose", "gui", "demo.hdlc"]).unwrap();
+        let cli = Cli::try_parse_from(["hdlc", "gui", "demo.hdlc"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Gui { project: Some(p) }) if p.as_os_str() == "demo.hdlc"
         ));
-        let cli = Cli::try_parse_from(["hdl-compose", "gui"]).unwrap();
+        let cli = Cli::try_parse_from(["hdlc", "gui"]).unwrap();
         assert!(matches!(cli.command, Some(Command::Gui { project: None })));
     }
 
     #[test]
     fn subcommands_still_take_precedence_over_the_project_path() {
-        let cli = Cli::try_parse_from(["hdl-compose", "codegen", "demo.hdlc"]).unwrap();
+        let cli = Cli::try_parse_from(["hdlc", "codegen", "demo.hdlc"]).unwrap();
         assert!(cli.project.is_none());
         assert!(matches!(cli.command, Some(Command::Codegen { .. })));
-        let cli = Cli::try_parse_from(["hdl-compose"]).unwrap();
+        let cli = Cli::try_parse_from(["hdlc"]).unwrap();
         assert!(cli.project.is_none() && cli.command.is_none());
+    }
+
+    #[test]
+    fn the_binary_is_named_hdlc() {
+        assert_eq!(Cli::command().get_name(), "hdlc");
+        assert_eq!(env!("CARGO_BIN_NAME"), "hdlc");
     }
 }
