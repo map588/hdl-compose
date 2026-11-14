@@ -680,4 +680,46 @@ mod tests {
         let sv = generate_design(&s, &lib).unwrap().top_code;
         assert!(sv.contains("wire [TOP_W - 1:0] u_gen_count;"), "{sv}");
     }
+
+    /// Regression: `u_a` connects only `count[28:24]`, and `u_b.value` (5
+    /// bits) references that pin. Validation compared 5 bits with the 29
+    /// bits of the port, and the signal had 29 bits.
+    #[test]
+    fn net_of_a_pin_with_a_consumer_slice_has_the_width_of_the_slice() {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.top_ports
+            .push(port("led", Direction::Out, PortType::StdLogic));
+        s.add_instance("u_a", "pulse_gen")
+            .unwrap()
+            .consumer_slices
+            .insert("count".into(), SliceExpr::Range { high: 28, low: 24 });
+        s.add_instance("u_b", "led_driver").unwrap();
+        s.set_port_map_entry(
+            "u_b",
+            "value",
+            Some(NetRef::InstancePort("u_a".into(), "count".into())),
+        )
+        .unwrap();
+        s.set_port_map_entry("u_b", "led", Some(NetRef::TopPort("led".into())))
+            .unwrap();
+        let lib = vec![
+            module("pulse_gen", vec![port("count", Direction::Out, vector(28))]),
+            module(
+                "led_driver",
+                vec![
+                    port("value", Direction::In, vector(4)),
+                    port("led", Direction::Out, PortType::StdLogic),
+                ],
+            ),
+        ];
+        let diags = s.validate(&lib);
+        assert!(diags.is_empty(), "{diags:?}");
+        let vhdl = generate_design(&s, &lib).unwrap().top_code;
+        assert!(
+            vhdl.contains("signal u_a_count : std_logic_vector(4 downto 0);"),
+            "{vhdl}"
+        );
+        assert!(vhdl.contains("count(28 downto 24) => u_a_count"), "{vhdl}");
+        assert!(vhdl.contains("value => u_a_count"), "{vhdl}");
+    }
 }

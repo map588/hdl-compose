@@ -124,6 +124,23 @@ fn is_driver_capable(dir: &Direction, is_top: bool) -> bool {
     )
 }
 
+/// The type of an instance pin: the bits that the instance connects.
+///
+/// With a consumer slice the instance connects only those bits of the port
+/// (`count(28 downto 24) => net`), so the pin has the width of the slice.
+/// Else the pin is the port, with the generics resolved for the instance.
+pub fn instance_pin_type(inst: &Instance, module: &ModuleDef, port: &PortDef) -> PortType {
+    match inst.consumer_slices.get(&port.name) {
+        Some(SliceExpr::Bit(_)) => PortType::StdLogic,
+        Some(SliceExpr::Range { high, low }) => PortType::StdLogicVector(Range {
+            high: RangeExpr::Literal(i64::from(high.abs_diff(*low))),
+            low: RangeExpr::Literal(0),
+            dir: RangeDir::Downto,
+        }),
+        None => resolve_port_type(&port.port_type, &module.generics, &inst.generic_map),
+    }
+}
+
 /// Declaration type contributed by one member pin, resolved against the
 /// owning instance's generic map where possible.
 fn member_type(
@@ -141,11 +158,7 @@ fn member_type(
             let inst = schematic.instances.iter().find(|i| &i.name == inst_name)?;
             let module = lib_map.get(inst.module_ref.as_str())?;
             let port = module.ports.iter().find(|p| &p.name == port_name)?;
-            Some(resolve_port_type(
-                &port.port_type,
-                &module.generics,
-                &inst.generic_map,
-            ))
+            Some(instance_pin_type(inst, module, port))
         }
         _ => None,
     }

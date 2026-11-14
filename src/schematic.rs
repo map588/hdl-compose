@@ -502,10 +502,11 @@ impl Schematic {
                     continue;
                 }
 
-                // The type of this port, with its generics evaluated.
+                // The type of this pin: the consumer slice if there is
+                // one, else the port with its generics evaluated.
                 let pin_type = module_def.and_then(|m| {
                     let port = module_ports.get(port_name.as_str())?;
-                    Some(instance_port_type(port, m, inst))
+                    Some(crate::nets::instance_pin_type(inst, m, port))
                 });
 
                 let Some(net_ref) = net_ref_opt else {
@@ -611,7 +612,11 @@ impl Schematic {
                                     port_name,
                                     pin_type,
                                     &driver_port.name,
-                                    &instance_port_type(driver_port, ref_module, ref_instance),
+                                    &crate::nets::instance_pin_type(
+                                        ref_instance,
+                                        ref_module,
+                                        driver_port,
+                                    ),
                                 );
                             }
                         } else {
@@ -647,14 +652,9 @@ impl Schematic {
                 }
 
                 // A reference with a slice connects the pin to the bits of
-                // the slice. The pin is the consumer slice if there is one,
-                // else the full port.
+                // the slice.
                 if let Some(slice) = slice_opt
-                    && let Some(pin_width) = inst
-                        .consumer_slices
-                        .get(port_name)
-                        .map(slice_width)
-                        .or_else(|| pin_type.as_ref().and_then(port_width))
+                    && let Some(pin_width) = pin_type.as_ref().and_then(port_width)
                     && pin_width != slice_width(slice)
                 {
                     diags.push(
@@ -810,13 +810,6 @@ fn unconnected_diag(port_name: &str, port_def: Option<&PortDef>) -> Diagnostic {
         )),
         _ => Diagnostic::warning(format!("port '{port_name}' is unconnected")),
     }
-}
-
-/// The type of an instance port, with the bounds that depend on generics
-/// evaluated for this instance. A bound that uses a generic with no integer
-/// value stays an expression, so the width check makes no claim for it.
-fn instance_port_type(port: &PortDef, module: &ModuleDef, inst: &Instance) -> PortType {
-    crate::codegen::resolve_port_type(&port.port_type, &module.generics, &inst.generic_map)
 }
 
 /// Check width compatibility between the types of two connected ports.
@@ -1491,6 +1484,53 @@ mod tests {
                 .any(|d| d.is_error() && d.message.contains("width mismatch")),
             "{diags:?}"
         );
+    }
+
+    /// The 29-bit output `count` with a consumer slice, on the top-level
+    /// port `led`. This is the project of the codegen test
+    /// `sliced_wide_driver_intermediate_uses_port_width`.
+    fn consumer_slice_on_a_top_port(slice: SliceExpr, led: PortType) -> Vec<String> {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.top_ports.push(make_port("led", Direction::Out, led));
+        s.add_instance("u_pulse", "pulse_gen").unwrap();
+        s.set_port_map_entry("u_pulse", "count", Some(NetRef::TopPort("led".into())))
+            .unwrap();
+        s.instances[0].consumer_slices.insert("count".into(), slice);
+        let lib = vec![make_module(
+            "pulse_gen",
+            vec![make_port("count", Direction::Out, literal_vector(28))],
+        )];
+        s.validate(&lib)
+            .into_iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.message)
+            .collect()
+    }
+
+    fn literal_vector(high: i64) -> PortType {
+        PortType::StdLogicVector(Range {
+            high: RangeExpr::Literal(high),
+            low: RangeExpr::Literal(0),
+            dir: RangeDir::Downto,
+        })
+    }
+
+    #[test]
+    fn consumer_slice_sets_the_width_of_the_pin() {
+        let five_bits = SliceExpr::Range { high: 28, low: 24 };
+        // Regression: "width mismatch: port is 29 bits but driver 'led' is
+        // 5 bits" for five bits of the port on a 5-bit top-level port.
+        let errors = consumer_slice_on_a_top_port(five_bits.clone(), literal_vector(4));
+        assert!(errors.is_empty(), "{errors:?}");
+
+        // Regression: one bit of the port on a scalar was a mismatch.
+        let errors = consumer_slice_on_a_top_port(SliceExpr::Bit(3), PortType::StdLogic);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        // The five bits do not fit an 8-bit top-level port.
+        let errors = consumer_slice_on_a_top_port(five_bits, literal_vector(7));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("port is 5 bits"), "{errors:?}");
     }
 
     /// An 8-bit output on a slice of the 16-bit top-level port `wide`.
