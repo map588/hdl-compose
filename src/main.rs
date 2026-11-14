@@ -739,7 +739,9 @@ fn stage_project(
     let design = match codegen::generate_design(&schematic, &library) {
         Ok(d) => d,
         Err(e) => {
-            report_design_error(e, !schematic.groups.is_empty());
+            // The exit code from the report is for `codegen`. A failure to
+            // stage always exits with code 2.
+            let _ = report_design_error(e, !schematic.groups.is_empty());
             return Err(ExitCode::from(2));
         }
     };

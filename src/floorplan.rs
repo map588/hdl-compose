@@ -298,7 +298,8 @@ impl Floorplan {
     /// An empty result shows that the tile rule (`TILE_PITCH`) agrees with
     /// this nextpnr version and device.
     pub fn unmatched_tiles(&self) -> Vec<(u32, u32)> {
-        let drawn: BTreeSet<_> = self.used.chunks_exact(4).map(tile_of).collect();
+        let (rects, _) = self.used.as_chunks::<4>();
+        let drawn: BTreeSet<_> = rects.iter().map(|rect| tile_of(rect)).collect();
         let placed: BTreeSet<_> = self.cells.iter().map(|c| (c.x, c.y)).collect();
         placed.difference(&drawn).copied().collect()
     }
