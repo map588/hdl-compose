@@ -21,27 +21,19 @@
 3. Write `<top>.hdlc`. Copy the example below, or run
    `hdlc new <top> -l vhdl|sv`, which writes an empty `<top>.hdlc` into the
    current directory.
-4. Run `hdlc validate <top>.hdlc`. Exit code 0 is clean, 1 is warnings only,
-   2 is errors. Correct the file until no error stays, and until each
-   warning that stays is for an output that you do not use.
+4. Run `hdlc validate <top>.hdlc`. It reports a name that does not exist (a
+   module, a port, a generic, an instance, a top-level port), a width
+   mismatch, a net with more than one driver, and a port with no connection.
+   Exit code 0 is clean, 1 is warnings only, 2 is errors. Correct the file
+   until no error stays, and until each warning that stays is for an output
+   that you do not use.
 5. Run `hdlc codegen <top>.hdlc -o <top>.vhd` (or `.sv`).
 6. Run `hdlc check <top>.hdlc`. It elaborates the generated top level and the
-   leaf modules with ghdl (VHDL) or verilator (SystemVerilog). Exit code 0 is
-   clean, 1 is tool errors, 2 is a missing tool or a codegen failure.
-
-Step 6 is not optional. `hdlc validate` does not find these defects, and
-`hdlc check` finds most of them:
-
-- A `port_map` key that is not a port of the module. Codegen drops the entry
-  and gives no message.
-- A `generic_map` key that is not a generic of the module.
-- A width mismatch between connected ports.
-- A reference to an instance that does not exist. The loader removes the
-  reference and the port stays unconnected.
-
-No command finds a top-level port that no `port_map` entry references. The
-port stays in the generated module with no connection. Make sure that each
-top-level port appears in a `port_map`.
+   leaf modules with ghdl (VHDL) or verilator (SystemVerilog). It finds what
+   only the HDL tool can know: an error in a leaf module, and a width that
+   `hdlc` cannot calculate (a width from a generic with no integer value, a
+   `Record` or `Other` type). Exit code 0 is clean, 1 is tool errors, 2 is a
+   missing tool or a codegen failure.
 
 Other commands: `hdlc inspect <top>.hdlc` prints a summary, `hdlc synth` runs
 yosys, `hdlc sim` runs `<top>_tb`, and `hdlc schema` prints the JSON Schema.
@@ -161,9 +153,9 @@ Each instance has these fields:
   and the top-level inputs.
 - An output that you do not use needs no `port_map` entry. `hdlc validate`
   gives a warning for it. This is the only warning that you can accept.
-- When an instance output drives a slice of a wider net (`TopPortSlice`), a
-  reference to that output from a different instance connects to the full
-  net. To read part of the net, reference the slice.
+- An instance output can drive a slice of a wider net (`TopPortSlice`,
+  `InstancePortSlice`). A reference to that output from a different instance
+  connects to the same bits.
 - To use a generated module as a leaf module of a different project, write it
   to a file with `hdlc codegen -o`, then put that file in the `library_paths`
   of the parent project.
