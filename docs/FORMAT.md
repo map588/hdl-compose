@@ -21,9 +21,13 @@ the instance to a **reference**:
 | `{"InstancePort": ["u_a", "dout"]}`          | pin `u_a.dout`                |
 | `{"TopPort": "clk"}`                         | top-level port `clk`          |
 | `{"InstancePortSlice": ["u_a","dout",{"Bit":3}]}` | bit 3 of `u_a.dout`      |
-| `{"TopPortSlice": ["bus",{"Range":{"high":7,"low":0}}]}` | `bus[7:0]`     |
+| `{"TopPortSlice": ["data",{"Range":{"high":7,"low":0}}]}` | `data[7:0]`   |
 | `{"Constant": "'0'"}`                        | literal tie (emitted verbatim)|
 | `null`                                       | explicitly unconnected        |
+
+A slice uses the index numbers of the port that it names: for a port
+`std_logic_vector(15 downto 8)`, the bits are 8 to 15. In a `Range`, `high`
+is the larger index, also for an ascending port such as `(0 to 7)`.
 
 **A reference is a connectivity statement, not a naming convention.**
 `hdlc` merges all mutually-reachable pins into one net, so

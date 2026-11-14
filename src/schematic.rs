@@ -666,22 +666,35 @@ impl Schematic {
                     }
                 }
 
-                // Slice-range check against the width of the referenced pin.
-                if let (Some(slice), Some(driver_type)) = (slice_opt, &driver_type)
-                    && let Some(dw) = width_at_defaults(driver_type, &self.top_generics)
-                {
-                    let (hi, lo) = match slice {
-                        SliceExpr::Bit(i) => (*i, *i),
-                        SliceExpr::Range { high, low } => (*high, *low),
-                    };
-                    if lo < 0 || hi < lo || (hi as u32) >= dw {
-                        diags.push(
-                            Diagnostic::error(format!(
-                                "slice [{hi}:{lo}] is out of range for driver of width {dw}"
-                            ))
-                            .with_instance(&inst.name)
-                            .with_port(port_name),
-                        );
+                // Slice-range check against the index numbers of the
+                // referenced pin: 8 to 15 for a `(15 downto 8)` port.
+                if let (Some(slice), Some(driver_type)) = (slice_opt, &driver_type) {
+                    let driver_type = crate::codegen::resolve_port_type(
+                        driver_type,
+                        &self.top_generics,
+                        &HashMap::new(),
+                    );
+                    if let Some(dw) = port_width(&driver_type) {
+                        let lowest = crate::nets::lowest_index(&driver_type);
+                        let highest = lowest + dw as i32 - 1;
+                        let (hi, lo) = match slice {
+                            SliceExpr::Bit(i) => (*i, *i),
+                            SliceExpr::Range { high, low } => (*high, *low),
+                        };
+                        if hi < lo || lo < lowest || hi > highest {
+                            let indexes = if lowest == 0 {
+                                String::new()
+                            } else {
+                                format!(" (indexes {lowest} to {highest})")
+                            };
+                            diags.push(
+                                Diagnostic::error(format!(
+                                    "slice [{hi}:{lo}] is out of range for driver of width {dw}{indexes}"
+                                ))
+                                .with_instance(&inst.name)
+                                .with_port(port_name),
+                            );
+                        }
                     }
                 }
 
@@ -778,7 +791,7 @@ impl Schematic {
                 let mut conflicting: Vec<&NetRef> = Vec::new();
                 for (i, a) in hard_drivers.iter().enumerate() {
                     for b in &hard_drivers[i + 1..] {
-                        if crate::nets::drivers_conflict(self, a, b) {
+                        if nets.drivers_conflict(self, a, b) {
                             if !conflicting.contains(a) {
                                 conflicting.push(a);
                             }
@@ -1831,6 +1844,63 @@ mod tests {
             1
         );
         assert!(reserved_word_errors(Language::Vhdl, |_| {}).is_empty());
+    }
+
+    /// `u_b.ena` takes the bit `bit` of `u_a.count`, whose type is
+    /// `std_logic_vector(15 downto 8)`.
+    fn bit_of_a_15_downto_8_port(bit: i32) -> Vec<String> {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.add_instance("u_a", "src").unwrap();
+        s.add_instance("u_b", "gate").unwrap();
+        s.set_port_map_entry(
+            "u_b",
+            "ena",
+            Some(NetRef::InstancePortSlice(
+                "u_a".into(),
+                "count".into(),
+                SliceExpr::Bit(bit),
+            )),
+        )
+        .unwrap();
+        let lib = vec![
+            make_module(
+                "src",
+                vec![make_port(
+                    "count",
+                    Direction::Out,
+                    PortType::StdLogicVector(Range {
+                        high: RangeExpr::Literal(15),
+                        low: RangeExpr::Literal(8),
+                        dir: RangeDir::Downto,
+                    }),
+                )],
+            ),
+            make_module(
+                "gate",
+                vec![make_port("ena", Direction::In, PortType::StdLogic)],
+            ),
+        ];
+        s.validate(&lib)
+            .into_iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.message)
+            .collect()
+    }
+
+    /// Regression: the range check took the indexes 0 to 7 for each 8-bit
+    /// port. Bit 9 was an error, and bit 3 passed.
+    #[test]
+    fn slice_range_uses_the_index_numbers_of_the_port() {
+        for bit in [8, 9, 15] {
+            let errors = bit_of_a_15_downto_8_port(bit);
+            assert!(errors.is_empty(), "bit {bit}: {errors:?}");
+        }
+        for bit in [3, 7, 16] {
+            let errors = bit_of_a_15_downto_8_port(bit);
+            assert_eq!(errors.len(), 1, "bit {bit}: {errors:?}");
+            assert!(errors[0].contains("out of range"), "{errors:?}");
+            assert!(errors[0].contains("8 to 15"), "{errors:?}");
+        }
     }
 
     /// An 8-bit output on a slice of the 16-bit top-level port `wide`.

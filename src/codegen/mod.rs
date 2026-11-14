@@ -138,11 +138,12 @@ pub fn port_type_to_vhdl(pt: &PortType) -> String {
         PortType::StdLogicVector(range) => {
             let high = range_expr_to_string(&range.high);
             let low = range_expr_to_string(&range.low);
-            let dir = match range.dir {
-                RangeDir::Downto => "downto",
-                RangeDir::To => "to",
-            };
-            format!("std_logic_vector({high} {dir} {low})")
+            // `high` and `low` are the numeric bounds. An ascending range
+            // starts at the low bound: `(0 to 7)`.
+            match range.dir {
+                RangeDir::Downto => format!("std_logic_vector({high} downto {low})"),
+                RangeDir::To => format!("std_logic_vector({low} to {high})"),
+            }
         }
         PortType::Record(name) => name.clone(),
         PortType::Other(s) => s.clone(),
@@ -439,26 +440,67 @@ pub fn collect_top_intermediates(
         if net.name == port.name {
             continue;
         }
-        // The intermediate stands in for the PORT, so it takes the port's
-        // own type whenever that type is fully literal. The net's resolved
-        // type (driver-side generics applied) is only for ports whose bounds
-        // reference generics — a sliced or narrower driver must not shrink
-        // or widen the port-adjacent signal.
-        let port_type = if crate::nets::has_literal_bounds(&port.port_type) {
-            port.port_type.clone()
-        } else {
-            net.port_type
-                .clone()
-                .unwrap_or_else(|| port.port_type.clone())
-        };
         out.push(TopIntermediate {
             port_name: port.name.clone(),
             sig_name: net.name.clone(),
-            port_type,
+            port_type: top_signal_type(port, net),
             direction: port.direction.clone(),
         });
     }
     out
+}
+
+/// The type of the signal for a net with a top-level port.
+///
+/// The intermediate stands in for the PORT, so it takes the port's own type
+/// whenever that type is fully literal. The net's resolved type (driver-side
+/// generics applied) is only for ports whose bounds reference generics — a
+/// sliced or narrower driver must not shrink or widen the port-adjacent
+/// signal.
+fn top_signal_type(port: &PortDef, net: &crate::nets::Net) -> PortType {
+    if crate::nets::has_literal_bounds(&port.port_type) {
+        port.port_type.clone()
+    } else {
+        net.port_type
+            .clone()
+            .unwrap_or_else(|| port.port_type.clone())
+    }
+}
+
+/// The part of its signal that a reference selects, in the index numbers of
+/// the signal, and true when the signal is ascending. `None` is the full
+/// signal.
+///
+/// `Nets::bits` gives offsets from the lowest bit of the net. The signal of
+/// the net can start at a different index (`(15 downto 8)`), and a slice of
+/// an ascending signal must be ascending too.
+pub(crate) fn signal_slice(
+    schematic: &Schematic,
+    nets: &crate::nets::Nets,
+    reference: &NetRef,
+) -> Option<(SliceExpr, bool)> {
+    let offsets = nets.bits(schematic, reference)?;
+    let signal_type = nets.net_for(reference).and_then(|net| {
+        let top_port = net.members.iter().find_map(|member| match member {
+            NetRef::TopPort(name) => schematic.top_ports.iter().find(|p| &p.name == name),
+            _ => None,
+        });
+        match top_port {
+            Some(port) => Some(top_signal_type(port, net)),
+            None => net.port_type.clone(),
+        }
+    });
+    let (lowest, ascending) = signal_type.as_ref().map_or((0, false), |t| {
+        (crate::nets::lowest_index(t), crate::nets::is_ascending(t))
+    });
+    let slice = match offsets {
+        SliceExpr::Bit(i) => SliceExpr::Bit(i + lowest),
+        SliceExpr::Range { high, low } => SliceExpr::Range {
+            high: high.max(low) + lowest,
+            low: high.min(low) + lowest,
+        },
+    };
+    Some((slice, ascending))
 }
 
 /// Find a context (module + instance generic_map) that can resolve the type of
@@ -945,5 +987,171 @@ mod tests {
     #[test]
     fn generic_value_that_is_an_integer_expression_gives_a_literal_bound() {
         assert_eq!(resolved_high(Some("2 * 16")), RangeExpr::Literal(31));
+    }
+
+    // --- Vectors whose lowest index is not 0, and ascending vectors ---
+
+    fn vector_range(high: i64, low: i64, dir: RangeDir) -> PortType {
+        PortType::StdLogicVector(Range {
+            high: RangeExpr::Literal(high),
+            low: RangeExpr::Literal(low),
+            dir,
+        })
+    }
+
+    /// `u_x.dout` has the type `dout_type`, and `u_g.ena` (one bit) takes
+    /// the bit `bit` of it. `connect` can put `u_x.dout` on a top-level port.
+    fn bit_of_a_vector(
+        language: Language,
+        dout_type: PortType,
+        bit: i32,
+        connect: impl FnOnce(&mut Schematic),
+    ) -> String {
+        let mut s = Schematic::new("top", language);
+        s.add_instance("u_x", "src").unwrap();
+        s.add_instance("u_g", "gate").unwrap();
+        s.set_port_map_entry(
+            "u_g",
+            "ena",
+            Some(NetRef::InstancePortSlice(
+                "u_x".into(),
+                "dout".into(),
+                SliceExpr::Bit(bit),
+            )),
+        )
+        .unwrap();
+        connect(&mut s);
+        let lib = vec![
+            module("src", vec![port("dout", Direction::Out, dout_type)]),
+            module("gate", vec![port("ena", Direction::In, PortType::StdLogic)]),
+        ];
+        let errors: Vec<_> = s
+            .validate(&lib)
+            .into_iter()
+            .filter(|d| d.is_error())
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}");
+        generate_design(&s, &lib).unwrap().top_code
+    }
+
+    /// Regression: bit 9 of a `(15 downto 8)` port was "out of range".
+    #[test]
+    fn slice_uses_the_index_numbers_of_the_referenced_port() {
+        let hdl = bit_of_a_vector(
+            Language::Vhdl,
+            vector_range(15, 8, RangeDir::Downto),
+            9,
+            |_| {},
+        );
+        assert!(
+            hdl.contains("signal u_x_dout : std_logic_vector(15 downto 8);"),
+            "{hdl}"
+        );
+        assert!(hdl.contains("ena => u_x_dout(9)"), "{hdl}");
+    }
+
+    /// The signal of the net is the top-level port `data(7 downto 0)`, so
+    /// bit 9 of the `(15 downto 8)` port is bit 1 of the signal.
+    #[test]
+    fn slice_is_translated_to_the_index_numbers_of_the_signal() {
+        let hdl = bit_of_a_vector(
+            Language::Vhdl,
+            vector_range(15, 8, RangeDir::Downto),
+            9,
+            |s| {
+                s.top_ports.push(port(
+                    "data",
+                    Direction::Out,
+                    vector_range(7, 0, RangeDir::Downto),
+                ));
+                s.set_port_map_entry("u_x", "dout", Some(NetRef::TopPort("data".into())))
+                    .unwrap();
+            },
+        );
+        assert!(hdl.contains("ena => data_s(1)"), "{hdl}");
+    }
+
+    /// `u_x.dout` is on `wide[15:8]`. Bit 9 of the `(15 downto 8)` port is
+    /// the second bit of the pin, which is bit 9 of `wide`.
+    #[test]
+    fn slice_of_a_pin_on_a_slice_counts_from_the_lowest_index_of_the_pin() {
+        let hdl = bit_of_a_vector(
+            Language::Vhdl,
+            vector_range(15, 8, RangeDir::Downto),
+            9,
+            |s| {
+                s.top_ports.push(port(
+                    "wide",
+                    Direction::Out,
+                    vector_range(15, 0, RangeDir::Downto),
+                ));
+                s.set_port_map_entry(
+                    "u_x",
+                    "dout",
+                    Some(NetRef::TopPortSlice(
+                        "wide".into(),
+                        SliceExpr::Range { high: 15, low: 8 },
+                    )),
+                )
+                .unwrap();
+            },
+        );
+        assert!(hdl.contains("dout => wide_s(15 downto 8)"), "{hdl}");
+        assert!(hdl.contains("ena => wide_s(9)"), "{hdl}");
+    }
+
+    /// Regression: an ascending VHDL range was written as `7 to 0`, which
+    /// is a null range. The parser stores `(0 to 7)` as high 7, low 0, To.
+    #[test]
+    fn ascending_range_is_written_from_low_to_high() {
+        let ascending = vector_range(7, 0, RangeDir::To);
+        assert_eq!(port_type_to_vhdl(&ascending), "std_logic_vector(0 to 7)");
+
+        let hdl = bit_of_a_vector(Language::Vhdl, ascending, 2, |_| {});
+        assert!(
+            hdl.contains("signal u_x_dout : std_logic_vector(0 to 7);"),
+            "{hdl}"
+        );
+        assert!(hdl.contains("ena => u_x_dout(2)"), "{hdl}");
+    }
+
+    /// A slice of an ascending signal must be ascending too.
+    #[test]
+    fn slice_of_an_ascending_signal_is_ascending() {
+        for (language, expected) in [
+            (Language::Vhdl, "din => u_x_dout(2 to 5)"),
+            (Language::SystemVerilog, ".din(u_x_dout[2:5])"),
+        ] {
+            // SystemVerilog `[0:7]` is stored as written: high 0, low 7.
+            let dout_type = match language {
+                Language::Vhdl => vector_range(7, 0, RangeDir::To),
+                Language::SystemVerilog => vector_range(0, 7, RangeDir::Downto),
+            };
+            let mut s = Schematic::new("top", language);
+            s.add_instance("u_x", "src").unwrap();
+            s.add_instance("u_n", "nibble").unwrap();
+            s.set_port_map_entry(
+                "u_n",
+                "din",
+                Some(NetRef::InstancePortSlice(
+                    "u_x".into(),
+                    "dout".into(),
+                    SliceExpr::Range { high: 5, low: 2 },
+                )),
+            )
+            .unwrap();
+            let lib = vec![
+                module("src", vec![port("dout", Direction::Out, dout_type)]),
+                module("nibble", vec![port("din", Direction::In, vector(3))]),
+            ];
+            let errors: Vec<_> = s
+                .validate(&lib)
+                .into_iter()
+                .filter(|d| d.is_error())
+                .collect();
+            assert!(errors.is_empty(), "{errors:?}");
+            let hdl = generate_design(&s, &lib).unwrap().top_code;
+            assert!(hdl.contains(expected), "{hdl}");
+        }
     }
 }

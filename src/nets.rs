@@ -48,6 +48,8 @@ impl Net {
 pub struct Nets {
     pub nets: Vec<Net>,
     index: HashMap<NetRef, usize>,
+    /// The lowest index of the type of each pin (see `lowest_index`).
+    lows: HashMap<NetRef, i32>,
 }
 
 impl Nets {
@@ -59,6 +61,41 @@ impl Nets {
     /// Signal name for the net containing the given pin.
     pub fn name_for(&self, r: &NetRef) -> Option<&str> {
         self.net_for(r).map(|n| n.name.as_str())
+    }
+
+    /// The bits of its net that a reference selects, as offsets from the
+    /// lowest bit of the net. `None` is the full net.
+    ///
+    /// A pin takes its place on the net from its own port_map entry: an
+    /// entry with a slice puts the pin on those bits of the target, and the
+    /// target can have a place of its own. A reference to the pin connects
+    /// to the same bits. A slice uses the index numbers of the pin that it
+    /// names: bit 9 of a `(15 downto 8)` port is the second bit of the pin.
+    pub fn bits(&self, schematic: &Schematic, reference: &NetRef) -> Option<SliceExpr> {
+        let low = |pin: &NetRef| self.lows.get(pin).copied().unwrap_or(0);
+        net_bits(schematic, &low, reference)
+    }
+
+    /// Do two drivers of one net conflict? Each driver is on the bits of
+    /// the net that `bits` gives, through each pin between it and the net.
+    /// The drivers conflict when those bits overlap; disjoint slices of one
+    /// vector are fine. A driver on the full net conflicts with each other
+    /// driver.
+    pub fn drivers_conflict(&self, schematic: &Schematic, a: &NetRef, b: &NetRef) -> bool {
+        fn bounds(s: &SliceExpr) -> (i32, i32) {
+            match s {
+                SliceExpr::Bit(i) => (*i, *i),
+                SliceExpr::Range { high, low } => (*low.min(high), *high.max(low)),
+            }
+        }
+        match (self.bits(schematic, a), self.bits(schematic, b)) {
+            (Some(x), Some(y)) => {
+                let (al, ah) = bounds(&x);
+                let (bl, bh) = bounds(&y);
+                al <= bh && bl <= ah
+            }
+            _ => true,
+        }
     }
 }
 
@@ -164,42 +201,65 @@ fn member_type(
     }
 }
 
-/// Do two drivers of one net conflict? Each driver is on the bits of the
-/// net that `net_bits` gives, through each pin between it and the net. The
-/// drivers conflict when those bits overlap; disjoint slices of one vector
-/// are fine. A driver on the full net conflicts with each other driver.
-pub fn drivers_conflict(schematic: &Schematic, a: &NetRef, b: &NetRef) -> bool {
-    fn bits(s: &SliceExpr) -> (i32, i32) {
-        match s {
-            SliceExpr::Bit(i) => (*i, *i),
-            SliceExpr::Range { high, low } => (*low.min(high), *high.max(low)),
-        }
-    }
-    match (net_bits(schematic, a), net_bits(schematic, b)) {
-        (Some(x), Some(y)) => {
-            let (al, ah) = bits(&x);
-            let (bl, bh) = bits(&y);
-            al <= bh && bl <= ah
-        }
-        _ => true,
+/// The lowest index of a vector type: 8 for `(15 downto 8)`, 0 for
+/// `(0 to 7)`. 0 for a type that is not a vector, and for a bound that has
+/// no literal value.
+pub fn lowest_index(port_type: &PortType) -> i32 {
+    let PortType::StdLogicVector(range) = port_type else {
+        return 0;
+    };
+    let literal = |bound: &RangeExpr| match bound {
+        RangeExpr::Literal(v) => i32::try_from(*v).ok(),
+        RangeExpr::Expr(_) => None,
+    };
+    match (literal(&range.high), literal(&range.low)) {
+        // SystemVerilog `[0:7]` is stored as written, with the 0 in `high`.
+        (Some(high), Some(low)) => high.min(low),
+        (None, Some(low)) => low,
+        _ => 0,
     }
 }
 
-/// The bits of its net that a reference selects. `None` is the full net.
-///
-/// A pin takes its place on the net from its own port_map entry: an entry
-/// with a slice puts the pin on those bits of the target, and the target can
-/// have a place of its own. A reference to the pin connects to the same
-/// bits, and a slice in the reference counts from the lowest bit of the pin.
-pub fn net_bits(schematic: &Schematic, reference: &NetRef) -> Option<SliceExpr> {
+/// True when the indexes of a vector type go up from left to right: VHDL
+/// `(0 to 7)`, SystemVerilog `[0:7]`.
+pub fn is_ascending(port_type: &PortType) -> bool {
+    let PortType::StdLogicVector(range) = port_type else {
+        return false;
+    };
+    range.dir == RangeDir::To
+        || matches!(
+            (&range.high, &range.low),
+            (RangeExpr::Literal(high), RangeExpr::Literal(low)) if high < low
+        )
+}
+
+/// See `Nets::bits`. `low` gives the lowest index of the type of a pin.
+fn net_bits(
+    schematic: &Schematic,
+    low: &dyn Fn(&NetRef) -> i32,
+    reference: &NetRef,
+) -> Option<SliceExpr> {
     fn slice_of(r: &NetRef) -> Option<&SliceExpr> {
         match r {
             NetRef::TopPortSlice(_, s) | NetRef::InstancePortSlice(_, _, s) => Some(s),
             _ => None,
         }
     }
+    fn shift(s: &SliceExpr, by: i32) -> SliceExpr {
+        match s {
+            SliceExpr::Bit(i) => SliceExpr::Bit(i + by),
+            SliceExpr::Range { high, low } => SliceExpr::Range {
+                high: high + by,
+                low: low + by,
+            },
+        }
+    }
+    /// A slice of `pin`, as offsets from the lowest bit of the pin.
+    fn offsets(r: &NetRef, low: &dyn Fn(&NetRef) -> i32) -> Option<SliceExpr> {
+        slice_of(r).map(|s| shift(s, -low(&r.base())))
+    }
 
-    let mut bits = slice_of(reference).cloned();
+    let mut bits = offsets(reference, low);
     let mut pin = reference.base();
     // References can form a loop (`a => b`, `b => a`). Stop at a pin that
     // was already visited.
@@ -217,18 +277,14 @@ pub fn net_bits(schematic: &Schematic, reference: &NetRef) -> Option<SliceExpr> 
         if matches!(target, NetRef::Constant(_)) {
             break;
         }
-        if let Some(place) = slice_of(target) {
+        if let Some(place) = offsets(target, low) {
             let lowest = match place {
-                SliceExpr::Bit(i) => *i,
-                SliceExpr::Range { high, low } => *high.min(low),
+                SliceExpr::Bit(i) => i,
+                SliceExpr::Range { high, low } => high.min(low),
             };
             bits = Some(match bits {
-                None => place.clone(),
-                Some(SliceExpr::Bit(i)) => SliceExpr::Bit(lowest + i),
-                Some(SliceExpr::Range { high, low }) => SliceExpr::Range {
-                    high: lowest + high,
-                    low: lowest + low,
-                },
+                None => place,
+                Some(inner) => shift(&inner, lowest),
             });
         }
         pin = target.base();
@@ -288,6 +344,17 @@ pub fn resolve_nets(schematic: &Schematic, library: &[ModuleDef]) -> Nets {
         groups.entry(root).or_default().push(i);
     }
 
+    // A slice in a reference uses the index numbers of the pin that it
+    // names. The lowest index of each pin makes the slice an offset.
+    let lows: HashMap<NetRef, i32> = atoms
+        .iter()
+        .map(|r| {
+            let lowest = member_type(schematic, &lib_map, r).map_or(0, |t| lowest_index(&t));
+            (r.clone(), lowest)
+        })
+        .collect();
+    let low = |r: &NetRef| lows.get(r).copied().unwrap_or(0);
+
     let mut nets: Vec<Net> = Vec::new();
     for member_ids in groups.into_values() {
         let mut members: Vec<NetRef> = member_ids.iter().map(|&i| atoms[i].clone()).collect();
@@ -318,7 +385,7 @@ pub fn resolve_nets(schematic: &Schematic, library: &[ModuleDef]) -> Nets {
                 drivers
                     .iter()
                     .chain(members.iter())
-                    .find(|r| net_bits(schematic, r).is_none())
+                    .find(|r| net_bits(schematic, &low, r).is_none())
             })
             .or_else(|| drivers.first())
             .or_else(|| members.first())
@@ -334,7 +401,7 @@ pub fn resolve_nets(schematic: &Schematic, library: &[ModuleDef]) -> Nets {
             let mut candidates = drivers
                 .iter()
                 .chain(members.iter())
-                .filter(|r| !full_pins_only || net_bits(schematic, r).is_none())
+                .filter(|r| !full_pins_only || net_bits(schematic, &low, r).is_none())
                 .filter_map(|r| member_type(schematic, &lib_map, r));
             let first = candidates.next();
             match &first {
@@ -365,7 +432,7 @@ pub fn resolve_nets(schematic: &Schematic, library: &[ModuleDef]) -> Nets {
         }
     }
 
-    Nets { nets, index }
+    Nets { nets, index, lows }
 }
 
 #[cfg(test)]
@@ -588,6 +655,11 @@ mod tests {
         NetRef::InstancePort(inst.into(), port.into())
     }
 
+    /// `Nets::bits` for a schematic of `mod_a` and `mod_b` instances.
+    fn bits_of(s: &Schematic, reference: &NetRef) -> Option<SliceExpr> {
+        resolve_nets(s, &ab_library()).bits(s, reference)
+    }
+
     /// `u_a.dout` is on `bus[low + width - 1 : low]`. `u_b.din` connects to
     /// `u_a.dout` through `reference`, and `u_c.din` references `u_b.din`.
     fn placed(low: i32, width: i32, reference: NetRef) -> Schematic {
@@ -642,8 +714,8 @@ mod tests {
             ];
             for (reference, expected) in cases {
                 let s = placed(low, width, reference.clone());
-                proptest::prop_assert_eq!(net_bits(&s, &reference), Some(expected.clone()));
-                proptest::prop_assert_eq!(net_bits(&s, &pin("u_b", "din")), Some(expected));
+                proptest::prop_assert_eq!(bits_of(&s, &reference), Some(expected.clone()));
+                proptest::prop_assert_eq!(bits_of(&s, &pin("u_b", "din")), Some(expected));
             }
         }
     }
@@ -653,8 +725,8 @@ mod tests {
         let mut s = ab_schematic();
         s.set_port_map_entry("u_b", "din", Some(pin("u_a", "dout")))
             .unwrap();
-        assert_eq!(net_bits(&s, &pin("u_a", "dout")), None);
-        assert_eq!(net_bits(&s, &NetRef::TopPort("clk".into())), None);
+        assert_eq!(bits_of(&s, &pin("u_a", "dout")), None);
+        assert_eq!(bits_of(&s, &NetRef::TopPort("clk".into())), None);
     }
 
     #[test]
@@ -664,11 +736,11 @@ mod tests {
             .unwrap();
         s.set_port_map_entry("u_b", "din", Some(pin("u_a", "dout")))
             .unwrap();
-        assert_eq!(net_bits(&s, &pin("u_a", "dout")), None);
+        assert_eq!(bits_of(&s, &pin("u_a", "dout")), None);
         // A pin that references itself only gives the net its name.
         s.set_port_map_entry("u_a", "dout", Some(pin("u_a", "dout")))
             .unwrap();
-        assert_eq!(net_bits(&s, &pin("u_a", "dout")), None);
+        assert_eq!(bits_of(&s, &pin("u_a", "dout")), None);
     }
 
     // --- drivers_conflict ---
@@ -706,7 +778,7 @@ mod tests {
     }
 
     fn x_and_y_conflict(s: &Schematic) -> bool {
-        drivers_conflict(s, &pin("u_x", "dout"), &pin("u_y", "dout"))
+        resolve_nets(s, &ab_library()).drivers_conflict(s, &pin("u_x", "dout"), &pin("u_y", "dout"))
     }
 
     /// Regression: the two drivers reach `bus` through different pins, and
@@ -747,5 +819,47 @@ mod tests {
         s.set_port_map_entry("u_y", "dout", Some(NetRef::TopPort("bus".into())))
             .unwrap();
         assert!(x_and_y_conflict(&s));
+    }
+
+    proptest::proptest! {
+        /// A slice names bits by the index numbers of the pin. The pin
+        /// `u_a.dout` has the type `(pin_low + 7 downto pin_low)` and is on
+        /// `bus[place_low + 7 : place_low]`, so the index `pin_low + i` of
+        /// the pin is the bit `place_low + i` of the net.
+        #[test]
+        fn slice_index_counts_from_the_lowest_index_of_the_pin(
+            pin_low in 0i32..64,
+            place_low in 0i32..64,
+            i in 0i32..8,
+        ) {
+            let mut src = module("src", vec![]);
+            src.ports.push(PortDef {
+                name: "dout".into(),
+                direction: Direction::Out,
+                port_type: PortType::StdLogicVector(Range {
+                    high: RangeExpr::Literal(i64::from(pin_low + 7)),
+                    low: RangeExpr::Literal(i64::from(pin_low)),
+                    dir: RangeDir::Downto,
+                }),
+                bundle: None,
+            });
+            let mut s = Schematic::new("top", Language::Vhdl);
+            s.add_instance("u_a", "src").unwrap();
+            s.set_port_map_entry(
+                "u_a",
+                "dout",
+                Some(NetRef::TopPortSlice("bus".into(), range(place_low + 7, place_low))),
+            )
+            .unwrap();
+            let reference = NetRef::InstancePortSlice(
+                "u_a".into(),
+                "dout".into(),
+                SliceExpr::Bit(pin_low + i),
+            );
+            proptest::prop_assert_eq!(
+                resolve_nets(&s, &[src]).bits(&s, &reference),
+                Some(SliceExpr::Bit(place_low + i))
+            );
+        }
     }
 }

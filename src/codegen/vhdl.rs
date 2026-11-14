@@ -277,7 +277,7 @@ fn emit_instance(
 
 /// Render a NetRef as a VHDL association RHS: the net, with `(i)` for a
 /// single bit and `(high downto low)` for a range when the reference
-/// selects part of the net (see `net_bits`).
+/// selects part of the net (see `signal_slice`).
 fn render_rhs_vhdl(schematic: &Schematic, nets: &Nets, net_ref: &NetRef) -> String {
     if let NetRef::Constant(lit) = net_ref {
         return lit.clone();
@@ -286,10 +286,13 @@ fn render_rhs_vhdl(schematic: &Schematic, nets: &Nets, net_ref: &NetRef) -> Stri
         .name_for(net_ref)
         .expect("rendered ref is always a net member")
         .to_string();
-    match crate::nets::net_bits(schematic, net_ref) {
+    match crate::codegen::signal_slice(schematic, nets, net_ref) {
         None => base_name,
-        Some(SliceExpr::Bit(i)) => format!("{base_name}({i})"),
-        Some(SliceExpr::Range { high, low }) => format!("{base_name}({high} downto {low})"),
+        Some((SliceExpr::Bit(i), _)) => format!("{base_name}({i})"),
+        Some((SliceExpr::Range { high, low }, false)) => {
+            format!("{base_name}({high} downto {low})")
+        }
+        Some((SliceExpr::Range { high, low }, true)) => format!("{base_name}({low} to {high})"),
     }
 }
 

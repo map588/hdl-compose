@@ -3560,7 +3560,7 @@ fn compute_pin_issues(
             .iter()
             .filter(|a| {
                 hard.iter()
-                    .any(|b| *b != **a && crate::nets::drivers_conflict(s, a, b))
+                    .any(|b| *b != **a && nets.drivers_conflict(s, a, b))
             })
             .collect();
         if !conflicting.is_empty() {
