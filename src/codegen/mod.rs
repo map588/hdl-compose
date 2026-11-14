@@ -189,67 +189,94 @@ fn range_expr_to_string(expr: &RangeExpr) -> String {
     }
 }
 
-/// Evaluate a `RangeExpr` against a substitution map of generic names → integer
-/// values. Supports bare integers, lone identifiers, and simple `NAME ± const`
-/// patterns — enough for the common `WIDTH-1` / `N+1` bounds in HDL modules.
-pub fn eval_range_expr(
-    expr: &RangeExpr,
-    generics: &std::collections::HashMap<&str, i64>,
-) -> Option<i64> {
-    match expr {
-        RangeExpr::Literal(v) => Some(*v),
-        RangeExpr::Expr(raw) => {
-            let s = raw.trim();
-            if let Ok(v) = s.parse::<i64>() {
-                return Some(v);
-            }
-            if let Some(v) = generics.get(s).copied() {
-                return Some(v);
-            }
-            for op in ['-', '+'] {
-                if let Some(pos) = s.rfind(op) {
-                    let lhs = s[..pos].trim();
-                    let rhs = s[pos + 1..].trim();
-                    let lv = generics
-                        .get(lhs)
-                        .copied()
-                        .or_else(|| lhs.parse::<i64>().ok())?;
-                    let rv = rhs.parse::<i64>().ok()?;
-                    return Some(if op == '-' { lv - rv } else { lv + rv });
-                }
-            }
-            None
+/// Evaluate a bound that holds only integers: a bare integer, or the simple
+/// `A - B` / `A + B` pattern. This is sufficient for the common `WIDTH-1` /
+/// `N+1` bounds after `substitute_generics`.
+fn eval_int_expr(expr: &str) -> Option<i64> {
+    let s = expr.trim();
+    if let Ok(v) = s.parse::<i64>() {
+        return Some(v);
+    }
+    for op in ['-', '+'] {
+        if let Some(pos) = s.rfind(op) {
+            let lv = s[..pos].trim().parse::<i64>().ok()?;
+            let rv = s[pos + 1..].trim().parse::<i64>().ok()?;
+            return Some(if op == '-' { lv - rv } else { lv + rv });
         }
     }
+    None
 }
 
-/// Build a generic-substitution map from a module's defaults plus per-instance
-/// overrides. Instance overrides win.
-pub fn build_generic_substitutions<'a>(
-    module_generics: &'a [GenericDef],
-    instance_generic_map: &'a std::collections::HashMap<String, String>,
-) -> std::collections::HashMap<&'a str, i64> {
-    let mut subs = std::collections::HashMap::new();
-    for g in module_generics {
-        if let Some(default) = &g.default_value
-            && let Ok(v) = default.trim().parse::<i64>()
-        {
-            subs.insert(g.name.as_str(), v);
-        }
-    }
-    for (k, v) in instance_generic_map {
-        if let Ok(n) = v.trim().parse::<i64>() {
-            subs.insert(k.as_str(), n);
-        }
-    }
-    subs
+fn is_identifier_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
 }
 
-/// Return a copy of `port_type` where any non-literal `StdLogicVector` range
-/// bounds are evaluated against the supplied generic substitutions and replaced
-/// with `RangeExpr::Literal`. Bounds that cannot be resolved are left as-is so
-/// codegen still emits something compilable (the validator surfaces unresolved
-/// references separately).
+/// Replace each generic name in a bound with the value that the instance
+/// gives the generic: the generic_map value, else the default value.
+///
+/// A value that is not an integer (the name of a top-level generic, an
+/// expression) goes into the bound as text. The default value must not
+/// replace it: the default is not the width of this instance.
+fn substitute_generics(
+    expr: &str,
+    module_generics: &[GenericDef],
+    instance_generic_map: &std::collections::HashMap<String, String>,
+) -> String {
+    let value_of = |name: &str| {
+        let generic = module_generics.iter().find(|g| g.name == name)?;
+        instance_generic_map
+            .get(name)
+            .or(generic.default_value.as_ref())
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+    };
+    let mut out = String::new();
+    let mut rest = expr;
+    while let Some(first) = rest.chars().next() {
+        if !is_identifier_char(first) {
+            out.push(first);
+            rest = &rest[first.len_utf8()..];
+            continue;
+        }
+        let len = rest.find(|c| !is_identifier_char(c)).unwrap_or(rest.len());
+        let (word, tail) = rest.split_at(len);
+        match value_of(word) {
+            Some(v) if v.parse::<i64>().is_ok() || v.chars().all(is_identifier_char) => {
+                out.push_str(v);
+            }
+            Some(v) => {
+                out.push('(');
+                out.push_str(v);
+                out.push(')');
+            }
+            None => out.push_str(word),
+        }
+        rest = tail;
+    }
+    out
+}
+
+/// True when a bound of `port_type` uses the identifier `name`.
+pub(crate) fn port_type_mentions(port_type: &PortType, name: &str) -> bool {
+    let PortType::StdLogicVector(range) = port_type else {
+        return false;
+    };
+    [&range.high, &range.low]
+        .into_iter()
+        .any(|bound| match bound {
+            RangeExpr::Literal(_) => false,
+            RangeExpr::Expr(text) => text
+                .split(|c| !is_identifier_char(c))
+                .any(|word| word == name),
+        })
+}
+
+/// Return a copy of `port_type` with the generics of the module resolved for
+/// one instance. A bound becomes a literal when its generics have integer
+/// values. Else it keeps the text, with the names of the module generics
+/// replaced by the values from the instance, so that the bound is valid in
+/// the scope of the generated module. Used so internal signal declarations
+/// have the width of the port they connect to.
 pub fn resolve_port_type(
     port_type: &PortType,
     module_generics: &[GenericDef],
@@ -258,19 +285,19 @@ pub fn resolve_port_type(
     let PortType::StdLogicVector(range) = port_type else {
         return port_type.clone();
     };
-    if matches!(range.high, RangeExpr::Literal(_)) && matches!(range.low, RangeExpr::Literal(_)) {
-        return port_type.clone();
-    }
-    let subs = build_generic_substitutions(module_generics, instance_generic_map);
-    let high = eval_range_expr(&range.high, &subs)
-        .map(RangeExpr::Literal)
-        .unwrap_or_else(|| range.high.clone());
-    let low = eval_range_expr(&range.low, &subs)
-        .map(RangeExpr::Literal)
-        .unwrap_or_else(|| range.low.clone());
+    let resolve = |bound: &RangeExpr| match bound {
+        RangeExpr::Literal(_) => bound.clone(),
+        RangeExpr::Expr(text) => {
+            let text = substitute_generics(text, module_generics, instance_generic_map);
+            match eval_int_expr(&text) {
+                Some(v) => RangeExpr::Literal(v),
+                None => RangeExpr::Expr(text),
+            }
+        }
+    };
     PortType::StdLogicVector(Range {
-        high,
-        low,
+        high: resolve(&range.high),
+        low: resolve(&range.low),
         dir: range.dir.clone(),
     })
 }
@@ -540,5 +567,117 @@ mod tests {
             signals[0].ends_with(": std_logic_vector(7 downto 0);"),
             "{vhdl}"
         );
+    }
+
+    // --- Widths that depend on generics ---
+
+    fn generic(name: &str, default_value: &str) -> GenericDef {
+        GenericDef {
+            name: name.into(),
+            type_name: "integer".into(),
+            default_value: Some(default_value.into()),
+        }
+    }
+
+    /// `std_logic_vector(<generic> - 1 downto 0)`, as the parser stores it.
+    fn vector_of(generic_name: &str) -> PortType {
+        PortType::StdLogicVector(Range {
+            high: RangeExpr::Expr(format!("{generic_name} - 1")),
+            low: RangeExpr::Literal(0),
+            dir: RangeDir::Downto,
+        })
+    }
+
+    fn resolved_high(value: Option<&str>) -> RangeExpr {
+        let generic_map = value
+            .map(|v| ("WIDTH".to_string(), v.to_string()))
+            .into_iter()
+            .collect();
+        match resolve_port_type(&vector_of("WIDTH"), &[generic("WIDTH", "8")], &generic_map) {
+            PortType::StdLogicVector(range) => range.high,
+            other => panic!("not a vector: {other:?}"),
+        }
+    }
+
+    proptest::proptest! {
+        /// An integer value of the generic gives a literal bound. The value
+        /// in the generic_map has priority over the default value.
+        #[test]
+        fn integer_generic_value_gives_a_literal_bound(width in 1i64..100_000) {
+            proptest::prop_assert_eq!(
+                resolved_high(Some(&width.to_string())),
+                RangeExpr::Literal(width - 1)
+            );
+        }
+    }
+
+    #[test]
+    fn default_generic_value_gives_a_literal_bound() {
+        assert_eq!(resolved_high(None), RangeExpr::Literal(7));
+    }
+
+    /// Regression: a generic_map value that is a name made the bound use the
+    /// default value of the generic (7), which is not the width of the port.
+    #[test]
+    fn generic_value_that_is_a_name_stays_in_the_bound() {
+        assert_eq!(
+            resolved_high(Some("TOP_W")),
+            RangeExpr::Expr("TOP_W - 1".into())
+        );
+        assert_eq!(
+            resolved_high(Some("2 * TOP_W")),
+            RangeExpr::Expr("(2 * TOP_W) - 1".into())
+        );
+    }
+
+    /// Regression: `u_gen` gets its width from the top-level generic `TOP_W`.
+    /// The signal for `u_gen.count` had the default width of the module.
+    fn top_generic_width_project(language: Language) -> (Schematic, Vec<ModuleDef>) {
+        let mut s = Schematic::new("passthrough", language);
+        s.top_generics.push(generic("TOP_W", "16"));
+        s.top_ports
+            .push(port("led", Direction::Out, PortType::StdLogic));
+        s.add_instance("u_gen", "pulse_gen").unwrap();
+        s.set_generic_map_entry("u_gen", "WIDTH", "TOP_W").unwrap();
+        s.add_instance("u_sink", "sink").unwrap();
+        s.set_generic_map_entry("u_sink", "N", "TOP_W").unwrap();
+        s.set_port_map_entry(
+            "u_sink",
+            "value",
+            Some(NetRef::InstancePort("u_gen".into(), "count".into())),
+        )
+        .unwrap();
+        s.set_port_map_entry("u_sink", "led", Some(NetRef::TopPort("led".into())))
+            .unwrap();
+        let mut pulse_gen = module(
+            "pulse_gen",
+            vec![port("count", Direction::Out, vector_of("WIDTH"))],
+        );
+        pulse_gen.generics.push(generic("WIDTH", "8"));
+        let mut sink = module(
+            "sink",
+            vec![
+                port("value", Direction::In, vector_of("N")),
+                port("led", Direction::Out, PortType::StdLogic),
+            ],
+        );
+        sink.generics.push(generic("N", "8"));
+        (s, vec![pulse_gen, sink])
+    }
+
+    #[test]
+    fn net_width_from_a_top_generic_stays_symbolic() {
+        let (s, lib) = top_generic_width_project(Language::Vhdl);
+        let diags = s.validate(&lib);
+        assert!(diags.is_empty(), "{diags:?}");
+        let vhdl = generate_design(&s, &lib).unwrap().top_code;
+        assert!(
+            vhdl.contains("signal u_gen_count : std_logic_vector(TOP_W - 1 downto 0);"),
+            "{vhdl}"
+        );
+
+        let (s, lib) = top_generic_width_project(Language::SystemVerilog);
+        let sv = generate_design(&s, &lib).unwrap().top_code;
+        assert!(sv.contains("wire [TOP_W - 1:0] u_gen_count;"), "{sv}");
     }
 }

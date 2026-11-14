@@ -813,23 +813,10 @@ fn unconnected_diag(port_name: &str, port_def: Option<&PortDef>) -> Diagnostic {
 }
 
 /// The type of an instance port, with the bounds that depend on generics
-/// evaluated for this instance.
-///
-/// A generic that the instance sets to a value that is not an integer (the
-/// name of a top-level generic, an expression) has no known value. Its
-/// default value must not replace it, so bounds that use it stay unresolved.
+/// evaluated for this instance. A bound that uses a generic with no integer
+/// value stays an expression, so the width check makes no claim for it.
 fn instance_port_type(port: &PortDef, module: &ModuleDef, inst: &Instance) -> PortType {
-    let known: Vec<GenericDef> = module
-        .generics
-        .iter()
-        .filter(|g| {
-            inst.generic_map
-                .get(&g.name)
-                .is_none_or(|v| v.trim().parse::<i64>().is_ok())
-        })
-        .cloned()
-        .collect();
-    crate::codegen::resolve_port_type(&port.port_type, &known, &inst.generic_map)
+    crate::codegen::resolve_port_type(&port.port_type, &module.generics, &inst.generic_map)
 }
 
 /// Check width compatibility between the types of two connected ports.

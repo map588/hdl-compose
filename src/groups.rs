@@ -298,7 +298,9 @@ pub fn expand_hierarchy(schematic: &Schematic, library: &[ModuleDef]) -> Hierarc
 
         // Top generics referenced by member generic_maps travel with the
         // group: they become the group module's generics, and the parent
-        // instance passes them straight through by name.
+        // instance passes them straight through by name. A top generic in
+        // the width of a boundary port travels too: the net can get its
+        // width from an instance outside the group.
         let passthrough: Vec<GenericDef> = cur
             .top_generics
             .iter()
@@ -306,6 +308,10 @@ pub fn expand_hierarchy(schematic: &Schematic, library: &[ModuleDef]) -> Hierarc
                 gs.instances
                     .iter()
                     .any(|i| i.generic_map.values().any(|v| v.trim() == tg.name))
+                    || gs
+                        .top_ports
+                        .iter()
+                        .any(|p| crate::codegen::port_type_mentions(&p.port_type, &tg.name))
             })
             .cloned()
             .collect();
@@ -639,5 +645,74 @@ mod tests {
         assert_eq!(plan.top.instances[0].name, "u_outer");
         let diags = plan.top.validate(&plan.library);
         assert!(diags.iter().all(|d| !d.is_error()), "{diags:?}");
+    }
+
+    /// The width of the net `u_gen.count` comes from the top-level generic
+    /// `T`. The net goes into the group `inner`, where no instance uses `T`:
+    /// `u_sink` gets its width from the top-level generic `U`. The port of
+    /// the group has the width of the net, so the group must get `T` too.
+    #[test]
+    fn top_generic_in_a_boundary_port_width_travels_with_the_group() {
+        let generic = |name: &str, default_value: &str| GenericDef {
+            name: name.into(),
+            type_name: "integer".into(),
+            default_value: Some(default_value.into()),
+        };
+        let vector_of = |generic_name: &str| {
+            PortType::StdLogicVector(Range {
+                high: RangeExpr::Expr(format!("{generic_name} - 1")),
+                low: RangeExpr::Literal(0),
+                dir: RangeDir::Downto,
+            })
+        };
+        let port = |name: &str, direction: Direction, port_type: PortType| PortDef {
+            name: name.into(),
+            direction,
+            port_type,
+            bundle: None,
+        };
+        let mut pulse_gen = module("pulse_gen", vec![]);
+        pulse_gen.generics.push(generic("WIDTH", "8"));
+        pulse_gen
+            .ports
+            .push(port("count", Direction::Out, vector_of("WIDTH")));
+        let mut sink = module("sink", vec![("led", Direction::Out)]);
+        sink.generics.push(generic("N", "8"));
+        sink.ports
+            .push(port("value", Direction::In, vector_of("N")));
+
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.top_generics.push(generic("T", "16"));
+        s.top_generics.push(generic("U", "16"));
+        s.top_ports
+            .push(port("led", Direction::Out, PortType::StdLogic));
+        s.add_instance("u_gen", "pulse_gen").unwrap();
+        s.set_generic_map_entry("u_gen", "WIDTH", "T").unwrap();
+        s.add_instance("u_sink", "sink").unwrap();
+        s.set_generic_map_entry("u_sink", "N", "U").unwrap();
+        s.set_port_map_entry(
+            "u_sink",
+            "value",
+            Some(NetRef::InstancePort("u_gen".into(), "count".into())),
+        )
+        .unwrap();
+        s.set_port_map_entry("u_sink", "led", Some(NetRef::TopPort("led".into())))
+            .unwrap();
+        s.groups.push(Group {
+            name: "inner".into(),
+            members: vec!["u_sink".into()],
+            parent: None,
+            collapsed: false,
+            position: (0.0, 0.0),
+        });
+
+        let design = crate::codegen::generate_design(&s, &[pulse_gen, sink]).unwrap();
+        let (_, inner) = &design.files[0];
+        assert!(
+            inner.contains("u_gen_count : in std_logic_vector(T - 1 downto 0)"),
+            "{inner}"
+        );
+        assert!(inner.contains("T : integer := 16"), "{inner}");
+        assert!(design.top_code.contains("T => T"), "{}", design.top_code);
     }
 }
