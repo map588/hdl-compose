@@ -486,6 +486,28 @@ impl Schematic {
 
             // Check each port map entry
             for (port_name, net_ref_opt) in &inst.port_map {
+                // A key that is not a port of the module. Codegen has no
+                // port to put the entry on, so the connection would vanish.
+                if let Some(m) = module_def
+                    && !module_ports.contains_key(port_name.as_str())
+                {
+                    diags.push(
+                        Diagnostic::error(format!(
+                            "port '{port_name}' does not exist on module '{}'",
+                            m.name
+                        ))
+                        .with_instance(&inst.name)
+                        .with_port(port_name),
+                    );
+                    continue;
+                }
+
+                // The type of this port, with its generics evaluated.
+                let pin_type = module_def.and_then(|m| {
+                    let port = module_ports.get(port_name.as_str())?;
+                    Some(instance_port_type(port, m, inst))
+                });
+
                 let Some(net_ref) = net_ref_opt else {
                     // Explicitly unconnected — but only warn when no other
                     // pin pulled this port onto a net.
@@ -544,13 +566,18 @@ impl Schematic {
                             .with_instance(&inst.name)
                             .with_port(port_name),
                         );
-                    } else if let Some(inst_port) = module_ports.get(port_name.as_str())
+                    } else if let Some(pin_type) = &pin_type
                         && let Some(top_port) = self.top_ports.iter().find(|p| p.name == *top_name)
                     {
                         driver_port_def = Some(top_port);
                         if slice_opt.is_none() {
                             check_compatibility(
-                                &mut diags, &inst.name, port_name, inst_port, top_port,
+                                &mut diags,
+                                &inst.name,
+                                port_name,
+                                pin_type,
+                                &top_port.name,
+                                &top_port.port_type,
                             );
                         }
                     }
@@ -572,19 +599,20 @@ impl Schematic {
                             ref_module.ports.iter().find(|p| p.name == *ref_port)
                         {
                             driver_port_def = Some(driver_port);
-                            if let Some(inst_port) = module_ports.get(port_name.as_str()) {
-                                // Driver presence is checked net-wide below —
-                                // referencing another input is fine as long as
-                                // the merged net has a driver somewhere.
-                                if slice_opt.is_none() {
-                                    check_compatibility(
-                                        &mut diags,
-                                        &inst.name,
-                                        port_name,
-                                        inst_port,
-                                        driver_port,
-                                    );
-                                }
+                            // Driver presence is checked net-wide below —
+                            // referencing another input is fine as long as
+                            // the merged net has a driver somewhere.
+                            if let Some(pin_type) = &pin_type
+                                && slice_opt.is_none()
+                            {
+                                check_compatibility(
+                                    &mut diags,
+                                    &inst.name,
+                                    port_name,
+                                    pin_type,
+                                    &driver_port.name,
+                                    &instance_port_type(driver_port, ref_module, ref_instance),
+                                );
                             }
                         } else {
                             diags.push(
@@ -617,6 +645,28 @@ impl Schematic {
                         );
                     }
                 }
+
+                // A reference with a slice connects the pin to the bits of
+                // the slice. The pin is the consumer slice if there is one,
+                // else the full port.
+                if let Some(slice) = slice_opt
+                    && let Some(pin_width) = inst
+                        .consumer_slices
+                        .get(port_name)
+                        .map(slice_width)
+                        .or_else(|| pin_type.as_ref().and_then(port_width))
+                    && pin_width != slice_width(slice)
+                {
+                    diags.push(
+                        Diagnostic::error(format!(
+                            "width mismatch: port is {pin_width} bits but the slice {} is {} bits",
+                            slice.to_suffix(),
+                            slice_width(slice)
+                        ))
+                        .with_instance(&inst.name)
+                        .with_port(port_name),
+                    );
+                }
             }
 
             // Check for ports in module that aren't in port_map at all (implicit unconnected)
@@ -628,6 +678,19 @@ impl Schematic {
                             unconnected_diag(&port.name, Some(port))
                                 .with_instance(&inst.name)
                                 .with_port(&port.name),
+                        );
+                    }
+                }
+                // A generic_map key that is not a generic of the module.
+                // Codegen would emit it, and the HDL tool would reject it.
+                for generic_name in inst.generic_map.keys() {
+                    if !m.generics.iter().any(|g| &g.name == generic_name) {
+                        diags.push(
+                            Diagnostic::error(format!(
+                                "generic '{generic_name}' does not exist on module '{}'",
+                                m.name
+                            ))
+                            .with_instance(&inst.name),
                         );
                     }
                 }
@@ -647,6 +710,17 @@ impl Schematic {
                         }
                     }
                 }
+            }
+        }
+
+        // A top-level port that no port_map entry references. The generated
+        // module would have the port with nothing behind it.
+        for port in &self.top_ports {
+            if nets.net_for(&NetRef::TopPort(port.name.clone())).is_none() {
+                diags.push(Diagnostic::warning(format!(
+                    "top-level port '{}' is unconnected",
+                    port.name
+                )));
             }
         }
 
@@ -738,25 +812,42 @@ fn unconnected_diag(port_name: &str, port_def: Option<&PortDef>) -> Diagnostic {
     }
 }
 
-/// Check width compatibility between two ports.
+/// The type of an instance port, with the bounds that depend on generics
+/// evaluated for this instance.
+///
+/// A generic that the instance sets to a value that is not an integer (the
+/// name of a top-level generic, an expression) has no known value. Its
+/// default value must not replace it, so bounds that use it stay unresolved.
+fn instance_port_type(port: &PortDef, module: &ModuleDef, inst: &Instance) -> PortType {
+    let known: Vec<GenericDef> = module
+        .generics
+        .iter()
+        .filter(|g| {
+            inst.generic_map
+                .get(&g.name)
+                .is_none_or(|v| v.trim().parse::<i64>().is_ok())
+        })
+        .cloned()
+        .collect();
+    crate::codegen::resolve_port_type(&port.port_type, &known, &inst.generic_map)
+}
+
+/// Check width compatibility between the types of two connected ports.
 fn check_compatibility(
     diags: &mut Vec<Diagnostic>,
     inst_name: &str,
     port_name: &str,
-    consumer: &PortDef,
-    driver: &PortDef,
+    consumer: &PortType,
+    driver_name: &str,
+    driver: &PortType,
 ) {
-    let consumer_width = port_width(&consumer.port_type);
-    let driver_width = port_width(&driver.port_type);
-
     // Both widths resolved and unequal -> mismatch
-    if let (Some(cw), Some(dw)) = (consumer_width, driver_width)
+    if let (Some(cw), Some(dw)) = (port_width(consumer), port_width(driver))
         && cw != dw
     {
         diags.push(
             Diagnostic::error(format!(
-                "width mismatch: port is {cw} bits but driver '{}' is {dw} bits",
-                driver.name
+                "width mismatch: port is {cw} bits but driver '{driver_name}' is {dw} bits"
             ))
             .with_instance(inst_name)
             .with_port(port_name),
@@ -765,19 +856,26 @@ fn check_compatibility(
     }
 
     // Scalar-vs-vector mismatch, even when the vector width is unresolved.
-    let consumer_is_scalar = matches!(consumer.port_type, PortType::StdLogic);
-    let driver_is_scalar = matches!(driver.port_type, PortType::StdLogic);
-    let consumer_is_vector = matches!(consumer.port_type, PortType::StdLogicVector(_));
-    let driver_is_vector = matches!(driver.port_type, PortType::StdLogicVector(_));
+    let consumer_is_scalar = matches!(consumer, PortType::StdLogic);
+    let driver_is_scalar = matches!(driver, PortType::StdLogic);
+    let consumer_is_vector = matches!(consumer, PortType::StdLogicVector(_));
+    let driver_is_vector = matches!(driver, PortType::StdLogicVector(_));
     if (consumer_is_scalar && driver_is_vector) || (consumer_is_vector && driver_is_scalar) {
         diags.push(
             Diagnostic::error(format!(
-                "type mismatch: scalar cannot drive or be driven by vector '{}'",
-                driver.name
+                "type mismatch: scalar cannot drive or be driven by vector '{driver_name}'"
             ))
             .with_instance(inst_name)
             .with_port(port_name),
         );
+    }
+}
+
+/// Number of bits that a slice selects.
+fn slice_width(slice: &SliceExpr) -> u32 {
+    match slice {
+        SliceExpr::Bit(_) => 1,
+        SliceExpr::Range { high, low } => high.abs_diff(*low) + 1,
     }
 }
 
@@ -1274,6 +1372,198 @@ mod tests {
             Some(&Some(NetRef::TopPort("clk".into())))
         );
         assert_eq!(inst.port_map.get("rst_n"), Some(&None));
+    }
+
+    // --- Regressions: defects in a hand-written project that `validate`
+    // accepted with "No errors" ---
+
+    /// `led_driver` from the `--example` project, wired to top-level ports.
+    fn led_driver_project() -> (Schematic, Vec<ModuleDef>) {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.top_ports
+            .push(make_port("clk", Direction::In, PortType::StdLogic));
+        s.top_ports
+            .push(make_port("led", Direction::Out, PortType::StdLogic));
+        s.add_instance("u_a", "led_driver").unwrap();
+        s.set_port_map_entry("u_a", "clk", Some(NetRef::TopPort("clk".into())))
+            .unwrap();
+        s.set_port_map_entry("u_a", "led", Some(NetRef::TopPort("led".into())))
+            .unwrap();
+        let lib = vec![make_module(
+            "led_driver",
+            vec![
+                make_port("clk", Direction::In, PortType::StdLogic),
+                make_port("led", Direction::Out, PortType::StdLogic),
+            ],
+        )];
+        (s, lib)
+    }
+
+    #[test]
+    fn regression_project_is_clean_without_a_defect() {
+        let (s, lib) = led_driver_project();
+        let diags = s.validate(&lib);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn port_map_key_that_is_not_a_port_is_an_error() {
+        let (mut s, lib) = led_driver_project();
+        s.set_port_map_entry("u_a", "bogus", Some(NetRef::TopPort("clk".into())))
+            .unwrap();
+        let diags = s.validate(&lib);
+        assert!(
+            diags.iter().any(|d| d.is_error()
+                && d.message.contains("'bogus'")
+                && d.instance.as_deref() == Some("u_a")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn generic_map_key_that_is_not_a_generic_is_an_error() {
+        let (mut s, lib) = led_driver_project();
+        s.set_generic_map_entry("u_a", "NOPE", "1").unwrap();
+        let diags = s.validate(&lib);
+        assert!(
+            diags.iter().any(|d| d.is_error()
+                && d.message.contains("'NOPE'")
+                && d.instance.as_deref() == Some("u_a")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn top_port_without_a_connection_is_a_warning() {
+        let (mut s, lib) = led_driver_project();
+        s.top_ports
+            .push(make_port("spare", Direction::Out, PortType::StdLogic));
+        let diags = s.validate(&lib);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert!(!diags[0].is_error());
+        assert!(diags[0].message.contains("'spare'"), "{diags:?}");
+    }
+
+    /// `pulse_gen` from the `--example` project: the width of `count`
+    /// depends on the generic `WIDTH`, which has the default value 8.
+    fn pulse_gen_on_a_16_bit_top_port(width: Option<&str>) -> Vec<Diagnostic> {
+        let vector = |high: RangeExpr| {
+            PortType::StdLogicVector(Range {
+                high,
+                low: RangeExpr::Literal(0),
+                dir: RangeDir::Downto,
+            })
+        };
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.top_ports.push(make_port(
+            "wide",
+            Direction::Out,
+            vector(RangeExpr::Literal(15)),
+        ));
+        s.add_instance("u_gen", "pulse_gen").unwrap();
+        s.set_port_map_entry("u_gen", "count", Some(NetRef::TopPort("wide".into())))
+            .unwrap();
+        if let Some(width) = width {
+            s.set_generic_map_entry("u_gen", "WIDTH", width).unwrap();
+        }
+        let mut module = make_module(
+            "pulse_gen",
+            vec![make_port(
+                "count",
+                Direction::Out,
+                vector(RangeExpr::Expr("WIDTH - 1".into())),
+            )],
+        );
+        module.generics.push(GenericDef {
+            name: "WIDTH".into(),
+            type_name: "integer".into(),
+            default_value: Some("8".into()),
+        });
+        s.validate(&[module])
+    }
+
+    #[test]
+    fn width_from_a_generic_default_is_checked() {
+        let diags = pulse_gen_on_a_16_bit_top_port(None);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.is_error() && d.message.contains("width mismatch")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn width_from_a_generic_map_value_is_checked() {
+        let diags = pulse_gen_on_a_16_bit_top_port(Some("16"));
+        assert!(diags.is_empty(), "{diags:?}");
+        let diags = pulse_gen_on_a_16_bit_top_port(Some("12"));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.is_error() && d.message.contains("width mismatch")),
+            "{diags:?}"
+        );
+    }
+
+    /// An 8-bit output on a slice of the 16-bit top-level port `wide`.
+    fn eight_bits_on_a_slice(slice: SliceExpr, consumer_slice: Option<SliceExpr>) -> Vec<String> {
+        let vector = |high: i64| {
+            PortType::StdLogicVector(Range {
+                high: RangeExpr::Literal(high),
+                low: RangeExpr::Literal(0),
+                dir: RangeDir::Downto,
+            })
+        };
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.top_ports
+            .push(make_port("wide", Direction::Out, vector(15)));
+        s.add_instance("u_lo", "byte_source").unwrap();
+        s.set_port_map_entry(
+            "u_lo",
+            "count",
+            Some(NetRef::TopPortSlice("wide".into(), slice)),
+        )
+        .unwrap();
+        if let Some(consumer_slice) = consumer_slice {
+            s.instances[0]
+                .consumer_slices
+                .insert("count".into(), consumer_slice);
+        }
+        let lib = vec![make_module(
+            "byte_source",
+            vec![make_port("count", Direction::Out, vector(7))],
+        )];
+        s.validate(&lib)
+            .into_iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.message)
+            .collect()
+    }
+
+    #[test]
+    fn slice_reference_width_is_checked() {
+        let errors = eight_bits_on_a_slice(SliceExpr::Range { high: 7, low: 0 }, None);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let errors = eight_bits_on_a_slice(SliceExpr::Range { high: 3, low: 0 }, None);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("width mismatch"), "{errors:?}");
+
+        // Four bits of the port on four bits of the net.
+        let errors = eight_bits_on_a_slice(
+            SliceExpr::Range { high: 3, low: 0 },
+            Some(SliceExpr::Range { high: 7, low: 4 }),
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    /// A generic that the instance sets to a name (a top-level generic) has
+    /// no known value. The check must not use the default value in its place.
+    #[test]
+    fn width_from_a_generic_with_an_unknown_value_is_not_checked() {
+        let diags = pulse_gen_on_a_16_bit_top_port(Some("TOP_WIDTH"));
+        assert!(diags.is_empty(), "{diags:?}");
     }
 }
 
