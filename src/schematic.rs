@@ -447,6 +447,34 @@ impl Schematic {
         // with no port_map entry of its own.
         let nets = crate::nets::resolve_nets(self, library);
 
+        // A name goes into the generated HDL as written. A reserved word of
+        // the project language makes the generated file invalid.
+        {
+            let language = match self.language {
+                Language::Vhdl => "VHDL",
+                Language::SystemVerilog => "SystemVerilog",
+            };
+            let mut aliases: Vec<&String> = self.aliases.values().collect();
+            aliases.sort();
+            let names = std::iter::once(("top-level module", &self.top_name))
+                .chain(
+                    self.top_generics
+                        .iter()
+                        .map(|g| ("top-level generic", &g.name)),
+                )
+                .chain(self.top_ports.iter().map(|p| ("top-level port", &p.name)))
+                .chain(self.instances.iter().map(|i| ("instance", &i.name)))
+                .chain(aliases.into_iter().map(|a| ("alias", a)))
+                .chain(self.groups.iter().map(|g| ("group", &g.name)));
+            for (kind, name) in names {
+                if crate::reserved::is_reserved_word(&self.language, name) {
+                    diags.push(Diagnostic::error(format!(
+                        "{kind} name '{name}' is a reserved word in {language}"
+                    )));
+                }
+            }
+        }
+
         // Duplicate instance names
         {
             let mut seen = HashSet::new();
@@ -1723,6 +1751,86 @@ mod tests {
         assert!(errors[0].contains("out of range for driver of width 5"));
         let errors = bit_of_a_pin(4, five_bits);
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    /// The error messages about reserved words for `led_driver_project`
+    /// after `change`.
+    fn reserved_word_errors(
+        language: Language,
+        change: impl FnOnce(&mut Schematic),
+    ) -> Vec<String> {
+        let (mut s, lib) = led_driver_project();
+        s.language = language;
+        change(&mut s);
+        s.validate(&lib)
+            .into_iter()
+            .filter(|d| d.is_error() && d.message.contains("reserved word"))
+            .map(|d| d.message)
+            .collect()
+    }
+
+    /// Regression: a top-level port with the name `bus` passed validation,
+    /// and ghdl rejected the generated file.
+    #[test]
+    fn reserved_word_as_a_name_is_an_error() {
+        type Change = fn(&mut Schematic);
+        let changes: [(&str, Change); 6] = [
+            ("bus", |s| {
+                s.top_ports
+                    .push(make_port("bus", Direction::Out, PortType::StdLogic))
+            }),
+            ("range", |s| {
+                s.top_generics.push(GenericDef {
+                    name: "range".into(),
+                    type_name: "integer".into(),
+                    default_value: None,
+                })
+            }),
+            ("process", |s| {
+                s.add_instance("process", "led_driver").unwrap();
+            }),
+            ("signal", |s| {
+                s.set_alias(NetRef::InstancePort("u_a".into(), "led".into()), "signal")
+            }),
+            ("entity", |s| s.top_name = "entity".into()),
+            ("block", |s| {
+                s.groups.push(Group {
+                    name: "block".into(),
+                    members: vec!["u_a".into()],
+                    parent: None,
+                    collapsed: false,
+                    position: (0.0, 0.0),
+                })
+            }),
+        ];
+        for (word, change) in changes {
+            let errors = reserved_word_errors(Language::Vhdl, change);
+            assert_eq!(errors.len(), 1, "{word}: {errors:?}");
+            assert!(errors[0].contains(&format!("'{word}'")), "{errors:?}");
+        }
+    }
+
+    #[test]
+    fn reserved_words_are_those_of_the_project_language() {
+        let add_port = |name: &'static str| {
+            move |s: &mut Schematic| {
+                s.top_ports
+                    .push(make_port(name, Direction::Out, PortType::StdLogic))
+            }
+        };
+        // `bus` is a name in SystemVerilog, and `logic` is a name in VHDL.
+        assert!(reserved_word_errors(Language::SystemVerilog, add_port("bus")).is_empty());
+        assert!(reserved_word_errors(Language::Vhdl, add_port("logic")).is_empty());
+        assert_eq!(
+            reserved_word_errors(Language::SystemVerilog, add_port("logic")).len(),
+            1
+        );
+        // VHDL ignores case.
+        assert_eq!(
+            reserved_word_errors(Language::Vhdl, add_port("BUS")).len(),
+            1
+        );
+        assert!(reserved_word_errors(Language::Vhdl, |_| {}).is_empty());
     }
 
     /// An 8-bit output on a slice of the 16-bit top-level port `wide`.

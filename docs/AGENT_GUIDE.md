@@ -22,8 +22,9 @@
    `hdlc new <top> -l vhdl|sv`, which writes an empty `<top>.hdlc` into the
    current directory.
 4. Run `hdlc validate <top>.hdlc`. It reports a name that does not exist (a
-   module, a port, a generic, an instance, a top-level port), a width
-   mismatch, a net with more than one driver, and a port with no connection.
+   module, a port, a generic, an instance, a top-level port), a name that is
+   a reserved word of the project language, a width mismatch, a net with
+   more than one driver, and a port with no connection.
    Exit code 0 is clean, 1 is warnings only, 2 is errors. Correct the file
    until no error stays, and until each warning that stays is for an output
    that you do not use.

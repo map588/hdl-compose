@@ -5,6 +5,7 @@ pub mod groups;
 pub mod gui;
 pub mod nets;
 pub mod project;
+pub mod reserved;
 pub mod routing;
 pub mod schematic;
 pub mod toolchain;
