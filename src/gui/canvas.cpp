@@ -6,6 +6,7 @@
 #include <QCursor>
 #include <QGraphicsItem>
 #include <QGraphicsPathItem>
+#include <QGraphicsSceneHoverEvent>
 #include <QGraphicsSceneMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -35,22 +36,34 @@ QString allocate_instance_name(AppState *state, const QString &module) {
 
 } // namespace
 
-// --- WireItem hover (needs full CanvasLayer type) ----------------------------
+// --- Net highlight (needs full CanvasLayer type) -----------------------------
+//
+// The net under the pointer shows its highlight only while Shift is down. Each
+// hover event gives the Shift state, so the highlight is correct also when a
+// different widget has the keyboard focus.
 
-// --- PortPinItem net-hover (needs full CanvasLayer type) ---------------------
+void CanvasView::setNetHighlightKey(bool held) {
+    if (m_canvas_layer)
+        m_canvas_layer->setShiftHeld(held);
+}
 
 CanvasLayer *PortPinItem::canvasLayer() const {
     return m_parent ? m_parent->canvasLayer() : nullptr;
 }
 
-void PortPinItem::hoverEnterEvent(QGraphicsSceneHoverEvent *) {
+void PortPinItem::hoverEnterEvent(QGraphicsSceneHoverEvent *event) {
     if (CanvasLayer *layer = canvasLayer(); layer && !m_key.isEmpty())
-        layer->setHoveredNetForPin(m_key);
+        layer->setPointerPin(m_key, event->modifiers().testFlag(Qt::ShiftModifier));
+}
+
+void PortPinItem::hoverMoveEvent(QGraphicsSceneHoverEvent *event) {
+    if (CanvasLayer *layer = canvasLayer())
+        layer->setShiftHeld(event->modifiers().testFlag(Qt::ShiftModifier));
 }
 
 void PortPinItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *) {
     if (CanvasLayer *layer = canvasLayer())
-        layer->setHoveredNet(QString());
+        layer->setPointerNet(QString(), false);
 }
 
 void WireItem::mousePressEvent(QGraphicsSceneMouseEvent *event) {
@@ -62,14 +75,20 @@ void WireItem::mousePressEvent(QGraphicsSceneMouseEvent *event) {
     QGraphicsPathItem::mousePressEvent(event);
 }
 
-void WireItem::hoverEnterEvent(QGraphicsSceneHoverEvent *) {
+void WireItem::hoverEnterEvent(QGraphicsSceneHoverEvent *event) {
     if (m_layer)
-        m_layer->setHoveredNet(CanvasLayer::baseKey(m_source_key));
+        m_layer->setPointerNet(CanvasLayer::baseKey(m_source_key),
+                               event->modifiers().testFlag(Qt::ShiftModifier));
+}
+
+void WireItem::hoverMoveEvent(QGraphicsSceneHoverEvent *event) {
+    if (m_layer)
+        m_layer->setShiftHeld(event->modifiers().testFlag(Qt::ShiftModifier));
 }
 
 void WireItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *) {
     if (m_layer)
-        m_layer->setHoveredNet(QString());
+        m_layer->setPointerNet(QString(), false);
 }
 
 // --- TopPortItem drag (needs full CanvasLayer type) -------------------------

@@ -15,6 +15,7 @@
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QFocusEvent>
 #include <QGraphicsPathItem>
 #include <QGraphicsScene>
 #include <QGraphicsView>
@@ -130,6 +131,8 @@ class CanvasView : public QGraphicsView {
 
   protected:
     void keyPressEvent(QKeyEvent *event) override {
+        if (event->key() == Qt::Key_Shift)
+            setNetHighlightKey(true);
         if (event->key() == Qt::Key_Escape) {
             if (m_wire_tool)
                 m_wire_tool->cancel();
@@ -193,6 +196,19 @@ class CanvasView : public QGraphicsView {
             }
         }
         QGraphicsView::keyPressEvent(event);
+    }
+
+    void keyReleaseEvent(QKeyEvent *event) override {
+        if (event->key() == Qt::Key_Shift)
+            setNetHighlightKey(false);
+        QGraphicsView::keyReleaseEvent(event);
+    }
+
+    // The view gets no key release after it loses the focus, so the net
+    // highlight must not stay.
+    void focusOutEvent(QFocusEvent *event) override {
+        setNetHighlightKey(false);
+        QGraphicsView::focusOutEvent(event);
     }
 
     void wheelEvent(QWheelEvent *event) override {
@@ -360,6 +376,11 @@ class CanvasView : public QGraphicsView {
     }
 
   private:
+    // Shift is the net highlight key. Tell the layer that the key changed
+    // state while the pointer did not move. Body in canvas.cpp (needs the
+    // full CanvasLayer type).
+    void setNetHighlightKey(bool held);
+
     // Multiply the zoom by `factor`, clamped to [kZoomMin, kZoomMax].
     void zoomBy(double factor) {
         double new_scale = std::clamp(m_zoom * factor, kZoomMin, kZoomMax);
@@ -823,8 +844,9 @@ class CanvasLayer {
 
     static QString baseKey(const QString &key) { return NetKey::base(key); }
 
-    // Net hover-highlight: light up every wire of the hovered net so fan-out
-    // is traceable. Empty key clears.
+    // Net highlight: light up every wire of one net so fan-out is traceable.
+    // Empty key clears. Callers outside this class use setPointerNet,
+    // setPointerPin and setShiftHeld, which apply the Shift condition.
     void setHoveredNet(const QString &base) {
         if (m_hovered_net == base)
             return;
@@ -836,18 +858,29 @@ class CanvasLayer {
         }
     }
 
-    // Net hover from a PIN: a load pin's key differs from the net's source
-    // key, so resolve through any wire touching the pin before highlighting.
-    void setHoveredNetForPin(const QString &pin_key) {
+    // The pointer is on a wire of net `base`, or on no net (empty key). The
+    // net shows its highlight only while Shift is down, so a pointer that
+    // moves across the canvas does not change the drawing.
+    void setPointerNet(const QString &base, bool shift) {
+        m_pointer_net = base;
+        setShiftHeld(shift);
+    }
+
+    // The pointer is on a PIN: a load pin's key differs from the net's source
+    // key, so find the net through a wire that touches the pin.
+    void setPointerPin(const QString &pin_key, bool shift) {
         const QString base = baseKey(pin_key);
         for (auto *w : m_wires) {
             if (baseKey(w->sourceKey()) == base || baseKey(w->targetKey()) == base) {
-                setHoveredNet(baseKey(w->sourceKey()));
+                setPointerNet(baseKey(w->sourceKey()), shift);
                 return;
             }
         }
-        setHoveredNet(QString());
+        setPointerNet(QString(), shift);
     }
+
+    // Shift went down or up while the pointer stayed on the same item.
+    void setShiftHeld(bool shift) { setHoveredNet(shift ? m_pointer_net : QString()); }
 
     // Keep the scene rect covering everything placed so far (plus working
     // margin) — the old fixed ±2000 rect made wide designs unreachable by
@@ -973,6 +1006,7 @@ class CanvasLayer {
         m_wires.clear();
         clearJunctionDots();
         m_hovered_net.clear();
+        m_pointer_net.clear();
 
         int wc = m_state->wire_count();
         for (int i = 0; i < wc; ++i) {
@@ -1080,7 +1114,8 @@ class CanvasLayer {
     std::vector<JunctionDotItem *> m_junction_dots;
     QVector<GroupHullItem *> m_group_hulls;
     std::pair<int, int> m_last_col_bounds = {0, 0};
-    QString m_hovered_net;
+    QString m_hovered_net; // the net that shows the highlight
+    QString m_pointer_net; // the net under the pointer, with or without Shift
     WireTool m_wire_tool;
 };
 

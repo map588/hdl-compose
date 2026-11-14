@@ -112,8 +112,8 @@ paths. Top-level ports as chevrons on the canvas edges.
 - Drag any instance to reposition; all wires reroute live.
 - Click a port → click another port to create a connection (commits the
   equivalent text edit under the hood); drag pin-to-pin also works. A
-  provisional line tracks the cursor between clicks. Hovering a wire
-  highlights every wire of that net. Net colors are a stable hash of the
+  provisional line tracks the cursor between clicks. Shift + hover on a
+  wire or a pin highlights every wire of that net. Net colors are a stable hash of the
   driver key, so they survive restarts.
 - All pin chevrons point right (signal flow L→R always). Top-input chevron
   base sits outside the canvas; top-output chevron tip extends past the

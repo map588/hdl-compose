@@ -203,8 +203,9 @@ class WireItem : public QGraphicsPathItem {
     void mousePressEvent(QGraphicsSceneMouseEvent *event) override;
 
   public:
-    // Net hover: brighter, thicker pen on every wire of the hovered net so
-    // fan-out is traceable. Driven by CanvasLayer::setHoveredNet.
+    // Net highlight: brighter, thicker pen on every wire of the net under
+    // the pointer so fan-out is traceable. Driven by
+    // CanvasLayer::setHoveredNet.
     void setNetHover(bool hover) {
         if (m_net_hover == hover)
             return;
@@ -212,7 +213,7 @@ class WireItem : public QGraphicsPathItem {
         refreshPen();
     }
 
-    // While another net is hovered, this wire fades so the hovered net
+    // While a different net has the highlight, this wire fades so that net
     // can be followed through a dense area. Driven by
     // CanvasLayer::setHoveredNet.
     void setNetDimmed(bool dimmed) {
@@ -307,6 +308,7 @@ class WireItem : public QGraphicsPathItem {
   protected:
     // Defined in canvas.cpp — they need the full CanvasLayer type.
     void hoverEnterEvent(QGraphicsSceneHoverEvent *event) override;
+    void hoverMoveEvent(QGraphicsSceneHoverEvent *event) override;
     void hoverLeaveEvent(QGraphicsSceneHoverEvent *event) override;
 
     void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override {
@@ -386,8 +388,9 @@ class PortPinItem : public QGraphicsItem {
     void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override;
     void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override;
     void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override;
-    // Hovering a pin lights its whole net, same as hovering a wire.
+    // Shift + hover on a pin lights its whole net, same as on a wire.
     void hoverEnterEvent(QGraphicsSceneHoverEvent *event) override;
+    void hoverMoveEvent(QGraphicsSceneHoverEvent *event) override;
     void hoverLeaveEvent(QGraphicsSceneHoverEvent *event) override;
 
     QString m_name;

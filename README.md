@@ -153,8 +153,9 @@ The window opens maximized with the canvas front and center.
   through gutters between columns. Click a pin, then click another pin to
   connect, or drag pin to pin. While a pin is armed (dashed cyan ring,
   crosshair cursor) you can also click any existing wire to join that net;
-  clicking anything else cancels. Hover a pin or wire to highlight its whole
-  net. `F` / `Ctrl+0` zoom to fit, `Ctrl`+wheel zoom, middle-drag pan,
+  clicking anything else cancels. Hold `Shift` and hover a pin or wire to
+  highlight its whole net. `F` / `Ctrl+0` zoom to fit, `Ctrl`+wheel zoom,
+  middle-drag pan,
   `Ctrl+L` tidies the layout (including top-port placement), `Esc` cancels,
   `Delete` removes the selection. Pinch on a trackpad zooms.
 - **Toolchain menu:** Check, Synth, Build Bitstream, and Flash run the CLI
