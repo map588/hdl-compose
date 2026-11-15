@@ -693,6 +693,10 @@ pub struct AppStateRust {
     schematic: Option<Schematic>,
     current_path: Option<PathBuf>,
     last_error: String,
+    // What the loader reported for the open project. The loader can change
+    // the model (it removes a reference to an instance that is not in the
+    // file), so these stay in the diagnostics until the next save.
+    load_warnings: Vec<String>,
     library: Vec<ModuleDef>,
     diagnostics: Vec<Diagnostic>,
     selected_instance: String,
@@ -1168,6 +1172,9 @@ impl qobject::AppState {
                 path.display()
             )));
         }
+        for warning in &self.as_ref().rust().load_warnings {
+            diagnostics.push(Diagnostic::warning(format!("load: {warning}")));
+        }
         // Surface the most recent library error to the status bar.
         if let Some(d) = diagnostics
             .iter()
@@ -1323,7 +1330,13 @@ impl qobject::AppState {
                 let m = self.as_mut().rust_mut().get_mut();
                 m.dirty = false;
                 m.last_error.clear();
+                // The file is now the model: the warnings of the loader no
+                // longer apply.
+                let had_warnings = !std::mem::take(&mut m.load_warnings).is_empty();
                 self.as_mut().refresh_project_display();
+                if had_warnings {
+                    self.as_mut().rebuild_library_and_validate();
+                }
                 self.as_mut().project_saved();
                 true
             }
@@ -1340,9 +1353,10 @@ impl qobject::AppState {
     pub fn open_project(mut self: Pin<&mut Self>, path: &QString) -> bool {
         let path_buf = PathBuf::from(path.to_string());
         match project::load_project(&path_buf) {
-            Ok((schematic, _warnings)) => {
+            Ok((schematic, warnings)) => {
                 {
                     let m = self.as_mut().rust_mut().get_mut();
+                    m.load_warnings = warnings;
                     m.schematic = Some(schematic);
                     m.current_path = Some(path_buf);
                     m.dirty = false;
@@ -1574,6 +1588,7 @@ impl qobject::AppState {
             m.current_path = None;
             m.dirty = true;
             m.last_error.clear();
+            m.load_warnings.clear();
             m.library.clear();
             m.diagnostics.clear();
         }
@@ -4363,6 +4378,40 @@ mod tests {
 
         assert!(!state.instance_is_dirty_name(&q("u_b")));
         assert_eq!(entry(&state, "u_b", "d"), "u_a.q");
+    }
+
+    /// Regression: `open_project` discarded the warnings of the loader.
+    /// The loader removes a reference to an instance that is not in the
+    /// file, so the model was not the file and the user got no message.
+    #[test]
+    fn open_shows_the_warnings_of_the_loader_until_the_save() {
+        let (dir, mut state) = state_with_one_connection();
+        assert!(state.pin_mut().save_project());
+        // Remove `u_a` from the file. `u_b.e` then references no instance.
+        let path = dir.path().join("top.hdlc");
+        let mut file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        file["instances"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|i| i["name"] != "u_a");
+        std::fs::write(&path, file.to_string()).unwrap();
+        let cleared = |state: &UniquePtr<AppState>| {
+            state
+                .validation_messages()
+                .iter()
+                .any(|m| m.contains("cleared 1 stale"))
+        };
+
+        assert!(state.pin_mut().open_project(&q(path.to_str().unwrap())));
+        assert!(cleared(&state), "{:?}", state.validation_messages());
+        // An edit does not remove the message.
+        assert!(state.pin_mut().add_instance(&q("u_c"), &q("source")));
+        assert!(cleared(&state));
+
+        // After the save the file is the model.
+        assert!(state.pin_mut().save_project());
+        assert!(!cleared(&state));
     }
 
     /// A commit of the editor buffer clears the dirty flag of its instance.
