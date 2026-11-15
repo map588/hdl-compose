@@ -342,6 +342,11 @@ pub struct StagedBuild {
     /// The top-level ports that have a clock frequency in the config. When
     /// there is one, `dir` holds the clock constraints file `clocks.sdc`.
     pub clock_ports: Vec<String>,
+    /// The files in `sources` that codegen made: the group files, then the
+    /// top file.
+    pub generated: Vec<String>,
+    /// The names of the library modules that the schematic instantiates.
+    pub leaf_modules: Vec<String>,
     pub top_name: String,
     pub language: Language,
 }
@@ -500,13 +505,22 @@ pub fn stage(
         }
         sources.push(copy_in(&src)?);
     }
+    let mut generated = Vec::new();
     for (fname, code) in design.files.iter().chain(std::iter::once(&(
         design.top_filename.clone(),
         design.top_code.clone(),
     ))) {
         std::fs::write(dir.join(fname), code).map_err(|e| format!("cannot write {fname}: {e}"))?;
         sources.push(fname.clone());
+        generated.push(fname.clone());
     }
+    let leaf_modules: Vec<String> = schematic
+        .instances
+        .iter()
+        .map(|instance| instance.module_ref.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
 
     write_clocks(schematic, config, &dir)?;
 
@@ -519,6 +533,8 @@ pub fn stage(
         synth_args: config.synth_args.clone(),
         pnr_args: config.pnr_args.clone(),
         clock_ports: config.clocks.keys().cloned().collect(),
+        generated,
+        leaf_modules,
         top_name: schematic.top_name.clone(),
         language: schematic.language.clone(),
     })
@@ -846,6 +862,79 @@ pub fn check_stages(staged: &StagedBuild, env: &FlowEnv) -> Vec<Stage> {
 pub fn run_check(staged: &StagedBuild) -> Result<bool, String> {
     let env = FlowEnv::detect(&staged.language);
     run_stages(&check_stages(staged, &env), &staged.dir)
+}
+
+/// The directory below the build directory where yosys reads the generated
+/// files for the netlist check. It must hold no ghdl library file: in the
+/// build directory ghdl finds the library modules that `check` analyzed,
+/// binds them, and they are no longer black boxes.
+const NETLIST_DIR: &str = "netcheck";
+
+/// The file in `NETLIST_DIR` with the netlist of the generated files.
+const NETLIST_FILE: &str = "netlist.json";
+
+/// The yosys run that gives the connections of the generated files (see
+/// `netcheck`). Each library module is a black box, so the run does not
+/// depend on the content of the library. `flatten` puts the instances of
+/// the group modules into the top module. The step runs in `NETLIST_DIR`.
+pub fn netlist_stages(staged: &StagedBuild, env: &FlowEnv) -> Vec<Stage> {
+    let from_build_dir = |name: &String| format!("../{name}");
+    let (plugin, read) = match staged.language {
+        // A component with no entity is a black box for ghdl. The warning
+        // for each one is not useful here.
+        Language::Vhdl => {
+            let mut read = format!("ghdl {} ", std_flag(staged));
+            if let Some(prefix) = &env.ghdl_prefix {
+                read.push_str(&format!("--PREFIX={prefix} "));
+            }
+            if !staged.libraries.is_empty() {
+                read.push_str("-P.. ");
+            }
+            read.push_str("-Wno-binding ");
+            for file in &staged.generated {
+                read.push_str(&from_build_dir(file));
+                read.push(' ');
+            }
+            read.push_str(&format!("-e {}", staged.top_name));
+            ("ghdl", read)
+        }
+        // slang must see the ports of each library module, so it reads all
+        // sources and makes the library modules black boxes by name.
+        Language::SystemVerilog => {
+            let mut read = format!("read_slang --top {}", staged.top_name);
+            for module in &staged.leaf_modules {
+                read.push_str(&format!(" --blackboxed-module {module}"));
+            }
+            for file in &staged.sources {
+                read.push(' ');
+                read.push_str(&from_build_dir(file));
+            }
+            ("slang", read)
+        }
+    };
+    let script = format!("{read}; flatten -noscopeinfo; opt_clean; write_json {NETLIST_FILE}");
+    vec![Stage::single(
+        "netlist",
+        vec![Step::new(
+            "yosys",
+            ["-q", "-l", "yosys.log", "-m", plugin, "-p", &script],
+        )],
+    )]
+}
+
+/// Run `netlist_stages`. Returns the netlist as JSON text, or `None` when
+/// yosys cannot read the generated files alone.
+pub fn run_netlist(staged: &StagedBuild) -> Result<Option<String>, String> {
+    let dir = staged.dir.join(NETLIST_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let env = FlowEnv::detect(&staged.language);
+    if !run_stages(&netlist_stages(staged, &env), &dir)? {
+        return Ok(None);
+    }
+    let file = dir.join(NETLIST_FILE);
+    std::fs::read_to_string(&file)
+        .map(Some)
+        .map_err(|e| format!("cannot read {}: {e}", file.display()))
 }
 
 /// The ghdl-yosys-plugin's embedded ghdl does not resolve its std/ieee
@@ -1821,6 +1910,8 @@ mod flow_tests {
             synth_args: Vec::new(),
             pnr_args: Vec::new(),
             clock_ports: Vec::new(),
+            generated: vec![format!("top.{ext}")],
+            leaf_modules: vec!["leaf".to_string()],
             top_name: "top".to_string(),
             language,
         }
@@ -2276,6 +2367,48 @@ mod flow_tests {
                 "--seed",
                 "3"
             ]
+        );
+    }
+
+    #[test]
+    fn vhdl_netlist_reads_the_generated_files_only() {
+        let mut s = staged(Language::Vhdl);
+        s.generated = vec!["core.vhd".to_string(), "top.vhd".to_string()];
+        s.libraries = vec![("loot".to_string(), vec!["pkg.vhd".to_string()])];
+        assert_eq!(
+            netlist_stages(&s, &env()),
+            vec![single(
+                "netlist",
+                vec![step(
+                    "yosys",
+                    &[
+                        "-q",
+                        "-l",
+                        "yosys.log",
+                        "-m",
+                        "ghdl",
+                        "-p",
+                        "ghdl --std=08 --PREFIX=/ghdl/lib -P.. -Wno-binding ../core.vhd ../top.vhd -e top; \
+                         flatten -noscopeinfo; opt_clean; write_json netlist.json"
+                    ]
+                )]
+            )]
+        );
+    }
+
+    #[test]
+    fn sv_netlist_reads_each_source_and_makes_the_library_modules_black_boxes() {
+        let mut s = staged(Language::SystemVerilog);
+        s.leaf_modules = vec!["fifo".to_string(), "leaf".to_string()];
+        let script = netlist_stages(&s, &FlowEnv::default())[0].variants[0].steps[0]
+            .args
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            script,
+            "read_slang --top top --blackboxed-module fifo --blackboxed-module leaf \
+             ../leaf.sv ../top.sv; flatten -noscopeinfo; opt_clean; write_json netlist.json"
         );
     }
 

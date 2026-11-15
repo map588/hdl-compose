@@ -102,3 +102,206 @@ fn synth_reads_a_package_and_a_struct_through_slang() {
     assert_eq!(record.matches("$ yosys").count(), 1, "{record}");
     assert!(record.contains("-m slang"), "{record}");
 }
+
+// --- Netlist check -----------------------------------------------------------
+
+use hdl_compose::netcheck::{self, Outcome};
+use hdl_compose::types::{Group, NetRef, Schematic, SliceExpr};
+
+/// True when yosys can load the plugin.
+fn have_plugin(plugin: &str) -> bool {
+    let loads = std::process::Command::new("yosys")
+        .args(["-q", "-m", plugin, "-p", ""])
+        .output()
+        .is_ok_and(|out| out.status.success());
+    if !loads {
+        eprintln!("skipped: yosys cannot load the {plugin} plugin");
+    }
+    loads
+}
+
+const VHDL_SOURCES: &[(&str, &str)] = &[
+    (
+        "source.vhd",
+        "library ieee;\nuse ieee.std_logic_1164.all;\n\
+         entity source is\n  generic (WIDTH : integer := 4);\n\
+         port (clk : in std_logic; q : out std_logic_vector(WIDTH-1 downto 0));\nend entity;\n\
+         architecture rtl of source is\nbegin\n  q <= (others => clk);\nend architecture;\n",
+    ),
+    (
+        "sink.vhd",
+        "library ieee;\nuse ieee.std_logic_1164.all;\n\
+         entity sink is\n\
+         port (clk : in std_logic; d : in std_logic_vector(7 downto 0); ok : out std_logic);\nend entity;\n\
+         architecture rtl of sink is\nbegin\n  ok <= d(0) and clk;\nend architecture;\n",
+    ),
+    (
+        "narrow.vhd",
+        "library ieee;\nuse ieee.std_logic_1164.all;\n\
+         entity narrow is\n\
+         port (d : in std_logic_vector(3 downto 0); ok : out std_logic);\nend entity;\n\
+         architecture rtl of narrow is\nbegin\n  ok <= d(3);\nend architecture;\n",
+    ),
+];
+
+const SV_SOURCES: &[(&str, &str)] = &[
+    (
+        "source.sv",
+        "module source #(parameter WIDTH = 4) (input logic clk, output logic [WIDTH-1:0] q);\n\
+         assign q = {WIDTH{clk}};\nendmodule\n",
+    ),
+    (
+        "sink.sv",
+        "module sink (input logic clk, input logic [7:0] d, output logic ok);\n\
+         assign ok = d[0] & clk;\nendmodule\n",
+    ),
+    (
+        "narrow.sv",
+        "module narrow (input logic [3:0] d, output logic ok);\n\
+         assign ok = d[3];\nendmodule\n",
+    ),
+];
+
+/// A design with the cases that codegen must get right: a width from a
+/// generic, a reference to a slice of a net, a net with three pins, and a
+/// group whose output goes to two instances outside it.
+///
+/// `src.q` (8 bits) drives `dst.d` and, with its bits 3 to 0, `lo.d`.
+fn netlist_design(dir: &Path, language: Language) -> (Schematic, Vec<ModuleDef>) {
+    let sources = match language {
+        Language::Vhdl => VHDL_SOURCES,
+        Language::SystemVerilog => SV_SOURCES,
+    };
+    let mut library: Vec<ModuleDef> = Vec::new();
+    let mut s = Schematic::new("top", language);
+    for (name, text) in sources {
+        let path = dir.join(name);
+        std::fs::write(&path, text).unwrap();
+        library.extend(hdl_compose::parse_file(&path).unwrap());
+        s.add_library_path(path);
+    }
+    let module = |name: &str| library.iter().find(|m| m.name == name).unwrap();
+    let top_port = |name: &str, of: &str| {
+        module(of)
+            .ports
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap()
+            .clone()
+    };
+    let mut ok2 = top_port("ok", "narrow");
+    ok2.name = "ok2".to_string();
+    s.top_ports = vec![top_port("clk", "sink"), top_port("ok", "sink"), ok2];
+
+    for (instance, of) in [("src", "source"), ("dst", "sink"), ("lo", "narrow")] {
+        s.add_instance(instance, of).unwrap();
+    }
+    s.instances[0]
+        .generic_map
+        .insert("WIDTH".to_string(), "8".to_string());
+    let top = |name: &str| Some(NetRef::TopPort(name.to_string()));
+    let q = NetRef::InstancePort("src".to_string(), "q".to_string());
+    let low_half = NetRef::InstancePortSlice(
+        "src".to_string(),
+        "q".to_string(),
+        SliceExpr::Range { high: 3, low: 0 },
+    );
+    for (instance, port, net) in [
+        ("src", "clk", top("clk")),
+        ("dst", "clk", top("clk")),
+        ("dst", "d", Some(q)),
+        ("dst", "ok", top("ok")),
+        ("lo", "d", Some(low_half)),
+        ("lo", "ok", top("ok2")),
+    ] {
+        s.set_port_map_entry(instance, port.to_string(), net)
+            .unwrap();
+    }
+    s.groups.push(Group {
+        name: "core".to_string(),
+        members: vec!["src".to_string()],
+        parent: None,
+        collapsed: false,
+        position: (0.0, 0.0),
+    });
+    (s, library)
+}
+
+/// Stage the design and get its netlist from yosys.
+fn netlist_of(dir: &Path, schematic: &Schematic, library: &[ModuleDef]) -> String {
+    let design = codegen::generate_design(schematic, library).expect("codegen");
+    let staged = toolchain::stage(
+        schematic,
+        library,
+        &design,
+        &ToolchainConfig::default(),
+        dir,
+    )
+    .unwrap();
+    toolchain::run_netlist(&staged)
+        .unwrap()
+        .expect("yosys reads the generated files")
+}
+
+fn netlist_tools(language: &Language) -> bool {
+    match language {
+        Language::Vhdl => have(&["yosys", "ghdl"]) && have_plugin("ghdl"),
+        Language::SystemVerilog => have(&["yosys"]) && have_plugin("slang"),
+    }
+}
+
+#[test]
+fn netlist_of_the_generated_files_connects_what_the_schematic_connects() {
+    for language in [Language::Vhdl, Language::SystemVerilog] {
+        if !netlist_tools(&language) {
+            continue;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (schematic, library) = netlist_design(dir.path(), language.clone());
+        let json = netlist_of(dir.path(), &schematic, &library);
+        // clk, eight bits of q, ok, ok2.
+        assert_eq!(
+            netcheck::compare(&schematic, &library, &json),
+            Ok(Outcome::Same {
+                wires: 11,
+                unchecked: 0
+            }),
+            "{language:?}"
+        );
+    }
+}
+
+/// The netlist of one design, compared with a schematic that differs in one
+/// connection: `lo.d` on bits 7 to 4 of the net, not on bits 3 to 0. This
+/// is the result of a codegen that connects the wrong slice.
+#[test]
+fn netlist_check_finds_a_connection_to_the_wrong_slice() {
+    for language in [Language::Vhdl, Language::SystemVerilog] {
+        if !netlist_tools(&language) {
+            continue;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (mut schematic, library) = netlist_design(dir.path(), language.clone());
+        let json = netlist_of(dir.path(), &schematic, &library);
+
+        let high_half = NetRef::InstancePortSlice(
+            "src".to_string(),
+            "q".to_string(),
+            SliceExpr::Range { high: 7, low: 4 },
+        );
+        schematic
+            .set_port_map_entry("lo", "d".to_string(), Some(high_half))
+            .unwrap();
+        let Ok(Outcome::Different(lines)) = netcheck::compare(&schematic, &library, &json) else {
+            panic!("{language:?}: the wrong slice was not found");
+        };
+        assert!(
+            lines.contains(
+                &"lo.d bit 0: the schematic connects it to dst.d bit 4, src.q bit 4; \
+                  the generated HDL connects it to dst.d bit 0, src.q bit 0"
+                    .to_string()
+            ),
+            "{language:?}: {lines:#?}"
+        );
+    }
+}

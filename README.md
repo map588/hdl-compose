@@ -90,6 +90,14 @@ Notes:
   directory and prints the tool commands as a shell script
   (`hdlc build x.hdlc --dry-run > build.sh`). The commands of a fallback are
   comments. The script makes the bitstream but not the chip view file.
+- `check` has a second part, the netlist check. yosys reads only the
+  generated files, with each library module as a black box, and writes the
+  netlist. `hdlc` compares its connections, bit for bit, with the nets of
+  the project, with the groups flattened. A difference fails `check` (exit
+  code 1) and is a defect of hdlc, not of your project. The part is skipped,
+  with a message, when yosys or its plugin is missing, or when the generated
+  files do not elaborate alone (a port with a type from your own package).
+  Constant ties, and nets with a pin of no known width, are not compared.
 - `sim` generates an editable `<top>_tb` skeleton next to the project on
   first run and never overwrites an existing one.
 - For VHDL synthesis the ghdl-yosys-plugin is tried first; if it fails on a

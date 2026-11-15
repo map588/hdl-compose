@@ -3,6 +3,7 @@ pub mod codegen;
 pub mod floorplan;
 pub mod groups;
 pub mod gui;
+pub mod netcheck;
 pub mod nets;
 pub mod project;
 pub mod reserved;

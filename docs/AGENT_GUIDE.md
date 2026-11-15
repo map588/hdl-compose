@@ -30,9 +30,14 @@
    that you do not use.
 5. Run `hdlc codegen <top>.hdlc -o <top>.vhd` (or `.sv`).
 6. Run `hdlc check <top>.hdlc`. It elaborates the generated top level and the
-   leaf modules with ghdl (VHDL) or verilator (SystemVerilog). It finds what
-   only the HDL tool can know, such as an error in a leaf module. Exit code
-   0 is clean, 1 is tool errors, 2 is a missing tool or a codegen failure.
+   leaf modules with ghdl (VHDL) or slang (SystemVerilog; verilator when
+   slang is not installed). It finds what only the HDL tool can know, such
+   as an error in a leaf module. Then it compares the connections of the
+   generated HDL, as yosys reads it, with the nets of the project
+   ("netlist check"). A difference there is a defect of hdlc, not of your
+   file: report it. Exit code 0 is clean, 1 is tool errors or a netlist
+   difference, 2 is a missing tool or a codegen failure. The files of the
+   run stay in `build/<top>/`. `hdlc doctor` lists the tools.
 
 `hdlc validate` calculates a width from a generic when the generic has an
 integer value. For a top-level generic it uses the default value. It makes no

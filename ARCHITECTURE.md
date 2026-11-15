@@ -322,9 +322,13 @@ src/
   vhdl.rs              — vhdl_lang AST → ModuleDef
   verilog.rs           — sv-parser AST → ModuleDef
   nets.rs              — net resolution (union-find), drivers, net diagnostics
+  netcheck.rs          — netlist check: nets of the schematic against the
+                          netlist that yosys reads from the generated HDL
   groups.rs            — hierarchical groups: boundary ports, expand_hierarchy
   routing.rs           — placement (legalize, Tidy) and the channel wire router
-  toolchain.rs         — check/synth/sim/fpga/build/flash via external tools
+  toolchain.rs         — check/synth/sim/fpga/build/flash via external tools:
+                          the step tables, the build directory, the
+                          toolchain config, doctor
   board.rs             — board definition files, constraint pin check
   floorplan.rs         — chip view data from the nextpnr outputs of `build`
   codegen/

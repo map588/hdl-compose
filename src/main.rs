@@ -755,7 +755,17 @@ fn stage_project(
     project_path: &std::path::Path,
 ) -> Result<(Schematic, hdl_compose::toolchain::StagedBuild), ExitCode> {
     let (schematic, library) = load_project_and_library(project_path)?;
-    let design = match codegen::generate_design(&schematic, &library) {
+    let staged = stage_loaded(project_path, &schematic, &library)?;
+    Ok((schematic, staged))
+}
+
+/// `stage_project` for a project that is already loaded.
+fn stage_loaded(
+    project_path: &std::path::Path,
+    schematic: &Schematic,
+    library: &[hdl_compose::types::ModuleDef],
+) -> Result<hdl_compose::toolchain::StagedBuild, ExitCode> {
+    let design = match codegen::generate_design(schematic, library) {
         Ok(d) => d,
         Err(e) => {
             // The exit code from the report is for `codegen`. A failure to
@@ -768,9 +778,9 @@ fn stage_project(
         eprintln!("error: {e}");
         ExitCode::from(2)
     })?;
-    let staged = hdl_compose::toolchain::stage(
-        &schematic,
-        &library,
+    hdl_compose::toolchain::stage(
+        schematic,
+        library,
         &design,
         &config,
         project_dir(project_path),
@@ -778,8 +788,7 @@ fn stage_project(
     .map_err(|e| {
         eprintln!("error: {e}");
         ExitCode::from(2)
-    })?;
-    Ok((schematic, staged))
+    })
 }
 
 fn tool_result(result: Result<bool, String>, pass_msg: &str, fail_msg: &str) -> ExitCode {
@@ -800,15 +809,73 @@ fn tool_result(result: Result<bool, String>, pass_msg: &str, fail_msg: &str) -> 
 }
 
 fn cmd_check(project_path: &std::path::Path) -> ExitCode {
-    let (schematic, staged) = match stage_project(project_path) {
+    let (schematic, library) = match load_project_and_library(project_path) {
         Ok(v) => v,
         Err(code) => return code,
     };
-    tool_result(
-        hdl_compose::toolchain::run_check(&staged),
-        &format!("check passed: {} elaborates cleanly", schematic.top_name),
-        "check failed",
-    )
+    let staged = match stage_loaded(project_path, &schematic, &library) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    match hdl_compose::toolchain::run_check(&staged) {
+        Ok(true) => println!("check passed: {} elaborates cleanly", schematic.top_name),
+        other => return tool_result(other, "", "check failed"),
+    }
+    netlist_check(&schematic, &library, &staged)
+}
+
+/// The second part of `check`: compare the connections of the generated
+/// HDL, as yosys reads it, with the nets of the schematic. A difference
+/// fails the check. When the comparison cannot run, say so and why; the
+/// result of the first part stays.
+fn netlist_check(
+    schematic: &Schematic,
+    library: &[hdl_compose::types::ModuleDef],
+    staged: &hdl_compose::toolchain::StagedBuild,
+) -> ExitCode {
+    use hdl_compose::netcheck::{Outcome, compare};
+    let skipped = |reason: &str| {
+        println!("netlist check skipped: {reason}");
+        ExitCode::SUCCESS
+    };
+    let json = match hdl_compose::toolchain::run_netlist(staged) {
+        Ok(Some(json)) => json,
+        Ok(None) => {
+            return skipped("yosys cannot read the generated files alone (see the output above)");
+        }
+        Err(reason) => return skipped(&reason),
+    };
+    match compare(schematic, library, &json) {
+        Err(reason) => skipped(&reason),
+        Ok(Outcome::Same { wires, unchecked }) => {
+            let note = match unchecked {
+                0 => String::new(),
+                n => format!(" ({n} pins on a net with no known width were not compared)"),
+            };
+            println!(
+                "netlist check passed: the generated HDL connects the {wires} wires of the schematic{note}"
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(Outcome::Different(lines)) => {
+            // One line for each pin bit can be many lines for a wide bus.
+            const SHOWN: usize = 20;
+            eprintln!(
+                "error: netlist check failed: the generated HDL does not connect what the schematic connects"
+            );
+            for line in lines.iter().take(SHOWN) {
+                eprintln!("  {line}");
+            }
+            if lines.len() > SHOWN {
+                eprintln!("  ... and {} more pin bits", lines.len() - SHOWN);
+            }
+            eprintln!(
+                "This is a defect of hdlc (codegen or the net model), not of the project. \
+                 Please report it with the project file."
+            );
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn cmd_synth(project_path: &std::path::Path) -> ExitCode {
