@@ -17,6 +17,93 @@ pub struct FolderDesign {
     /// The name of the module that the design generates.
     pub top_name: String,
     pub language: Language,
+    /// True when the generated top file is at `module_file`. Only then is
+    /// the design a module for other designs.
+    pub generated: bool,
+    /// The module of each instance of the design.
+    pub uses: Vec<String>,
+    /// The name of each group. Each group is a generated file of its own.
+    pub groups: Vec<String>,
+    /// The library sources of the design.
+    pub library_paths: Vec<PathBuf>,
+}
+
+impl FolderDesign {
+    /// The place of the generated top file: `<folder>/<top_name>.<ext>`,
+    /// where Generate HDL writes it. A file that "Generate HDL As..." or
+    /// `hdlc codegen -o` wrote to another place is an export; it does not
+    /// make the design a module of the folder.
+    pub fn module_file(&self) -> PathBuf {
+        self.generated_file(&self.top_name)
+    }
+
+    fn generated_file(&self, module: &str) -> PathBuf {
+        let extension = match self.language {
+            Language::Vhdl => "vhd",
+            Language::SystemVerilog => "sv",
+        };
+        self.path.with_file_name(format!("{module}.{extension}"))
+    }
+
+    /// The files that a parent needs to use the design as a module: the
+    /// generated top file, the generated file of each group that is on the
+    /// disk, and each library source of the design.
+    pub fn sources(&self) -> Vec<PathBuf> {
+        let groups = self
+            .groups
+            .iter()
+            .map(|group| self.generated_file(group))
+            .filter(|file| is_generated_file(file));
+        std::iter::once(self.module_file())
+            .chain(groups)
+            .chain(self.library_paths.iter().cloned())
+            .collect()
+    }
+
+    /// The reason that a design with the name `parent` and the language
+    /// `language` cannot place this design, as a short text for the list
+    /// of designs. `None` when it can.
+    pub fn obstacle(
+        &self,
+        designs: &[FolderDesign],
+        parent: &str,
+        language: &Language,
+    ) -> Option<&'static str> {
+        if self.language != *language {
+            Some("other language")
+        } else if !self.generated {
+            Some("not generated")
+        } else if self.contains(designs, parent) {
+            Some("contains this design")
+        } else {
+            None
+        }
+    }
+
+    /// True when this design places the design `name`, directly or through
+    /// other designs of the folder.
+    fn contains(&self, designs: &[FolderDesign], name: &str) -> bool {
+        let mut seen: Vec<&str> = Vec::new();
+        let mut pending: Vec<&FolderDesign> = vec![self];
+        while let Some(design) = pending.pop() {
+            if seen.contains(&design.top_name.as_str()) {
+                continue;
+            }
+            seen.push(&design.top_name);
+            for module in &design.uses {
+                if module == name {
+                    return true;
+                }
+                pending.extend(designs.iter().filter(|d| d.top_name == *module));
+            }
+        }
+        false
+    }
+}
+
+/// True when `path` is a file that hdlc generated.
+fn is_generated_file(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|text| crate::codegen::is_generated(&text))
 }
 
 /// The designs in `dir`, in the order of their file names. A design below
@@ -35,11 +122,21 @@ pub fn folder_designs(dir: &Path) -> Vec<FolderDesign> {
         .into_iter()
         .filter_map(|path| {
             let (schematic, _warnings) = crate::project::load_project(&path).ok()?;
-            Some(FolderDesign {
+            let mut design = FolderDesign {
                 path,
                 top_name: schematic.top_name,
                 language: schematic.language,
-            })
+                generated: false,
+                uses: schematic
+                    .instances
+                    .into_iter()
+                    .map(|i| i.module_ref)
+                    .collect(),
+                groups: schematic.groups.into_iter().map(|g| g.name).collect(),
+                library_paths: schematic.library_paths,
+            };
+            design.generated = is_generated_file(&design.module_file());
+            Some(design)
         })
         .collect()
 }
@@ -114,19 +211,25 @@ mod tests {
         std::fs::write(dir.path().join("a.vhd"), "entity a is end;").unwrap();
         std::fs::create_dir(dir.path().join("folder.hdlc")).unwrap();
 
+        let designs = folder_designs(dir.path());
+        let facts: Vec<(&Path, &str, &Language, bool)> = designs
+            .iter()
+            .map(|d| {
+                (
+                    d.path.as_path(),
+                    d.top_name.as_str(),
+                    &d.language,
+                    d.generated,
+                )
+            })
+            .collect();
+        // `a.vhd` is at the place of the generated file of `a`, but hdlc
+        // did not write it.
         assert_eq!(
-            folder_designs(dir.path()),
+            facts,
             [
-                FolderDesign {
-                    path: a,
-                    top_name: "a".into(),
-                    language: Language::Vhdl
-                },
-                FolderDesign {
-                    path: b,
-                    top_name: "b".into(),
-                    language: Language::SystemVerilog
-                },
+                (a.as_path(), "a", &Language::Vhdl, false),
+                (b.as_path(), "b", &Language::SystemVerilog, false),
             ]
         );
         assert_eq!(folder_designs(&dir.path().join("no_such_folder")), []);
@@ -180,6 +283,106 @@ mod tests {
         assert_eq!(
             check_name_is_free(&dir.path().join("spi.hdlc"), "spi"),
             Ok(())
+        );
+    }
+
+    const HEADER: &str = "-- Generated by hdl-compose.\n";
+
+    /// A design `name` in `dir` that places the modules `uses`, with its
+    /// generated top file.
+    fn generated_design(dir: &Path, name: &str, uses: &[&str]) -> PathBuf {
+        let mut s = Schematic::new(name, Language::Vhdl);
+        for (i, module) in uses.iter().enumerate() {
+            s.add_instance(format!("u{i}"), *module).unwrap();
+        }
+        let path = dir.join(format!("{name}.hdlc"));
+        crate::project::save_project(&s, &path).unwrap();
+        std::fs::write(dir.join(format!("{name}.vhd")), HEADER).unwrap();
+        path
+    }
+
+    fn design<'a>(designs: &'a [FolderDesign], name: &str) -> &'a FolderDesign {
+        designs.iter().find(|d| d.top_name == name).unwrap()
+    }
+
+    /// A design is a module for another design only when it has the same
+    /// language, its generated file is at the default place, and it does
+    /// not contain that design.
+    #[test]
+    fn obstacle_gives_the_reason_that_a_design_cannot_be_placed() {
+        let dir = tempfile::tempdir().unwrap();
+        generated_design(dir.path(), "leaf", &["fifo"]);
+        generated_design(dir.path(), "mid", &["leaf", "fifo"]);
+        generated_design(dir.path(), "root", &["mid"]);
+        write_design(dir.path(), "draft.hdlc", "draft", Language::Vhdl);
+        write_design(dir.path(), "sv.hdlc", "sv", Language::SystemVerilog);
+        std::fs::write(dir.path().join("sv.sv"), "// Generated by hdl-compose.\n").unwrap();
+        let designs = folder_designs(dir.path());
+        let obstacle = |child: &str, parent: &str| {
+            design(&designs, child).obstacle(&designs, parent, &Language::Vhdl)
+        };
+
+        assert_eq!(obstacle("leaf", "mid"), None);
+        assert_eq!(obstacle("leaf", "root"), None);
+        assert_eq!(obstacle("mid", "leaf"), Some("contains this design"));
+        assert_eq!(obstacle("root", "leaf"), Some("contains this design"));
+        assert_eq!(obstacle("draft", "root"), Some("not generated"));
+        assert_eq!(obstacle("sv", "root"), Some("other language"));
+        assert!(design(&designs, "sv").generated);
+    }
+
+    /// Two designs that place each other in their files do not make the
+    /// search run without end.
+    #[test]
+    fn designs_that_place_each_other_end_the_search() {
+        let dir = tempfile::tempdir().unwrap();
+        generated_design(dir.path(), "a", &["b"]);
+        generated_design(dir.path(), "b", &["a"]);
+        generated_design(dir.path(), "c", &[]);
+        let designs = folder_designs(dir.path());
+
+        assert_eq!(
+            design(&designs, "a").obstacle(&designs, "c", &Language::Vhdl),
+            None
+        );
+        assert_eq!(
+            design(&designs, "a").obstacle(&designs, "b", &Language::Vhdl),
+            Some("contains this design")
+        );
+    }
+
+    /// A parent gets the generated top file, the generated file of each
+    /// group that is on the disk, and the library sources of the child.
+    #[test]
+    fn sources_are_the_generated_files_and_the_library_of_the_design() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Schematic::new("child", Language::Vhdl);
+        s.library_paths = vec![dir.path().join("rtl/fifo.vhd")];
+        for name in ["made", "later", "by_hand"] {
+            s.groups.push(crate::types::Group {
+                name: name.into(),
+                members: Vec::new(),
+                parent: None,
+                collapsed: false,
+                position: (0.0, 0.0),
+            });
+        }
+        let path = dir.path().join("child.hdlc");
+        crate::project::save_project(&s, &path).unwrap();
+        std::fs::write(dir.path().join("child.vhd"), HEADER).unwrap();
+        std::fs::write(dir.path().join("made.vhd"), HEADER).unwrap();
+        // The group `later` came after the last Generate: it has no file.
+        // `by_hand.vhd` is a source of the user with the name of a group.
+        std::fs::write(dir.path().join("by_hand.vhd"), "entity by_hand is end;").unwrap();
+
+        let designs = folder_designs(dir.path());
+        assert_eq!(
+            designs[0].sources(),
+            [
+                dir.path().join("child.vhd"),
+                dir.path().join("made.vhd"),
+                dir.path().join("rtl/fifo.vhd"),
+            ]
         );
     }
 }

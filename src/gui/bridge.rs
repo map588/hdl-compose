@@ -93,6 +93,17 @@ pub mod qobject {
         #[qinvokable]
         fn design_path(self: &AppState, index: i32) -> QString;
 
+        /// The name of the module that design `index` generates.
+        #[qinvokable]
+        fn design_module(self: &AppState, index: i32) -> QString;
+
+        /// The reason that the open design cannot place design `index`:
+        /// "other language", "not generated" or "contains this design".
+        /// Empty when it can. `add_instance` with the module of such a
+        /// design brings the files of that design into the library.
+        #[qinvokable]
+        fn design_note(self: &AppState, index: i32) -> QString;
+
         #[qinvokable]
         fn has_project(self: &AppState) -> bool;
 
@@ -1760,6 +1771,8 @@ impl qobject::AppState {
         match design.write_to(&path_buf) {
             Ok(_) => {
                 self.as_mut().rust_mut().get_mut().last_error.clear();
+                // The design can be a module of the folder now.
+                self.as_mut().refresh_designs();
                 true
             }
             Err(e) => {
@@ -1950,6 +1963,47 @@ impl qobject::AppState {
             .unwrap_or_default()
     }
 
+    pub fn design_module(&self, index: i32) -> QString {
+        self.rust()
+            .designs
+            .get(index as usize)
+            .map(|d| QString::from(&d.top_name))
+            .unwrap_or_default()
+    }
+
+    pub fn design_note(&self, index: i32) -> QString {
+        let m = self.rust();
+        let (Some(design), Some(open)) = (m.designs.get(index as usize), m.schematic.as_ref())
+        else {
+            return QString::default();
+        };
+        QString::from(
+            design
+                .obstacle(&m.designs, &open.top_name, &open.language)
+                .unwrap_or_default(),
+        )
+    }
+
+    /// The files of the design of the folder that generates the module
+    /// `module`, when the open design can place that design. The open
+    /// design is not a module for itself.
+    fn design_sources(&self, module: &str) -> Vec<PathBuf> {
+        let m = self.rust();
+        let Some(open) = m.schematic.as_ref() else {
+            return Vec::new();
+        };
+        m.designs
+            .iter()
+            .find(|d| {
+                d.top_name == module
+                    && m.current_path.as_deref() != Some(d.path.as_path())
+                    && d.obstacle(&m.designs, &open.top_name, &open.language)
+                        .is_none()
+            })
+            .map(|d| d.sources())
+            .unwrap_or_default()
+    }
+
     pub fn has_project(&self) -> bool {
         self.rust().schematic.is_some()
     }
@@ -1991,21 +2045,38 @@ impl qobject::AppState {
                 .record_error(format!("duplicate instance name: {name_s}"));
             return false;
         }
+        // A design of the folder is a module for this design. Its files
+        // go into the library with the instance, as one change. A file that
+        // the design got after an earlier instance comes in now.
+        let design_sources = self.design_sources(&module_s);
         // Batch-aware so drop (add + initial position) is one undo step.
         // Signals still fire immediately — the canvas must create the item
         // before the position arrives.
         self.as_mut().push_snapshot();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
-            Some(s) => s.add_instance(name_s.clone(), module_s).map(|_| ()),
+            Some(s) => {
+                // Each path, also after the first new one.
+                let mut new_sources = false;
+                for path in design_sources {
+                    new_sources |= s.add_library_path(path);
+                }
+                s.add_instance(name_s.clone(), module_s)
+                    .map(|_| new_sources)
+            }
             None => {
                 self.as_mut().record_error("no project loaded");
                 return false;
             }
         };
         match result {
-            Ok(()) => {
+            Ok(new_sources) => {
                 self.as_mut().rust_mut().get_mut().dirty = true;
                 self.as_mut().set_dirty(true);
+                if new_sources {
+                    // The canvas reads the ports of the module when it
+                    // makes the block.
+                    self.as_mut().rebuild_library_and_validate();
+                }
                 self.as_mut().instance_added(QString::from(&name_s));
                 self.as_mut().rebuild_library_and_validate();
                 true
@@ -5194,6 +5265,146 @@ mod tests {
         );
         assert_eq!(design_files(&state), ["copy.hdlc"]);
         changed(1, "save into another folder");
+    }
+
+    fn library_files(state: &UniquePtr<AppState>) -> Vec<String> {
+        (0..state.library_path_count())
+            .map(|i| {
+                let path = PathBuf::from(state.library_path(i).to_string());
+                path.file_name().unwrap().to_string_lossy().into_owned()
+            })
+            .collect()
+    }
+
+    fn design_notes(state: &UniquePtr<AppState>) -> Vec<(String, String)> {
+        (0..state.design_count())
+            .map(|i| {
+                (
+                    state.design_module(i).to_string(),
+                    state.design_note(i).to_string(),
+                )
+            })
+            .collect()
+    }
+
+    /// Make the design `top` of `state_with_library` a module with one
+    /// output port and one group, and generate it at its default place.
+    fn generate_top_as_a_module(state: &mut UniquePtr<AppState>) {
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        state.pin_mut().promote_port_to_top(&q("u_a"), &q("q"));
+        assert!(state.pin_mut().create_group(&q("stage"), &q("u_a")));
+        assert!(state.pin_mut().save_project());
+        let out = state.suggest_codegen_path();
+        assert!(
+            state.pin_mut().generate_code(&out),
+            "{}",
+            state.last_error()
+        );
+    }
+
+    /// A design of the folder that has generated HDL is a module for a new
+    /// design. `add_instance` brings the generated files and the library
+    /// sources of the child into the library, and the instance gets the
+    /// top-level ports of the child. One undo removes the two.
+    #[test]
+    fn instance_of_a_design_of_the_folder_brings_its_files_in_one_undo_step() {
+        let (dir, mut state) = state_with_library();
+        assert_eq!(
+            design_notes(&state),
+            [("top".into(), "not generated".into())]
+        );
+        generate_top_as_a_module(&mut state);
+        assert_eq!(design_notes(&state), [("top".into(), String::new())]);
+        let child_port = state.top_port_name(0).to_string();
+
+        assert!(
+            state
+                .pin_mut()
+                .new_project_at(&file_in(&dir, "parent.hdlc"), 0)
+        );
+        assert_eq!(
+            design_notes(&state),
+            [
+                ("parent".into(), "not generated".into()),
+                ("top".into(), String::new())
+            ]
+        );
+        assert_eq!(state.library_module_count(), 0);
+
+        assert!(state.pin_mut().add_instance(&q("u_top"), &q("top")));
+        assert_eq!(
+            library_files(&state),
+            ["top.vhd", "stage.vhd", "source.vhd", "sink.vhd"]
+        );
+        let index = state.instance_index(&q("u_top"));
+        assert_eq!(state.instance_port_count(index), 1);
+        assert_eq!(state.instance_port_name(index, 0).to_string(), child_port);
+        assert_eq!(
+            state.validation_error_count(),
+            0,
+            "{:?}",
+            state.validation_messages()
+        );
+
+        // A second instance adds no path.
+        assert!(state.pin_mut().add_instance(&q("u_top2"), &q("top")));
+        assert_eq!(state.library_path_count(), 4);
+        assert!(state.pin_mut().undo());
+
+        assert!(state.pin_mut().undo());
+        assert_eq!((state.instance_count(), state.library_path_count()), (0, 0));
+        assert!(!state.can_undo());
+        assert!(state.pin_mut().redo());
+        assert_eq!((state.instance_count(), state.library_path_count()), (1, 4));
+
+        // The parent is a module also, and the child cannot place it.
+        assert!(state.pin_mut().save_project());
+        let out = state.suggest_codegen_path();
+        assert!(
+            state.pin_mut().generate_code(&out),
+            "{}",
+            state.last_error()
+        );
+        assert!(state.pin_mut().open_project(&file_in(&dir, "top.hdlc")));
+        assert_eq!(
+            design_notes(&state),
+            [
+                ("parent".into(), "contains this design".into()),
+                ("top".into(), String::new())
+            ]
+        );
+        // The module of such a design gets no file: the instance is an
+        // instance of a module that the library does not have.
+        assert!(state.pin_mut().add_instance(&q("u_parent"), &q("parent")));
+        assert_eq!(library_files(&state), ["source.vhd", "sink.vhd"]);
+    }
+
+    /// The open design is not a module for itself, and a design in the
+    /// other language is not a module for it.
+    #[test]
+    fn design_itself_and_a_design_in_the_other_language_bring_no_file() {
+        let (dir, mut state) = state_with_library();
+        generate_top_as_a_module(&mut state);
+
+        assert!(state.pin_mut().add_instance(&q("u_self"), &q("top")));
+        assert_eq!(library_files(&state), ["source.vhd", "sink.vhd"]);
+        assert!(state.pin_mut().undo());
+        assert!(state.pin_mut().save_project());
+
+        assert!(
+            state
+                .pin_mut()
+                .new_project_at(&file_in(&dir, "sv_parent.hdlc"), 1)
+        );
+        assert_eq!(
+            design_notes(&state),
+            [
+                ("sv_parent".into(), "not generated".into()),
+                ("top".into(), "other language".into())
+            ]
+        );
+        assert!(state.pin_mut().add_instance(&q("u_top"), &q("top")));
+        assert_eq!(state.library_path_count(), 0);
     }
 
     /// A save with a new file name gives the design that name: two designs

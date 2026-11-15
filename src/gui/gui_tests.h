@@ -27,4 +27,5 @@ class GuiTests : public QObject {
     void openAfterAStopOffersTheChanges();
     void newDesignGoesIntoTheFolderOfTheOpenDesignWithNoFileDialog();
     void clickInTheListOfDesignsOpensThatDesign();
+    void generatedDesignIsInTheLibraryOfANewDesignAndADoubleClickPlacesIt();
 };

@@ -240,7 +240,8 @@ class LibraryView : public QListView {
         if (indexes.isEmpty()) {
             return;
         }
-        QString module = indexes.first().data(Qt::DisplayRole).toString();
+        // The text of a row can have a mark; the module name is the data.
+        QString module = indexes.first().data(Qt::UserRole).toString();
         auto *mime = new QMimeData;
         mime->setData(QString::fromLatin1(kModuleMimeType), module.toUtf8());
         mime->setText(module);
@@ -252,7 +253,7 @@ class LibraryView : public QListView {
   private:
     void activate(const QModelIndex &index) {
         if (index.isValid() && m_on_activate) {
-            m_on_activate(index.data(Qt::DisplayRole).toString());
+            m_on_activate(index.data(Qt::UserRole).toString());
         }
     }
 
@@ -305,13 +306,41 @@ void rebuild_tree_model(QStandardItemModel *model, AppState *state, const QIcon 
     }
 }
 
-void rebuild_library_model(QStringListModel *model, AppState *state) {
-    QStringList modules;
-    int lc = state->library_module_count();
-    for (int i = 0; i < lc; ++i) {
-        modules << state->library_module_name(i);
+// The library list: each module of the library, and then each design of the
+// folder that the open design can place and does not have yet. To place
+// such a design brings its files into the library. A module that a design
+// of the folder generates has the mark "(design)".
+void rebuild_library_model(QStandardItemModel *model, AppState *state) {
+    model->clear();
+    const QFileInfo open(state->current_project_path());
+    QSet<QString> design_modules;
+    QStringList offered;
+    const int dc = state->design_count();
+    for (int i = 0; i < dc; ++i) {
+        if (QFileInfo(state->design_path(i)) == open) {
+            continue;
+        }
+        design_modules.insert(state->design_module(i));
+        if (state->design_note(i).isEmpty()) {
+            offered << state->design_module(i);
+        }
     }
-    model->setStringList(modules);
+    auto add_row = [&](const QString &module) {
+        const bool design = design_modules.contains(module);
+        auto *item = new QStandardItem(design ? QStringLiteral("%1 (design)").arg(module) : module);
+        item->setEditable(false);
+        item->setData(module, Qt::UserRole);
+        model->appendRow(item);
+    };
+    const int lc = state->library_module_count();
+    for (int i = 0; i < lc; ++i) {
+        const QString module = state->library_module_name(i);
+        offered.removeAll(module);
+        add_row(module);
+    }
+    for (const QString &module : offered) {
+        add_row(module);
+    }
 }
 
 static QString default_open_dir() {
@@ -690,7 +719,8 @@ class MainWindow : public QMainWindow {
         auto *library_label = new QLabel(QStringLiteral("Library"));
         library_label->setContentsMargins(4, 4, 4, 0);
         auto *library_view = new LibraryView(sidebar_splitter);
-        m_library_model = new QStringListModel(this);
+        library_view->setObjectName(QStringLiteral("library_view"));
+        m_library_model = new QStandardItemModel(this);
         library_view->setModel(m_library_model);
         auto *library_container = new QWidget(sidebar_splitter);
         auto *lib_layout = new QVBoxLayout(library_container);
@@ -1343,15 +1373,27 @@ class MainWindow : public QMainWindow {
         const int count = m_state->design_count();
         for (int i = 0; i < count; ++i) {
             const QString path = m_state->design_path(i);
-            auto *item = new QListWidgetItem(QFileInfo(path).completeBaseName(), m_designs_list);
+            // The note says why the open design cannot place this one.
+            // For the open design itself only "not generated" has a use: it
+            // is not a module for the other designs yet.
+            const bool is_open = QFileInfo(path) == open;
+            QString note = m_state->design_note(i);
+            if (is_open && note != QStringLiteral("not generated")) {
+                note.clear();
+            }
+            const QString name = QFileInfo(path).completeBaseName();
+            auto *item = new QListWidgetItem(
+                note.isEmpty() ? name : QStringLiteral("%1 (%2)").arg(name, note), m_designs_list);
             item->setData(Qt::UserRole, path);
             item->setToolTip(path);
-            if (QFileInfo(path) == open) {
+            if (is_open) {
                 QFont font = item->font();
                 font.setBold(true);
                 item->setFont(font);
             }
         }
+        // The library list offers the designs that can be placed.
+        rebuild_library_model(m_library_model, m_state);
     }
 
     void refreshSidebar() {
@@ -2240,7 +2282,7 @@ class MainWindow : public QMainWindow {
     QSplitter *m_root_splitter = nullptr;
     QStandardItemModel *m_tree_model = nullptr;
     QTreeView *m_tree_view = nullptr;
-    QStringListModel *m_library_model = nullptr;
+    QStandardItemModel *m_library_model = nullptr;
     QListWidget *m_designs_list = nullptr;
     CanvasView *m_canvas = nullptr;
     QMenu *m_recent_menu = nullptr;

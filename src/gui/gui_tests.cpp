@@ -33,6 +33,7 @@
 #include <QGraphicsView>
 #include <QGuiApplication>
 #include <QLineEdit>
+#include <QListView>
 #include <QListWidget>
 #include <QMainWindow>
 #include <QMenu>
@@ -314,11 +315,30 @@ QStringList designNames() {
     return names;
 }
 
+// Click the design with the file name `name` in the list of designs.
 void clickDesign(const QString &name) {
     QListWidget *list = designsList();
-    const QList<QListWidgetItem *> found = list->findItems(name, Qt::MatchExactly);
-    QCOMPARE(found.size(), 1);
-    QTest::mouseClick(list->viewport(), Qt::LeftButton, {}, list->visualItemRect(found.first()).center());
+    for (int i = 0; i < list->count(); ++i) {
+        QListWidgetItem *item = list->item(i);
+        if (QFileInfo(item->data(Qt::UserRole).toString()).completeBaseName() == name) {
+            QTest::mouseClick(list->viewport(), Qt::LeftButton, {}, list->visualItemRect(item).center());
+            return;
+        }
+    }
+    QFAIL(qPrintable(QStringLiteral("no design %1 in the list").arg(name)));
+}
+
+QListView *libraryView() {
+    return g->window->findChild<QListView *>(QStringLiteral("library_view"));
+}
+
+// The rows of the library list, as the user reads them.
+QStringList libraryRows() {
+    QStringList rows;
+    const QAbstractItemModel *model = libraryView()->model();
+    for (int i = 0; i < model->rowCount(); ++i)
+        rows << model->index(i, 0).data(Qt::DisplayRole).toString();
+    return rows;
 }
 
 } // namespace
@@ -722,14 +742,17 @@ void GuiTests::newDesignGoesIntoTheFolderOfTheOpenDesignWithNoFileDialog() {
 // The sidebar lists the designs of the folder. A click on one opens it,
 // with the question about changes that are not saved.
 void GuiTests::clickInTheListOfDesignsOpensThatDesign() {
-    QCOMPARE(designNames(), QStringList{QStringLiteral("top*")});
+    // No design has generated HDL: each one has that note.
+    const QString top = QStringLiteral("top (not generated)");
+    const QString child = QStringLiteral("child (not generated)");
+    QCOMPARE(designNames(), QStringList{top + QLatin1Char('*')});
     NewDialogs seen = newDesignFromTheMenu(QStringLiteral("child"));
     QCOMPARE(seen.messages, QStringList());
-    QCOMPARE(designNames(), (QStringList{QStringLiteral("child*"), QStringLiteral("top")}));
+    QCOMPARE(designNames(), (QStringList{child + QLatin1Char('*'), top}));
 
     clickDesign(QStringLiteral("top"));
     QTRY_COMPARE(g->state->getProject_name(), QStringLiteral("top"));
-    QTRY_COMPARE(designNames(), (QStringList{QStringLiteral("child"), QStringLiteral("top*")}));
+    QTRY_COMPARE(designNames(), (QStringList{child, top + QLatin1Char('*')}));
 
     // A click on the open design does nothing.
     clickDesign(QStringLiteral("top"));
@@ -752,7 +775,47 @@ void GuiTests::clickInTheListOfDesignsOpensThatDesign() {
     QTRY_COMPARE(answered, 2);
     QTRY_COMPARE(g->state->getProject_name(), QStringLiteral("child"));
     QVERIFY(!g->state->getDirty());
-    QTRY_COMPARE(designNames(), (QStringList{QStringLiteral("child*"), QStringLiteral("top")}));
+    QTRY_COMPARE(designNames(), (QStringList{child + QLatin1Char('*'), top}));
+}
+
+// Generate makes the open design a module of the folder. A new design
+// then has it in its library list with the mark "(design)", and a double
+// click places it: the block has the top-level ports of the child, and the
+// files of the child are in the library. One undo removes the two.
+void GuiTests::generatedDesignIsInTheLibraryOfANewDesignAndADoubleClickPlacesIt() {
+    QVERIFY(g->state->add_instance(QStringLiteral("u_a"), QStringLiteral("source")));
+    g->state->promote_port_to_top(QStringLiteral("u_a"), QStringLiteral("q"));
+    QVERIFY(g->state->save_project());
+    QCOMPARE(designNames(), QStringList{QStringLiteral("top (not generated)*")});
+    action(QStringLiteral("Generate HDL"))->trigger();
+    QVERIFY(QFile::exists(g->file(QStringLiteral("top.vhd"))));
+    QTRY_COMPARE(designNames(), QStringList{QStringLiteral("top*")});
+    // A design is not a module for itself.
+    QCOMPARE(libraryRows(), (QStringList{QStringLiteral("source"), QStringLiteral("sink")}));
+
+    NewDialogs seen = newDesignFromTheMenu(QStringLiteral("parent"));
+    QCOMPARE(seen.messages, QStringList());
+    QTRY_COMPARE(designNames(),
+                 (QStringList{QStringLiteral("parent (not generated)*"), QStringLiteral("top")}));
+    QCOMPARE(libraryRows(), QStringList{QStringLiteral("top (design)")});
+    QCOMPARE(g->state->library_path_count(), 0);
+
+    QListView *library = libraryView();
+    QTest::mouseDClick(library->viewport(), Qt::LeftButton, {},
+                       library->visualRect(library->model()->index(0, 0)).center());
+    settle();
+    QCOMPARE(blocks_on_canvas(), 1);
+    QCOMPARE(pinCount(blocks().first()), 1);
+    QCOMPARE(g->state->library_path_count(), 3);
+    QCOMPARE(libraryRows(), (QStringList{QStringLiteral("top (design)"), QStringLiteral("source"),
+                                         QStringLiteral("sink")}));
+
+    action(QStringLiteral("Undo"))->trigger();
+    settle();
+    QCOMPARE(blocks_on_canvas(), 0);
+    QCOMPARE(g->state->library_path_count(), 0);
+    QCOMPARE(libraryRows(), QStringList{QStringLiteral("top (design)")});
+    QVERIFY(!g->state->can_undo());
 }
 
 extern "C" int run_gui_tests() {
