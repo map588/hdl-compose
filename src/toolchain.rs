@@ -235,44 +235,178 @@ pub fn stage(
     })
 }
 
-/// Analyze the config's named-library sources (`--work=<name>`) ahead of the
-/// work-library files. No-op without a toolchain config.
-fn ghdl_analyze_libraries(staged: &StagedBuild) -> Result<bool, String> {
-    if !staged.libraries.is_empty() {
-        require_tools(&["ghdl"])?;
+/// One external command of a flow. It runs in the build directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Step {
+    pub tool: String,
+    pub args: Vec<String>,
+    /// The file in the build directory that gets the stdout of the tool.
+    /// `None` sends the stdout to the terminal.
+    pub stdout_to: Option<String>,
+}
+
+impl Step {
+    fn new<I, S>(tool: &str, args: I) -> Step
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Step {
+            tool: tool.to_string(),
+            args: args.into_iter().map(Into::into).collect(),
+            stdout_to: None,
+        }
     }
-    for (name, files) in &staged.libraries {
-        let mut args = vec![
-            "-a".to_string(),
-            "--std=08".to_string(),
-            format!("--work={name}"),
-        ];
-        args.extend(files.iter().cloned());
-        if !run_tool("ghdl", &args, &staged.dir)? {
+}
+
+/// One way to do a stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Variant {
+    /// `run_stages` prints this text when it uses the variant because the
+    /// variant before it failed.
+    pub note: &'static str,
+    pub steps: Vec<Step>,
+}
+
+/// One part of a flow. `run_stages` tries the variants in order and uses the
+/// first one that passes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stage {
+    pub name: &'static str,
+    pub variants: Vec<Variant>,
+}
+
+impl Stage {
+    fn single(name: &'static str, steps: Vec<Step>) -> Stage {
+        Stage {
+            name,
+            variants: vec![Variant { note: "", steps }],
+        }
+    }
+}
+
+/// Facts about the installed tools that a step table needs. The functions
+/// that build a table get them as data, so the functions call no tool and a
+/// test can run them on a host without the tools.
+#[derive(Debug, Clone, Default)]
+pub struct FlowEnv {
+    /// The library directory of the standalone ghdl (see `ghdl_prefix`).
+    pub ghdl_prefix: Option<String>,
+}
+
+impl FlowEnv {
+    /// Ask the installed tools. Only a VHDL flow needs an answer.
+    pub fn detect(language: &Language) -> FlowEnv {
+        FlowEnv {
+            ghdl_prefix: match language {
+                Language::Vhdl => ghdl_prefix(),
+                Language::SystemVerilog => None,
+            },
+        }
+    }
+}
+
+/// Run one step. Returns whether the tool exited successfully. A tool that
+/// is not on PATH is an error, not a failed step.
+fn run_step(step: &Step, dir: &Path) -> Result<bool, String> {
+    let mut cmd = Command::new(&step.tool);
+    cmd.args(&step.args).current_dir(dir);
+    let spawn_error = |e: std::io::Error| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            format!("{} {PATH_HINT}", step.tool)
+        } else {
+            format!("failed to run {}: {e}", step.tool)
+        }
+    };
+    match &step.stdout_to {
+        None => Ok(cmd.status().map_err(spawn_error)?.success()),
+        Some(file) => {
+            let out = cmd.stderr(Stdio::inherit()).output().map_err(spawn_error)?;
+            if !out.status.success() {
+                return Ok(false);
+            }
+            std::fs::write(dir.join(file), out.stdout)
+                .map_err(|e| format!("cannot write {file}: {e}"))?;
+            Ok(true)
+        }
+    }
+}
+
+/// Run steps in order. Stop at the first step that fails.
+fn run_steps(steps: &[Step], dir: &Path) -> Result<bool, String> {
+    for step in steps {
+        if !run_step(step, dir)? {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
+/// Run a step table in the directory `dir`. Each stage must pass. A stage
+/// passes when one of its variants passes; the variants run in order.
+pub fn run_stages(stages: &[Stage], dir: &Path) -> Result<bool, String> {
+    'stages: for stage in stages {
+        for (i, variant) in stage.variants.iter().enumerate() {
+            if i > 0 {
+                println!("note: {}", variant.note);
+            }
+            if run_steps(&variant.steps, dir)? {
+                continue 'stages;
+            }
+        }
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// The ghdl steps that analyze the named-library sources of the config
+/// (`--work=<name>`). They must run before the work-library files. Empty
+/// without a toolchain config.
+fn library_steps(staged: &StagedBuild) -> Vec<Step> {
+    staged
+        .libraries
+        .iter()
+        .map(|(name, files)| {
+            let mut args = vec![
+                "-a".to_string(),
+                "--std=08".to_string(),
+                format!("--work={name}"),
+            ];
+            args.extend(files.iter().cloned());
+            Step::new("ghdl", args)
+        })
+        .collect()
+}
+
+/// The stage that analyzes the named libraries. Only a VHDL design with
+/// named libraries has it.
+fn library_stage(staged: &StagedBuild) -> Option<Stage> {
+    let steps = library_steps(staged);
+    (matches!(staged.language, Language::Vhdl) && !steps.is_empty())
+        .then(|| Stage::single("libraries", steps))
+}
+
+/// The ghdl step that analyzes every work source.
+fn analyze_step(staged: &StagedBuild) -> Step {
+    let mut args = vec!["-a".to_string(), "--std=08".to_string()];
+    args.extend(staged.sources.iter().cloned());
+    Step::new("ghdl", args)
+}
+
 /// Elaborate the staged design with a real frontend: ghdl for VHDL,
-/// `verilator --lint-only` for SystemVerilog. Returns whether it passed.
-pub fn run_check(staged: &StagedBuild) -> Result<bool, String> {
-    match staged.language {
+/// `verilator --lint-only` for SystemVerilog.
+pub fn check_stages(staged: &StagedBuild) -> Vec<Stage> {
+    let steps = match staged.language {
         Language::Vhdl => {
-            require_tools(&["ghdl"])?;
-            if !ghdl_analyze_libraries(staged)? {
-                return Ok(false);
-            }
-            let mut args = vec!["-a".to_string(), "--std=08".to_string()];
-            args.extend(staged.sources.iter().cloned());
-            if !run_tool("ghdl", &args, &staged.dir)? {
-                return Ok(false);
-            }
-            run_tool("ghdl", ["-e", "--std=08", &staged.top_name], &staged.dir)
+            let mut steps = library_steps(staged);
+            steps.push(analyze_step(staged));
+            steps.push(Step::new(
+                "ghdl",
+                ["-e", "--std=08", staged.top_name.as_str()],
+            ));
+            steps
         }
         Language::SystemVerilog => {
-            require_tools(&["verilator"])?;
             let mut args = vec![
                 "--lint-only".to_string(),
                 "-sv".to_string(),
@@ -280,9 +414,15 @@ pub fn run_check(staged: &StagedBuild) -> Result<bool, String> {
                 staged.top_name.clone(),
             ];
             args.extend(staged.sources.iter().cloned());
-            run_tool("verilator", &args, &staged.dir)
+            vec![Step::new("verilator", args)]
         }
-    }
+    };
+    vec![Stage::single("check", steps)]
+}
+
+/// Run `check_stages`. Returns whether the design passed.
+pub fn run_check(staged: &StagedBuild) -> Result<bool, String> {
+    run_stages(&check_stages(staged), &staged.dir)
 }
 
 /// The ghdl-yosys-plugin's embedded ghdl does not resolve its std/ieee
@@ -300,33 +440,11 @@ fn ghdl_prefix() -> Option<String> {
         .or_else(|| std::env::var("GHDL_PREFIX").ok())
 }
 
-/// Run a tool capturing stdout (stderr still streams to the user). Returns
-/// None when the tool exits nonzero.
-fn run_tool_capture<I, S>(name: &str, args: I, cwd: &Path) -> Result<Option<Vec<u8>>, String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let out = Command::new(name)
-        .args(args)
-        .current_dir(cwd)
-        .stderr(Stdio::inherit())
-        .output()
-        .map_err(|e| format!("failed to run {name}: {e}"))?;
-    Ok(out.status.success().then_some(out.stdout))
-}
-
-/// Fallback VHDL synthesis frontend for when the ghdl-yosys-plugin chokes on
-/// a design (it has known gaps: out-port defaults, some ROM shapes): analyze
-/// with standalone ghdl, emit a Verilog netlist via `ghdl synth`, and leave
-/// it at `design_net.v` in the staging dir for yosys to read.
-fn ghdl_netlist_fallback(staged: &StagedBuild) -> Result<bool, String> {
-    require_tools(&["ghdl"])?;
-    let mut args = vec!["-a".to_string(), "--std=08".to_string()];
-    args.extend(staged.sources.iter().cloned());
-    if !run_tool("ghdl", &args, &staged.dir)? {
-        return Ok(false);
-    }
+/// The steps of the fallback VHDL frontend, for a design that the
+/// ghdl-yosys-plugin cannot read (known gaps: out-port defaults, some ROM
+/// shapes). The standalone ghdl analyzes the sources and writes a Verilog
+/// netlist to `design_net.v` in the build directory for yosys to read.
+fn netlist_steps(staged: &StagedBuild) -> Vec<Step> {
     let mut args = vec!["synth".to_string(), "--std=08".to_string()];
     if !staged.libraries.is_empty() {
         args.push("-P.".to_string());
@@ -334,21 +452,21 @@ fn ghdl_netlist_fallback(staged: &StagedBuild) -> Result<bool, String> {
     args.extend(staged.ghdl_synth_flags.iter().cloned());
     args.push("--out=verilog".to_string());
     args.push(staged.top_name.clone());
-    match run_tool_capture("ghdl", &args, &staged.dir)? {
-        Some(netlist) => {
-            std::fs::write(staged.dir.join("design_net.v"), netlist)
-                .map_err(|e| format!("cannot write design_net.v: {e}"))?;
-            Ok(true)
-        }
-        None => Ok(false),
-    }
+    vec![
+        analyze_step(staged),
+        Step {
+            tool: "ghdl".to_string(),
+            args,
+            stdout_to: Some("design_net.v".to_string()),
+        },
+    ]
 }
 
 /// Argument string for the ghdl-yosys-plugin: std, library prefix, search
 /// path for pre-analyzed named libraries, then every work source.
-fn ghdl_plugin_flags(staged: &StagedBuild) -> String {
+fn ghdl_plugin_flags(staged: &StagedBuild, env: &FlowEnv) -> String {
     let mut flags = String::from("--std=08 ");
-    if let Some(p) = ghdl_prefix() {
+    if let Some(p) = &env.ghdl_prefix {
         flags.push_str(&format!("--PREFIX={p} "));
     }
     if !staged.libraries.is_empty() {
@@ -362,99 +480,114 @@ fn ghdl_plugin_flags(staged: &StagedBuild) -> String {
     flags
 }
 
-/// Generic yosys synthesis of the staged design; prints yosys output
-/// (warnings + `stat`) directly. Proves synthesizability, nothing more.
-pub fn run_synth(staged: &StagedBuild) -> Result<bool, String> {
-    require_tools(&["yosys"])?;
+/// One way to read the staged design into yosys.
+struct Frontend {
+    note: &'static str,
+    /// The steps that must run before the yosys step.
+    pre: Vec<Step>,
+    /// The yosys plugin that `read` needs (`-m <plugin>`).
+    plugin: Option<&'static str>,
+    /// The yosys commands that read the design.
+    read: String,
+    /// True when `read` also selects the top module.
+    selects_top: bool,
+}
+
+/// The frontends for the language of the design, the preferred one first.
+fn frontends(staged: &StagedBuild, env: &FlowEnv) -> Vec<Frontend> {
     match staged.language {
-        Language::Vhdl => {
-            if !ghdl_analyze_libraries(staged)? {
-                return Ok(false);
-            }
-            let script = format!(
-                "ghdl {} -e {}; synth; stat",
-                ghdl_plugin_flags(staged),
-                staged.top_name
-            );
-            if run_tool("yosys", ["-m", "ghdl", "-p", &script], &staged.dir)? {
-                return Ok(true);
-            }
-            println!("note: ghdl-yosys-plugin failed, retrying via ghdl synth -> verilog netlist");
-            if !ghdl_netlist_fallback(staged)? {
-                return Ok(false);
-            }
-            let script = format!(
-                "read_verilog design_net.v; hierarchy -top {}; synth; stat",
-                staged.top_name
-            );
-            run_tool("yosys", ["-p", &script], &staged.dir)
-        }
-        Language::SystemVerilog => {
-            let script = format!(
-                "read_verilog -sv {}; hierarchy -top {}; synth; stat",
-                staged.sources.join(" "),
-                staged.top_name
-            );
-            run_tool("yosys", ["-p", &script], &staged.dir)
-        }
+        Language::Vhdl => vec![
+            Frontend {
+                note: "",
+                pre: Vec::new(),
+                plugin: Some("ghdl"),
+                read: format!(
+                    "ghdl {} -e {}",
+                    ghdl_plugin_flags(staged, env),
+                    staged.top_name
+                ),
+                selects_top: true,
+            },
+            Frontend {
+                note: "ghdl-yosys-plugin failed, retrying via ghdl synth -> verilog netlist",
+                pre: netlist_steps(staged),
+                plugin: None,
+                read: "read_verilog design_net.v".to_string(),
+                selects_top: false,
+            },
+        ],
+        Language::SystemVerilog => vec![Frontend {
+            note: "",
+            pre: Vec::new(),
+            plugin: None,
+            read: format!("read_verilog -sv {}", staged.sources.join(" ")),
+            selects_top: false,
+        }],
     }
 }
 
-/// Full bitstream build for a specific board: yosys `synth_<family>` →
-/// nextpnr → pack, all inside the staging dir, then copy the bitstream to
-/// `out_bit`. nextpnr's timing report streams to the user directly.
-pub fn run_build(
+/// A stage with one yosys run for each frontend. `script` gives the yosys
+/// script for a frontend.
+fn yosys_stage(
+    name: &'static str,
     staged: &StagedBuild,
-    board: &crate::board::Board,
-    out_bit: &Path,
-) -> Result<bool, String> {
-    let synth_cmd = match board.family {
-        FpgaFamily::Ice40 => "synth_ice40",
-        FpgaFamily::Ecp5 => "synth_ecp5",
-        FpgaFamily::Gowin => "synth_gowin",
-    };
+    env: &FlowEnv,
+    script: impl Fn(&Frontend) -> String,
+) -> Stage {
+    let variants = frontends(staged, env)
+        .into_iter()
+        .map(|frontend| {
+            let mut args: Vec<String> = Vec::new();
+            if let Some(plugin) = frontend.plugin {
+                args.extend(["-m".to_string(), plugin.to_string()]);
+            }
+            args.extend(["-p".to_string(), script(&frontend)]);
+            let mut steps = frontend.pre;
+            steps.push(Step::new("yosys", args));
+            Variant {
+                note: frontend.note,
+                steps,
+            }
+        })
+        .collect();
+    Stage { name, variants }
+}
 
-    require_tools(&["yosys"])?;
-    if matches!(staged.language, Language::Vhdl) && !ghdl_analyze_libraries(staged)? {
-        return Ok(false);
-    }
-    let script = match staged.language {
-        Language::Vhdl => format!(
-            "ghdl {} -e {}; {synth_cmd} -json design.json",
-            ghdl_plugin_flags(staged),
-            staged.top_name
-        ),
-        Language::SystemVerilog => format!(
-            "read_verilog -sv {}; {synth_cmd} -top {} -json design.json",
-            staged.sources.join(" "),
-            staged.top_name
-        ),
-    };
-    let yosys_args: Vec<&str> = match staged.language {
-        Language::Vhdl => vec!["-m", "ghdl", "-p", &script],
-        Language::SystemVerilog => vec!["-p", &script],
-    };
-    let mut synth_ok = run_tool("yosys", yosys_args, &staged.dir)?;
-    if !synth_ok && matches!(staged.language, Language::Vhdl) {
-        println!("note: ghdl-yosys-plugin failed, retrying via ghdl synth -> verilog netlist");
-        if ghdl_netlist_fallback(staged)? {
-            let script = format!(
-                "read_verilog design_net.v; hierarchy -top {}; {synth_cmd} -top {} -json design.json",
-                staged.top_name, staged.top_name
-            );
-            synth_ok = run_tool("yosys", ["-p", &script], &staged.dir)?;
+/// Generic yosys synthesis of the staged design, with `stat` at the end.
+/// It proves that the design can be synthesized, nothing more.
+pub fn synth_stages(staged: &StagedBuild, env: &FlowEnv) -> Vec<Stage> {
+    let top = &staged.top_name;
+    let mut stages: Vec<Stage> = library_stage(staged).into_iter().collect();
+    stages.push(yosys_stage("synth", staged, env, |frontend| {
+        if frontend.selects_top {
+            format!("{}; synth; stat", frontend.read)
+        } else {
+            format!("{}; hierarchy -top {top}; synth; stat", frontend.read)
         }
-    }
-    if !synth_ok {
-        return Ok(false);
-    }
+    }));
+    stages
+}
 
-    let constraints = board
-        .constraints
-        .canonicalize()
-        .map_err(|e| format!("cannot resolve {}: {e}", board.constraints.display()))?;
-    let constraints = constraints.to_string_lossy().into_owned();
-    let (pnr_tool, pnr_args, packed_input) = match board.family {
+/// Run `synth_stages`. yosys prints its warnings and `stat` to the terminal.
+pub fn run_synth(staged: &StagedBuild) -> Result<bool, String> {
+    let env = FlowEnv::detect(&staged.language);
+    run_stages(&synth_stages(staged, &env), &staged.dir)
+}
+
+/// The file that nextpnr writes and the pack tool reads.
+fn pnr_output(family: FpgaFamily) -> &'static str {
+    match family {
+        FpgaFamily::Ice40 => "pnr.asc",
+        FpgaFamily::Ecp5 => "pnr.config",
+        FpgaFamily::Gowin => "pnr.json",
+    }
+}
+
+/// The place-and-route step for a board. `constraints` is the absolute path
+/// of the constraints file of the board.
+fn pnr_step(board: &crate::board::Board, constraints: &str) -> Step {
+    let output = pnr_output(board.family);
+    let (tool, mut args): (&str, Vec<String>) = match board.family {
         FpgaFamily::Ice40 => (
             "nextpnr-ice40",
             vec![
@@ -464,11 +597,10 @@ pub fn run_build(
                 "--json".into(),
                 "design.json".into(),
                 "--pcf".into(),
-                constraints,
+                constraints.into(),
                 "--asc".into(),
-                "pnr.asc".into(),
+                output.into(),
             ],
-            "pnr.asc",
         ),
         FpgaFamily::Ecp5 => (
             "nextpnr-ecp5",
@@ -479,11 +611,10 @@ pub fn run_build(
                 "--json".into(),
                 "design.json".into(),
                 "--lpf".into(),
-                constraints,
+                constraints.into(),
                 "--textcfg".into(),
-                "pnr.config".into(),
+                output.into(),
             ],
-            "pnr.config",
         ),
         FpgaFamily::Gowin => (
             "nextpnr-himbaechel",
@@ -495,44 +626,89 @@ pub fn run_build(
                 "--json".into(),
                 "design.json".into(),
                 "--write".into(),
-                "pnr.json".into(),
+                output.into(),
             ],
-            "pnr.json",
         ),
     };
     // The chip view reads these three files. The Gowin flow already
     // writes `pnr.json` as the input of its pack step.
-    let mut pnr_args = pnr_args;
     if !matches!(board.family, FpgaFamily::Gowin) {
-        pnr_args.extend(["--write".into(), "pnr.json".into()]);
+        args.extend(["--write".into(), "pnr.json".into()]);
     }
-    pnr_args.extend(["--report", "report.json", "--placed-svg", "placed.svg"].map(String::from));
-    require_tools(&[pnr_tool])?;
-    if !run_tool(pnr_tool, &pnr_args, &staged.dir)? {
-        return Ok(false);
-    }
+    args.extend(["--report", "report.json", "--placed-svg", "placed.svg"].map(String::from));
+    Step::new(tool, args)
+}
 
-    let bit_name = "out.bit";
-    let (pack_tool, pack_args) = match board.family {
-        FpgaFamily::Ice40 => ("icepack", vec![packed_input.to_string(), bit_name.into()]),
+/// The name of the bitstream in the build directory.
+const BITSTREAM: &str = "out.bit";
+
+/// The step that packs the nextpnr output into a bitstream.
+fn pack_step(board: &crate::board::Board) -> Step {
+    let input = pnr_output(board.family).to_string();
+    match board.family {
+        FpgaFamily::Ice40 => Step::new("icepack", [input, BITSTREAM.to_string()]),
         FpgaFamily::Ecp5 => {
-            let mut a = board.pack_args.clone();
-            a.push(packed_input.to_string());
-            a.push(bit_name.into());
-            ("ecppack", a)
+            let mut args = board.pack_args.clone();
+            args.push(input);
+            args.push(BITSTREAM.into());
+            Step::new("ecppack", args)
         }
         FpgaFamily::Gowin => {
-            let mut a = board.pack_args.clone();
-            a.extend(["-o".into(), bit_name.into(), packed_input.to_string()]);
-            ("gowin_pack", a)
+            let mut args = board.pack_args.clone();
+            args.extend(["-o".into(), BITSTREAM.into(), input]);
+            Step::new("gowin_pack", args)
         }
+    }
+}
+
+/// The bitstream flow for a board: yosys `synth_<family>`, nextpnr, pack.
+/// `constraints` is the absolute path of the constraints file of the board.
+pub fn build_stages(
+    staged: &StagedBuild,
+    board: &crate::board::Board,
+    constraints: &str,
+    env: &FlowEnv,
+) -> Vec<Stage> {
+    let synth_cmd = match board.family {
+        FpgaFamily::Ice40 => "synth_ice40",
+        FpgaFamily::Ecp5 => "synth_ecp5",
+        FpgaFamily::Gowin => "synth_gowin",
     };
-    require_tools(&[pack_tool])?;
-    if !run_tool(pack_tool, &pack_args, &staged.dir)? {
+    let top = &staged.top_name;
+    let mut stages: Vec<Stage> = library_stage(staged).into_iter().collect();
+    stages.push(yosys_stage("synth", staged, env, |frontend| {
+        if frontend.selects_top {
+            format!("{}; {synth_cmd} -json design.json", frontend.read)
+        } else {
+            format!(
+                "{}; {synth_cmd} -top {top} -json design.json",
+                frontend.read
+            )
+        }
+    }));
+    stages.push(Stage::single("pnr", vec![pnr_step(board, constraints)]));
+    stages.push(Stage::single("pack", vec![pack_step(board)]));
+    stages
+}
+
+/// Run `build_stages` in the build directory, then copy the bitstream to
+/// `out_bit`. The timing report of nextpnr goes to the terminal.
+pub fn run_build(
+    staged: &StagedBuild,
+    board: &crate::board::Board,
+    out_bit: &Path,
+) -> Result<bool, String> {
+    let constraints = board
+        .constraints
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", board.constraints.display()))?;
+    let env = FlowEnv::detect(&staged.language);
+    let stages = build_stages(staged, board, &constraints.to_string_lossy(), &env);
+    if !run_stages(&stages, &staged.dir)? {
         return Ok(false);
     }
 
-    std::fs::copy(staged.dir.join(bit_name), out_bit)
+    std::fs::copy(staged.dir.join(BITSTREAM), out_bit)
         .map_err(|e| format!("cannot write {}: {e}", out_bit.display()))?;
     // A chip view failure must not fail a build that made a bitstream.
     match write_floorplan(&staged.dir, &floorplan_path(out_bit)) {
@@ -616,7 +792,7 @@ pub fn run_sim(
     match staged.language {
         Language::Vhdl => {
             require_tools(&["ghdl"])?;
-            if !ghdl_analyze_libraries(staged)? {
+            if !run_steps(&library_steps(staged), &staged.dir)? {
                 return Ok(None);
             }
             let wave = project_dir.join(format!("{tb_name}.ghw"));
@@ -1063,6 +1239,403 @@ mod tests {
         assert!(sc.makefile.contains("read_verilog -sv"));
         assert!(sc.makefile.contains("ecppack"));
         assert!(!sc.makefile.contains("ghdl"));
+    }
+}
+
+#[cfg(test)]
+mod flow_tests {
+    use super::*;
+    use crate::board::Board;
+
+    fn staged(language: Language) -> StagedBuild {
+        let ext = match language {
+            Language::Vhdl => "vhd",
+            Language::SystemVerilog => "sv",
+        };
+        StagedBuild {
+            dir: PathBuf::from("/nonexistent"),
+            sources: vec![format!("leaf.{ext}"), format!("top.{ext}")],
+            libraries: Vec::new(),
+            ghdl_synth_flags: Vec::new(),
+            top_name: "top".to_string(),
+            language,
+        }
+    }
+
+    fn env() -> FlowEnv {
+        FlowEnv {
+            ghdl_prefix: Some("/ghdl/lib".to_string()),
+        }
+    }
+
+    fn board(family: FpgaFamily, device: &str, package: &str) -> Board {
+        Board {
+            name: "test".to_string(),
+            family,
+            device: device.to_string(),
+            package: package.to_string(),
+            constraints: PathBuf::from("pins"),
+            pack_args: vec!["--compress".to_string()],
+            prog_args: Vec::new(),
+        }
+    }
+
+    fn step(tool: &str, args: &[&str]) -> Step {
+        Step::new(tool, args.iter().copied())
+    }
+
+    fn single(name: &'static str, steps: Vec<Step>) -> Stage {
+        Stage::single(name, steps)
+    }
+
+    #[test]
+    fn vhdl_check_analyzes_then_elaborates() {
+        assert_eq!(
+            check_stages(&staged(Language::Vhdl)),
+            vec![single(
+                "check",
+                vec![
+                    step("ghdl", &["-a", "--std=08", "leaf.vhd", "top.vhd"]),
+                    step("ghdl", &["-e", "--std=08", "top"]),
+                ]
+            )]
+        );
+    }
+
+    #[test]
+    fn sv_check_runs_verilator_lint() {
+        assert_eq!(
+            check_stages(&staged(Language::SystemVerilog)),
+            vec![single(
+                "check",
+                vec![step(
+                    "verilator",
+                    &[
+                        "--lint-only",
+                        "-sv",
+                        "--top-module",
+                        "top",
+                        "leaf.sv",
+                        "top.sv"
+                    ]
+                )]
+            )]
+        );
+    }
+
+    #[test]
+    fn named_libraries_are_analyzed_first_and_put_on_the_search_path() {
+        let mut s = staged(Language::Vhdl);
+        s.libraries = vec![("loot".to_string(), vec!["pkg.vhd".to_string()])];
+        let library = step("ghdl", &["-a", "--std=08", "--work=loot", "pkg.vhd"]);
+
+        assert_eq!(check_stages(&s)[0].variants[0].steps[0], library);
+
+        let stages = synth_stages(&s, &env());
+        assert_eq!(stages[0], single("libraries", vec![library]));
+        let plugin = &stages[1].variants[0].steps[0];
+        assert_eq!(
+            plugin.args[3],
+            "ghdl --std=08 --PREFIX=/ghdl/lib -P. leaf.vhd top.vhd -e top; synth; stat"
+        );
+        let netlist = &stages[1].variants[1].steps[1];
+        assert_eq!(
+            netlist.args,
+            ["synth", "--std=08", "-P.", "--out=verilog", "top"]
+        );
+    }
+
+    #[test]
+    fn vhdl_synth_has_the_plugin_then_the_netlist_variant() {
+        let mut s = staged(Language::Vhdl);
+        s.ghdl_synth_flags = vec!["--latches".to_string()];
+        assert_eq!(
+            synth_stages(&s, &env()),
+            vec![Stage {
+                name: "synth",
+                variants: vec![
+                    Variant {
+                        note: "",
+                        steps: vec![step(
+                            "yosys",
+                            &[
+                                "-m",
+                                "ghdl",
+                                "-p",
+                                "ghdl --std=08 --PREFIX=/ghdl/lib --latches leaf.vhd top.vhd -e top; synth; stat"
+                            ]
+                        )],
+                    },
+                    Variant {
+                        note: "ghdl-yosys-plugin failed, retrying via ghdl synth -> verilog netlist",
+                        steps: vec![
+                            step("ghdl", &["-a", "--std=08", "leaf.vhd", "top.vhd"]),
+                            Step {
+                                stdout_to: Some("design_net.v".to_string()),
+                                ..step(
+                                    "ghdl",
+                                    &["synth", "--std=08", "--latches", "--out=verilog", "top"]
+                                )
+                            },
+                            step(
+                                "yosys",
+                                &[
+                                    "-p",
+                                    "read_verilog design_net.v; hierarchy -top top; synth; stat"
+                                ]
+                            ),
+                        ],
+                    },
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn sv_synth_reads_verilog() {
+        assert_eq!(
+            synth_stages(&staged(Language::SystemVerilog), &FlowEnv::default()),
+            vec![single(
+                "synth",
+                vec![step(
+                    "yosys",
+                    &[
+                        "-p",
+                        "read_verilog -sv leaf.sv top.sv; hierarchy -top top; synth; stat"
+                    ]
+                )]
+            )]
+        );
+    }
+
+    /// The commands of `run_build` before the step table, for the flow that
+    /// is verified on hardware (VHDL, ECP5).
+    #[test]
+    fn vhdl_ecp5_build_commands() {
+        let stages = build_stages(
+            &staged(Language::Vhdl),
+            &board(FpgaFamily::Ecp5, "25k", "CABGA256"),
+            "/abs/board.lpf",
+            &env(),
+        );
+        let names: Vec<&str> = stages.iter().map(|s| s.name).collect();
+        assert_eq!(names, ["synth", "pnr", "pack"]);
+        assert_eq!(
+            stages[0].variants[0].steps,
+            vec![step(
+                "yosys",
+                &[
+                    "-m",
+                    "ghdl",
+                    "-p",
+                    "ghdl --std=08 --PREFIX=/ghdl/lib leaf.vhd top.vhd -e top; synth_ecp5 -json design.json"
+                ]
+            )]
+        );
+        assert_eq!(
+            stages[0].variants[1].steps[2],
+            step(
+                "yosys",
+                &[
+                    "-p",
+                    "read_verilog design_net.v; synth_ecp5 -top top -json design.json"
+                ]
+            )
+        );
+        assert_eq!(
+            stages[1],
+            single(
+                "pnr",
+                vec![step(
+                    "nextpnr-ecp5",
+                    &[
+                        "--25k",
+                        "--package",
+                        "CABGA256",
+                        "--json",
+                        "design.json",
+                        "--lpf",
+                        "/abs/board.lpf",
+                        "--textcfg",
+                        "pnr.config",
+                        "--write",
+                        "pnr.json",
+                        "--report",
+                        "report.json",
+                        "--placed-svg",
+                        "placed.svg",
+                    ]
+                )]
+            )
+        );
+        assert_eq!(
+            stages[2],
+            single(
+                "pack",
+                vec![step("ecppack", &["--compress", "pnr.config", "out.bit"])]
+            )
+        );
+    }
+
+    #[test]
+    fn sv_ice40_build_commands() {
+        let stages = build_stages(
+            &staged(Language::SystemVerilog),
+            &board(FpgaFamily::Ice40, "up5k", "sg48"),
+            "/abs/board.pcf",
+            &FlowEnv::default(),
+        );
+        assert_eq!(
+            stages[0],
+            single(
+                "synth",
+                vec![step(
+                    "yosys",
+                    &[
+                        "-p",
+                        "read_verilog -sv leaf.sv top.sv; synth_ice40 -top top -json design.json"
+                    ]
+                )]
+            )
+        );
+        assert_eq!(
+            stages[1].variants[0].steps[0],
+            step(
+                "nextpnr-ice40",
+                &[
+                    "--up5k",
+                    "--package",
+                    "sg48",
+                    "--json",
+                    "design.json",
+                    "--pcf",
+                    "/abs/board.pcf",
+                    "--asc",
+                    "pnr.asc",
+                    "--write",
+                    "pnr.json",
+                    "--report",
+                    "report.json",
+                    "--placed-svg",
+                    "placed.svg",
+                ]
+            )
+        );
+        // icepack takes no arguments from the board file.
+        assert_eq!(
+            stages[2].variants[0].steps[0],
+            step("icepack", &["pnr.asc", "out.bit"])
+        );
+    }
+
+    #[test]
+    fn gowin_build_packs_the_json_that_nextpnr_writes() {
+        let stages = build_stages(
+            &staged(Language::SystemVerilog),
+            &board(FpgaFamily::Gowin, "GW1NR-LV9QN88PC6/I5", ""),
+            "/abs/board.cst",
+            &FlowEnv::default(),
+        );
+        assert_eq!(
+            stages[1].variants[0].steps[0],
+            step(
+                "nextpnr-himbaechel",
+                &[
+                    "--device",
+                    "GW1NR-LV9QN88PC6/I5",
+                    "--vopt",
+                    "cst=/abs/board.cst",
+                    "--json",
+                    "design.json",
+                    "--write",
+                    "pnr.json",
+                    "--report",
+                    "report.json",
+                    "--placed-svg",
+                    "placed.svg",
+                ]
+            )
+        );
+        assert_eq!(
+            stages[2].variants[0].steps[0],
+            step("gowin_pack", &["--compress", "-o", "out.bit", "pnr.json"])
+        );
+    }
+
+    #[cfg(unix)]
+    mod run {
+        use super::*;
+
+        fn variants(tools: &[&str]) -> Stage {
+            Stage {
+                name: "stage",
+                variants: tools
+                    .iter()
+                    .map(|tool| Variant {
+                        note: "next variant",
+                        steps: vec![step(tool, &[])],
+                    })
+                    .collect(),
+            }
+        }
+
+        #[test]
+        fn a_stage_passes_when_a_later_variant_passes() {
+            let dir = tempfile::tempdir().unwrap();
+            assert_eq!(
+                run_stages(&[variants(&["false", "true"])], dir.path()),
+                Ok(true)
+            );
+        }
+
+        #[test]
+        fn a_stage_fails_when_each_variant_fails() {
+            let dir = tempfile::tempdir().unwrap();
+            assert_eq!(
+                run_stages(&[variants(&["false", "false"])], dir.path()),
+                Ok(false)
+            );
+        }
+
+        #[test]
+        fn a_failed_stage_stops_the_flow() {
+            let dir = tempfile::tempdir().unwrap();
+            let marker = Step {
+                stdout_to: Some("ran".to_string()),
+                ..step("true", &[])
+            };
+            let stages = [variants(&["false"]), single("later", vec![marker])];
+            assert_eq!(run_stages(&stages, dir.path()), Ok(false));
+            assert!(!dir.path().join("ran").exists());
+        }
+
+        #[test]
+        fn a_missing_tool_is_an_error_and_no_other_variant_runs() {
+            let dir = tempfile::tempdir().unwrap();
+            let error =
+                run_stages(&[variants(&["hdlc-no-such-tool", "true"])], dir.path()).unwrap_err();
+            assert!(
+                error.starts_with("hdlc-no-such-tool not found on PATH"),
+                "{error}"
+            );
+        }
+
+        #[test]
+        fn stdout_of_a_step_goes_to_its_file() {
+            let dir = tempfile::tempdir().unwrap();
+            let echo = Step {
+                stdout_to: Some("out.txt".to_string()),
+                ..step("echo", &["netlist"])
+            };
+            assert_eq!(
+                run_stages(&[single("echo", vec![echo])], dir.path()),
+                Ok(true)
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("out.txt")).unwrap(),
+                "netlist\n"
+            );
+        }
     }
 }
 
