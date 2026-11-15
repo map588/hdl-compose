@@ -20,6 +20,9 @@ class GuiTests : public QObject {
     void pressWithASmallMoveIsAClickAndLeavesTheBlockInItsPlace();
     void dragOnTheRowOfAPortGroupMovesTheBlockWithThePointer();
     void dragOfASelectionMovesEachSelectedBlockWithThePointer();
+    void undoKeepsTheViewOfTheCanvas();
+    void zoomToFitPutsTheDesignInTheMiddleWithThePointerOnTheCanvas();
+    void questionAboutARecoveryFileShowsTheDesignBehindIt();
     void deleteKeyRemovesTheSelectionAsOneUndoStep();
     void lockFromTheContextMenuTurnsTheUndoEntryOn();
     void wiresOfOneNetHaveOneColorAndOneHighlight();

@@ -1605,9 +1605,13 @@ class MainWindow : public QMainWindow {
             return;
         }
         add_recent_project(path);
-        offerRecovery();
-        // A freshly opened design can lie outside the default viewport.
+        // A freshly opened design can lie outside the default viewport. The
+        // fit comes before the question about a recovery file, so that the
+        // design shows behind the question.
         if (m_canvas)
+            m_canvas->zoomToFit();
+        // Recovered changes can have a different extent.
+        if (offerRecovery() && m_canvas)
             m_canvas->zoomToFit();
         statusBar()->showMessage(QStringLiteral("Opened %1").arg(path), 3000);
     }
@@ -1615,11 +1619,12 @@ class MainWindow : public QMainWindow {
     // A save and a discard remove the recovery file. So when the file is
     // there after an open, the program stopped with changes that were not
     // saved. Only a click on Discard removes the file; a box that the user
-    // closes in another way keeps it for the next open.
-    void offerRecovery() {
+    // closes in another way keeps it for the next open. Returns true when
+    // the design has the recovered changes.
+    bool offerRecovery() {
         const QString recovery = m_state->recovery_path();
         if (recovery.isEmpty()) {
-            return;
+            return false;
         }
         QMessageBox box(QMessageBox::Question, QStringLiteral("Recover Unsaved Changes"),
                         QStringLiteral("Design \"%1\" was not closed correctly.")
@@ -1635,12 +1640,13 @@ class MainWindow : public QMainWindow {
         if (box.clickedButton() == recover) {
             if (m_state->recover()) {
                 statusBar()->showMessage(QStringLiteral("Recovered the changes; save to keep them"), 6000);
-            } else {
-                show_state_error(this, m_state, QStringLiteral("Recover Unsaved Changes"));
+                return true;
             }
+            show_state_error(this, m_state, QStringLiteral("Recover Unsaved Changes"));
         } else if (box.clickedButton() == discard) {
             m_state->discard_recovery();
         }
+        return false;
     }
 
     void onOpenProject() {

@@ -124,8 +124,13 @@ class CanvasView : public QGraphicsView {
         fitInView(r.adjusted(-80, -80, 80, 80), Qt::KeepAspectRatio);
         qreal s = transform().m11();
         qreal clamped = std::clamp(s, kZoomMin, kZoomMax);
-        if (clamped != s)
+        if (clamped != s) {
             scale(clamped / s, clamped / s);
+            // The design does not fit at the zoom limit. scale() keeps the
+            // point under the pointer in its place (AnchorUnderMouse), so
+            // put the middle of the design in the middle of the view again.
+            centerOn(r.center());
+        }
         m_zoom = clamped;
     }
 
@@ -428,14 +433,16 @@ class CanvasLayer {
             double x = m_state->instance_pos_x(i);
             double y = m_state->instance_pos_y(i);
             auto *item = new InstanceItem(m_state, name, module);
-            // Wire tool + canvas layer before setPos so the snap/clear-Y
-            // logic in itemChange applies to positions loaded from disk —
-            // legacy projects may have saved overlapping modules.
             item->setWireTool(&m_wire_tool);
-            item->setCanvasLayer(this);
             m_scene->addItem(item);
             m_items.insert(name, item);
+            // The item gets its position before it knows the layer.
+            // itemChange puts X on the column grid with no layer. With the
+            // layer, each setPos routes all wires and sets the scene
+            // rectangle for the blocks that are there so far. That smaller
+            // rectangle moved a view that showed a place outside it.
             item->setPos(x, y);
+            item->setCanvasLayer(this);
         }
         rebuildTopPorts();
         rebuildWires();

@@ -157,6 +157,17 @@ C++ classes:
   a click and moves no block [`items.h:InstanceItem::mouseMoveEvent`,
   `items.cpp:InstanceItem::itemChange`, `canvas.h:CanvasLayer::endDrag`,
   `canvas.h:CanvasLayer::onInstanceDragged`].
+- `CanvasLayer::rebuild` gives each block its position before the block
+  knows the layer. With the layer, each `setPos` routes all wires and sets
+  the scene rectangle (`updateSceneRect`) for the blocks that are there so
+  far. A scene rectangle that gets smaller makes Qt move the view, so undo
+  moved a view that showed a place outside the default work area
+  [`canvas.h:CanvasLayer::rebuild`, `canvas.h:CanvasLayer::updateSceneRect`].
+- `CanvasView::zoomToFit` puts the middle of the design in the middle of
+  the view, also when the zoom limit stops the fit. The view has
+  `AnchorUnderMouse`, so each `scale` keeps the point under the pointer in
+  its place; the `centerOn` after the last `scale` is necessary
+  [`canvas.h:CanvasView::zoomToFit`].
 - Each undo stack holds 100 entries at most [`bridge.rs:UNDO_STACK_LIMIT`].
 - `begin_batch` and `end_batch` can nest. Only the outer pair acts. The
   first change in a batch takes the one snapshot of the batch; a batch with
@@ -332,8 +343,10 @@ C++ classes:
   the Qt `offscreen` platform; no window comes on the screen. `GuiTests`
   sends clicks, drags and keys with Qt Test and answers each menu and
   message box from a timer. A run stops after 120 seconds at most.
-- The 22 tests of `GuiTests` cover: the settings file of the tests, a
-  wire from clicks on two pins, undo
+- The 25 tests of `GuiTests` cover: the settings file of the tests, a
+  wire from clicks on two pins, the view of the canvas (it stays at undo,
+  Zoom to Fit puts the design in the middle, the design shows behind the
+  question about a recovery file), undo
   and redo from the menu, the drag of a block (the undo step, the free
   move and the placement at the release, a click with a small move, a drag
   on the row of a port group, a drag of a selection), the Delete key, the

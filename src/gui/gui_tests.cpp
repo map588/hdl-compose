@@ -33,6 +33,7 @@
 #include <QGraphicsView>
 #include <QGuiApplication>
 #include <QLineEdit>
+#include <QLineF>
 #include <QListView>
 #include <QListWidget>
 #include <QMainWindow>
@@ -195,6 +196,11 @@ int dotsThatShow() {
         if (dynamic_cast<JunctionDotItem *>(item) && item->isVisible())
             ++count;
     return count;
+}
+
+// The scene point in the middle of the canvas view.
+QPointF viewCenter() {
+    return g->view->mapToScene(g->view->viewport()->rect().center());
 }
 
 // Press the left button at `from` and move the pointer to `to`. The button
@@ -700,6 +706,96 @@ void GuiTests::dragOfASelectionMovesEachSelectedBlockWithThePointer() {
     QVERIFY(near(b->pos(), b_start + QPointF(0, by.y())));
     QCOMPARE(modelPos(QStringLiteral("source_0")), a->pos());
     QCOMPARE(modelPos(QStringLiteral("source_1")), b->pos());
+}
+
+// Undo makes the canvas again from the model. The view must stay where it
+// is, also when it shows a place outside the default work area. Before the
+// correction, the canvas set its scene rectangle for a part of the blocks
+// while it made them, and the view went back into the default work area.
+void GuiTests::undoKeepsTheViewOfTheCanvas() {
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(0, 0)));
+    QVERIFY(g->view->placeModule(QStringLiteral("sink"), QPointF(640, 6000)));
+    settle();
+    InstanceItem *far = block(QStringLiteral("sink_0"));
+    QVERIFY(far);
+    const QPointF at = far->mapToScene(far->boundingRect().center());
+    g->view->centerOn(at);
+    const QPointF before = viewCenter();
+    // The scroll bars have whole pixels, so the middle is near the block.
+    QVERIFY(QLineF(before, at).length() < 3);
+
+    QVERIFY(g->state->set_instance_locked(QStringLiteral("source_0"), true));
+    QVERIFY(g->state->undo());
+    settle();
+    QCOMPARE(viewCenter(), before);
+    QVERIFY(g->state->redo());
+    settle();
+    QCOMPARE(viewCenter(), before);
+}
+
+// A design that is larger than the view at the smallest zoom: Zoom to Fit
+// puts its middle in the middle of the view. Before the correction, the
+// last zoom step kept the point under the pointer in its place, so the
+// result came from the position of the pointer.
+void GuiTests::zoomToFitPutsTheDesignInTheMiddleWithThePointerOnTheCanvas() {
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(0, 0)));
+    QVERIFY(g->view->placeModule(QStringLiteral("sink"), QPointF(6400, 30000)));
+    settle();
+    const QPointF middle = g->view->scene()->itemsBoundingRect().center();
+    QAction *fit = action(QStringLiteral("Zoom to Fit"));
+    QVERIFY(fit);
+
+    // The pointer is on the canvas, near a corner.
+    g->view->setAttribute(Qt::WA_UnderMouse, true);
+    hover(QPoint(20, 20));
+    fit->trigger();
+    settle();
+    QCOMPARE(g->view->transform().m11(), kZoomMin);
+    // One pixel of the view is 1 / kZoomMin of the scene.
+    const QPointF off = viewCenter() - middle;
+    QVERIFY2(std::abs(off.x()) < 2 / kZoomMin && std::abs(off.y()) < 2 / kZoomMin,
+             qPrintable(QStringLiteral("the view is %1, %2 from the middle").arg(off.x()).arg(off.y())));
+}
+
+// The question about a recovery file comes after an open. The design is
+// fitted into the view before the question, so that it shows behind it.
+// Before the correction the fit came after the answer.
+void GuiTests::questionAboutARecoveryFileShowsTheDesignBehindIt() {
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(6400, 6000)));
+    QVERIFY(g->state->save_project());
+    useAShortAutosaveTime();
+    QVERIFY(g->view->placeModule(QStringLiteral("sink"), QPointF(7040, 6000)));
+    QTRY_VERIFY(QFile::exists(recoveryFile()));
+    g->window.reset();
+
+    g->window.reset(hdlc_test_new_window());
+    g->window->show();
+    g->state = g->window->findChild<AppState *>();
+    for (QGraphicsView *v : g->window->findChildren<QGraphicsView *>())
+        if (auto *canvas = dynamic_cast<CanvasView *>(v))
+            g->view = canvas;
+    int answered = 0;
+    bool design_in_view = false;
+    answerNext(
+        [&design_in_view](QWidget *open) {
+            auto *box = qobject_cast<QMessageBox *>(open);
+            if (!box)
+                return false;
+            InstanceItem *saved = block(QStringLiteral("source_0"));
+            const QRectF shown = g->view->mapToScene(g->view->viewport()->rect()).boundingRect();
+            design_in_view = saved && shown.contains(saved->sceneBoundingRect());
+            for (QAbstractButton *b : box->buttons())
+                if (b->text().remove(QLatin1Char('&')) == QStringLiteral("Discard"))
+                    b->click();
+            return true;
+        },
+        &answered);
+    hdlc_test_open_project(g->window.get(), g->project);
+    settle();
+
+    QCOMPARE(answered, 1);
+    QVERIFY(design_in_view);
+    QCOMPARE(g->state->instance_count(), 1);
 }
 
 void GuiTests::deleteKeyRemovesTheSelectionAsOneUndoStep() {

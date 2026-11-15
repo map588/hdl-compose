@@ -463,9 +463,10 @@ codegen or in the group collapse shows as a difference.
   `tests/gui_offscreen.rs`: the real `MainWindow` on the Qt `offscreen`
   platform, with clicks, drags and keys from Qt Test
   (`src/gui/gui_tests.cpp`). No window comes on the screen, and the
-  settings of the test are in a temporary directory. The 22 tests cover
-  the settings file of the tests, a wire from two clicks, undo and redo
-  from the menu, the drag of a block
+  settings of the test are in a temporary directory. The 25 tests cover
+  the settings file of the tests, a wire from two clicks, the view of the
+  canvas at undo, at Zoom to Fit and behind the recovery question, undo
+  and redo from the menu, the drag of a block
   and of a selection, a click with a small move, the Delete key, the
   context menu, the color of a net, the pins of a
   changed source, the recovery file, the save key, the questions on close
