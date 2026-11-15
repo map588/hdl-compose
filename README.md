@@ -85,6 +85,10 @@ Notes:
   line and its exit status). `hdlc` deletes the directory at the start of
   each run. It stops with an error when the directory holds files and no
   `.hdlc-build` marker, because then `hdlc` did not make it.
+- `build --dry-run` runs no tool. It copies the sources to the build
+  directory and prints the tool commands as a shell script
+  (`hdlc build x.hdlc --dry-run > build.sh`). The commands of a fallback are
+  comments. The script makes the bitstream but not the chip view file.
 - `sim` generates an editable `<top>_tb` skeleton next to the project on
   first run and never overwrites an existing one.
 - For VHDL synthesis the ghdl-yosys-plugin is tried first; if it fails on a

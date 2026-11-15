@@ -571,6 +571,30 @@ pub fn run_stages(stages: &[Stage], dir: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+/// A step table as shell commands, for the user to read or to run by hand.
+/// The first variant of each stage is a command line. The other variants
+/// are comments, because the shell would run them only after a failure.
+pub fn flow_script(stages: &[Stage], dir: &Path) -> String {
+    let mut script = format!("cd {}\n", sh_quote(&dir.to_string_lossy()));
+    for stage in stages {
+        for (i, variant) in stage.variants.iter().enumerate() {
+            if i == 0 {
+                script.push_str(&format!("# {}\n", stage.name));
+            } else {
+                script.push_str(&format!(
+                    "# {}, when a command above fails ({}):\n",
+                    stage.name, variant.note
+                ));
+            }
+            for step in &variant.steps {
+                let prefix = if i == 0 { "" } else { "#   " };
+                script.push_str(&format!("{prefix}{step}\n"));
+            }
+        }
+    }
+    script
+}
+
 /// The ghdl steps that analyze the named-library sources of the config
 /// (`--work=<name>`). They must run before the work-library files. Empty
 /// without a toolchain config.
@@ -918,6 +942,42 @@ pub fn build_stages(
     stages
 }
 
+/// The step table of `build` for this host: `build_stages` with the
+/// absolute path of the constraints file and the facts of the installed
+/// tools.
+fn build_flow(staged: &StagedBuild, board: &crate::board::Board) -> Result<Vec<Stage>, String> {
+    let constraints = board
+        .constraints
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", board.constraints.display()))?;
+    let env = FlowEnv::detect(&staged.language);
+    Ok(build_stages(
+        staged,
+        board,
+        &constraints.to_string_lossy(),
+        &env,
+    ))
+}
+
+/// The commands that `run_build` runs, as a shell script. The paths are
+/// absolute, so the script does not depend on the working directory. The
+/// script does not make the chip view file; only `hdlc build` writes that.
+pub fn build_script(
+    staged: &StagedBuild,
+    board: &crate::board::Board,
+    out_bit: &Path,
+) -> Result<String, String> {
+    let absolute = |path: &Path| {
+        std::path::absolute(path).map_err(|e| format!("cannot resolve {}: {e}", path.display()))
+    };
+    let mut script = flow_script(&build_flow(staged, board)?, &absolute(&staged.dir)?);
+    script.push_str(&format!(
+        "cp {BITSTREAM} {}\n",
+        sh_quote(&absolute(out_bit)?.to_string_lossy())
+    ));
+    Ok(script)
+}
+
 /// Run `build_stages` in the build directory, then copy the bitstream to
 /// `out_bit`. The timing report of nextpnr goes to the terminal.
 pub fn run_build(
@@ -925,13 +985,7 @@ pub fn run_build(
     board: &crate::board::Board,
     out_bit: &Path,
 ) -> Result<bool, String> {
-    let constraints = board
-        .constraints
-        .canonicalize()
-        .map_err(|e| format!("cannot resolve {}: {e}", board.constraints.display()))?;
-    let env = FlowEnv::detect(&staged.language);
-    let stages = build_stages(staged, board, &constraints.to_string_lossy(), &env);
-    if !run_stages(&stages, &staged.dir)? {
+    if !run_stages(&build_flow(staged, board)?, &staged.dir)? {
         return Ok(false);
     }
 
@@ -1891,6 +1945,43 @@ mod flow_tests {
                 "--seed",
                 "3"
             ]
+        );
+    }
+
+    #[test]
+    fn script_has_the_first_variant_as_commands_and_the_others_as_comments() {
+        let stages = [
+            Stage {
+                name: "synth",
+                variants: vec![
+                    Variant {
+                        note: "",
+                        steps: vec![step("yosys", &["-p", "synth; stat"])],
+                    },
+                    Variant {
+                        note: "plugin failed",
+                        steps: vec![
+                            Step {
+                                stdout_to: Some("n.v".to_string()),
+                                ..step("ghdl", &["synth", "top"])
+                            },
+                            step("yosys", &["-p", "read_verilog n.v"]),
+                        ],
+                    },
+                ],
+            },
+            single("pack", vec![step("ecppack", &["pnr.config", "out.bit"])]),
+        ];
+        assert_eq!(
+            flow_script(&stages, Path::new("/proj/build/my top")),
+            "cd '/proj/build/my top'\n\
+             # synth\n\
+             yosys -p 'synth; stat'\n\
+             # synth, when a command above fails (plugin failed):\n\
+             #   ghdl synth top > n.v\n\
+             #   yosys -p 'read_verilog n.v'\n\
+             # pack\n\
+             ecppack pnr.config out.bit\n"
         );
     }
 

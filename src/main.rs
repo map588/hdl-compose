@@ -133,6 +133,11 @@ enum Command {
         /// Output bitstream (default: <projectdir>/<top>.bit)
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// Copy the sources to the build directory and print the tool
+        /// commands as a shell script. Run no tool.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Program a board with the project's bitstream via openFPGALoader
@@ -247,7 +252,8 @@ fn main() -> ExitCode {
             project,
             board,
             output,
-        }) => cmd_build(&project, board.as_deref(), output.as_deref()),
+            dry_run,
+        }) => cmd_build(&project, board.as_deref(), output.as_deref(), dry_run),
         Some(Command::Flash {
             project,
             board,
@@ -838,14 +844,14 @@ fn project_dir(project_path: &std::path::Path) -> &std::path::Path {
         .unwrap_or_else(|| std::path::Path::new("."))
 }
 
-/// Stage, pin-check against the board constraints, and run the full
-/// bitstream flow. Returns the bitstream path (default:
-/// `<projectdir>/<top>.bit`). Shared by `build` and `flash`.
-fn build_bitstream(
+/// Stage the project and check it against the constraints file of the
+/// board (warnings only). Returns the staged build and the bitstream path
+/// (default: `<projectdir>/<top>.bit`).
+fn prepare_build(
     project_path: &std::path::Path,
     board: &hdl_compose::board::Board,
     output: Option<&std::path::Path>,
-) -> Result<std::path::PathBuf, ExitCode> {
+) -> Result<(hdl_compose::toolchain::StagedBuild, std::path::PathBuf), ExitCode> {
     let (schematic, staged) = stage_project(project_path)?;
 
     let text = std::fs::read_to_string(&board.constraints).map_err(|e| {
@@ -872,6 +878,17 @@ fn build_bitstream(
         Some(p) => p.to_path_buf(),
         None => project_dir(project_path).join(format!("{}.bit", schematic.top_name)),
     };
+    Ok((staged, out_bit))
+}
+
+/// Run the full bitstream flow. Returns the bitstream path. Shared by
+/// `build` and `flash`.
+fn build_bitstream(
+    project_path: &std::path::Path,
+    board: &hdl_compose::board::Board,
+    output: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, ExitCode> {
+    let (staged, out_bit) = prepare_build(project_path, board, output)?;
     match hdl_compose::toolchain::run_build(&staged, board, &out_bit) {
         Ok(true) => {
             println!("bitstream written to {}", out_bit.display());
@@ -917,15 +934,38 @@ fn cmd_build(
     project_path: &std::path::Path,
     board_path: Option<&std::path::Path>,
     output: Option<&std::path::Path>,
+    dry_run: bool,
 ) -> ExitCode {
     let board = match load_board(project_path, board_path) {
         Ok(b) => b,
         Err(code) => return code,
     };
+    if dry_run {
+        return match build_dry_run(project_path, &board, output) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(code) => code,
+        };
+    }
     match build_bitstream(project_path, &board, output) {
         Ok(_) => ExitCode::SUCCESS,
         Err(code) => code,
     }
+}
+
+/// Print the commands of the bitstream flow as a shell script. No tool
+/// runs; the sources are in the build directory, so the script can run.
+fn build_dry_run(
+    project_path: &std::path::Path,
+    board: &hdl_compose::board::Board,
+    output: Option<&std::path::Path>,
+) -> Result<(), ExitCode> {
+    let (staged, out_bit) = prepare_build(project_path, board, output)?;
+    let script = hdl_compose::toolchain::build_script(&staged, board, &out_bit).map_err(|e| {
+        eprintln!("error: {e}");
+        ExitCode::from(2)
+    })?;
+    print!("{script}");
+    Ok(())
 }
 
 fn cmd_flash(
@@ -1127,6 +1167,20 @@ mod tests {
                 Cli::try_parse_from(["hdlc", verb, "demo.hdlc", "--board", "x.board.json"]).is_ok()
             );
         }
+    }
+
+    #[test]
+    fn build_takes_a_dry_run_flag() {
+        let cli = Cli::try_parse_from(["hdlc", "build", "demo.hdlc", "--dry-run"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Build { dry_run: true, .. })
+        ));
+        let cli = Cli::try_parse_from(["hdlc", "build", "demo.hdlc"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Build { dry_run: false, .. })
+        ));
     }
 
     #[test]
