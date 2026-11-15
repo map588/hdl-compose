@@ -1017,17 +1017,13 @@ class MainWindow : public QMainWindow {
                 m_canvas->scene()->update();
         });
 
-        // Undo/redo enable-state tracks every mutation signal.
+        // Each method that can change the undo history sends
+        // history_changed. The history is final only when that method
+        // returns, so the connection is queued: the refresh runs from the
+        // event loop, after the change is complete.
         refreshUndoActions();
-        connect(m_state, &AppState::project_loaded, this, &MainWindow::refreshUndoActions);
-        connect(m_state, &AppState::port_map_changed, this,
-                [this](const QString &, const QString &) { refreshUndoActions(); });
-        connect(m_state, &AppState::port_map_changed_bulk, this, &MainWindow::refreshUndoActions);
-        connect(m_state, &AppState::instance_added, this, [this](const QString &) { refreshUndoActions(); });
-        connect(m_state, &AppState::instance_removed, this, [this](const QString &) { refreshUndoActions(); });
-        // A change of a library path, a group or an alias sends none of the
-        // signals above. Each of them runs validation.
-        connect(m_state, &AppState::validation_changed, this, &MainWindow::refreshUndoActions);
+        connect(m_state, &AppState::history_changed, this, &MainWindow::refreshUndoActions,
+                Qt::QueuedConnection);
 
         // Sidebar + canvas reactive.
         connect(m_state, &AppState::project_loaded, this, [this]() {

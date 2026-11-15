@@ -502,6 +502,14 @@ pub mod qobject {
 
         #[qsignal]
         fn library_changed(self: Pin<&mut AppState>);
+
+        /// The undo history can be different after the method that sends
+        /// this signal. Each method that changes the model sends it,
+        /// because each one takes a snapshot. The history is final only
+        /// when that method returns, so a handler must read `can_undo`
+        /// and `can_redo` later (a queued connection).
+        #[qsignal]
+        fn history_changed(self: Pin<&mut AppState>);
     }
 
     // --- Wire routing FFI ----------------------------------------------
@@ -2812,6 +2820,7 @@ impl qobject::AppState {
         let m = self.as_mut().rust_mut().get_mut();
         m.pending_snapshot = Some(snap);
         m.batch_recorded = m.batch_depth > 0;
+        self.as_mut().history_changed();
     }
 
     /// The model as the text of a snapshot. The text is a function of the
@@ -2868,6 +2877,7 @@ impl qobject::AppState {
         m.undo_stack.clear();
         m.redo_stack.clear();
         m.pending_snapshot = None;
+        self.as_mut().history_changed();
     }
 
     pub fn can_undo(&self) -> bool {
@@ -2910,6 +2920,7 @@ impl qobject::AppState {
         self.as_mut().set_dirty(true);
         self.as_mut().rebuild_library_and_validate();
         self.as_mut().rebuild_view(|state| state.project_loaded());
+        self.as_mut().history_changed();
         true
     }
 
@@ -2943,6 +2954,7 @@ impl qobject::AppState {
         self.as_mut().set_dirty(true);
         self.as_mut().rebuild_library_and_validate();
         self.as_mut().rebuild_view(|state| state.project_loaded());
+        self.as_mut().history_changed();
         true
     }
 
@@ -4900,6 +4912,40 @@ mod tests {
                 s.reload_library();
             }
         }
+    }
+
+    /// Regression: the menu followed five signals of the model. To lock a
+    /// block sends none of them, so the Undo entry of the menu stayed off
+    /// after it. Each change now sends `history_changed`.
+    #[test]
+    fn each_kind_of_history_change_sends_the_signal() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (_dir, mut state) = state_with_library();
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = count.clone();
+        let _menu = state.pin_mut().on_history_changed(move |_| {
+            seen.fetch_add(1, Ordering::Relaxed);
+        });
+        let sent = |what: &str| {
+            assert!(
+                count.swap(0, Ordering::Relaxed) > 0,
+                "{what} sent no history_changed"
+            );
+        };
+
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        sent("add_instance");
+        assert!(state.pin_mut().set_instance_locked(&q("u_a"), true));
+        sent("set_instance_locked");
+        assert!(state.pin_mut().set_instance_position(&q("u_a"), 640.0, 0.0));
+        sent("set_instance_position");
+        assert!(state.pin_mut().undo());
+        sent("undo");
+        assert!(state.pin_mut().redo());
+        sent("redo");
+        assert!(state.pin_mut().new_project(&q("other"), 0));
+        sent("new_project");
     }
 
     /// The model as a value that does not depend on the order of a map.
