@@ -66,7 +66,12 @@ pub struct ToolReport {
 const TOOLS: &[(&str, &[&str], &str)] = &[
     ("ghdl", &["--version"], "check, synth, build, sim (VHDL)"),
     ("yosys", &["-V"], "synth, build"),
-    ("verilator", &["--version"], "check (SystemVerilog)"),
+    ("slang", &["--version"], "check (SystemVerilog)"),
+    (
+        "verilator",
+        &["--version"],
+        "check (SystemVerilog), when slang is missing",
+    ),
     ("iverilog", &["-V"], "sim (SystemVerilog)"),
     ("vvp", &["-V"], "sim (SystemVerilog)"),
     ("nextpnr-ice40", &["--version"], "build (ice40)"),
@@ -86,7 +91,10 @@ const TOOLS: &[(&str, &[&str], &str)] = &[
 
 /// The yosys plugins that hdlc loads: the name in the report, the plugin,
 /// and the hdlc commands that load it.
-const YOSYS_PLUGINS: &[(&str, &str, &str)] = &[("yosys -m ghdl", "ghdl", "synth, build (VHDL)")];
+const YOSYS_PLUGINS: &[(&str, &str, &str)] = &[
+    ("yosys -m ghdl", "ghdl", "synth, build (VHDL)"),
+    ("yosys -m slang", "slang", "synth, build (SystemVerilog)"),
+];
 
 /// The first line with text in the output of a tool. When the line gives
 /// the version as `(Version <text>)`, as nextpnr does, only `<text>`.
@@ -632,15 +640,22 @@ impl Stage {
 pub struct FlowEnv {
     /// The library directory of the standalone ghdl (see `ghdl_prefix`).
     pub ghdl_prefix: Option<String>,
+    /// True when `slang` is on PATH. `check` then uses it for
+    /// SystemVerilog in place of verilator.
+    pub has_slang: bool,
 }
 
 impl FlowEnv {
-    /// Ask the installed tools. Only a VHDL flow needs an answer.
+    /// Ask the installed tools. Each language needs one answer.
     pub fn detect(language: &Language) -> FlowEnv {
-        FlowEnv {
-            ghdl_prefix: match language {
-                Language::Vhdl => ghdl_prefix(),
-                Language::SystemVerilog => None,
+        match language {
+            Language::Vhdl => FlowEnv {
+                ghdl_prefix: ghdl_prefix(),
+                has_slang: false,
+            },
+            Language::SystemVerilog => FlowEnv {
+                ghdl_prefix: None,
+                has_slang: find_on_path("slang").is_some(),
             },
         }
     }
@@ -785,9 +800,11 @@ fn analyze_step(staged: &StagedBuild) -> Step {
     Step::new("ghdl", args)
 }
 
-/// Elaborate the staged design with a real frontend: ghdl for VHDL,
-/// `verilator --lint-only` for SystemVerilog.
-pub fn check_stages(staged: &StagedBuild) -> Vec<Stage> {
+/// Elaborate the staged design with a real frontend: ghdl for VHDL; for
+/// SystemVerilog slang, or `verilator --lint-only` when slang is not on
+/// PATH. The choice is by presence, not a second try after a failure: a
+/// second try would hide the errors that slang found.
+pub fn check_stages(staged: &StagedBuild, env: &FlowEnv) -> Vec<Stage> {
     let steps = match staged.language {
         Language::Vhdl => {
             let mut steps = library_steps(staged);
@@ -797,6 +814,19 @@ pub fn check_stages(staged: &StagedBuild) -> Vec<Stage> {
                 ["-e", &std_flag(staged), staged.top_name.as_str()],
             ));
             steps
+        }
+        Language::SystemVerilog if env.has_slang => {
+            // slang gives only a warning for a port connection of the wrong
+            // width, and warnings are off by default. verilator stops on
+            // one, and so must this step.
+            let mut args = vec![
+                "--top".to_string(),
+                staged.top_name.clone(),
+                "-Werror=port-width-expand".to_string(),
+                "-Werror=port-width-trunc".to_string(),
+            ];
+            args.extend(staged.sources.iter().cloned());
+            vec![Step::new("slang", args)]
         }
         Language::SystemVerilog => {
             let mut args = vec![
@@ -814,7 +844,8 @@ pub fn check_stages(staged: &StagedBuild) -> Vec<Stage> {
 
 /// Run `check_stages`. Returns whether the design passed.
 pub fn run_check(staged: &StagedBuild) -> Result<bool, String> {
-    run_stages(&check_stages(staged), &staged.dir)
+    let env = FlowEnv::detect(&staged.language);
+    run_stages(&check_stages(staged, &env), &staged.dir)
 }
 
 /// The ghdl-yosys-plugin's embedded ghdl does not resolve its std/ieee
@@ -908,13 +939,28 @@ fn frontends(staged: &StagedBuild, env: &FlowEnv) -> Vec<Frontend> {
                 selects_top: false,
             },
         ],
-        Language::SystemVerilog => vec![Frontend {
-            note: "",
-            pre: Vec::new(),
-            plugin: None,
-            read: format!("read_verilog -sv {}", staged.sources.join(" ")),
-            selects_top: false,
-        }],
+        // slang reads more of SystemVerilog than `read_verilog -sv`
+        // (packages, structs, interfaces).
+        Language::SystemVerilog => vec![
+            Frontend {
+                note: "",
+                pre: Vec::new(),
+                plugin: Some("slang"),
+                read: format!(
+                    "read_slang --top {} {}",
+                    staged.top_name,
+                    staged.sources.join(" ")
+                ),
+                selects_top: true,
+            },
+            Frontend {
+                note: "yosys slang plugin failed, retrying via read_verilog -sv",
+                pre: Vec::new(),
+                plugin: None,
+                read: format!("read_verilog -sv {}", staged.sources.join(" ")),
+                selects_top: false,
+            },
+        ],
     }
 }
 
@@ -1783,6 +1829,7 @@ mod flow_tests {
     fn env() -> FlowEnv {
         FlowEnv {
             ghdl_prefix: Some("/ghdl/lib".to_string()),
+            has_slang: false,
         }
     }
 
@@ -1810,7 +1857,7 @@ mod flow_tests {
     #[test]
     fn vhdl_check_analyzes_then_elaborates() {
         assert_eq!(
-            check_stages(&staged(Language::Vhdl)),
+            check_stages(&staged(Language::Vhdl), &env()),
             vec![single(
                 "check",
                 vec![
@@ -1821,10 +1868,37 @@ mod flow_tests {
         );
     }
 
+    /// slang reports no port width mismatch by default. verilator stops on
+    /// one, so the slang step must make it an error.
     #[test]
-    fn sv_check_runs_verilator_lint() {
+    fn sv_check_runs_slang_with_port_width_errors_when_slang_is_on_path() {
+        let env = FlowEnv {
+            has_slang: true,
+            ..FlowEnv::default()
+        };
         assert_eq!(
-            check_stages(&staged(Language::SystemVerilog)),
+            check_stages(&staged(Language::SystemVerilog), &env),
+            vec![single(
+                "check",
+                vec![step(
+                    "slang",
+                    &[
+                        "--top",
+                        "top",
+                        "-Werror=port-width-expand",
+                        "-Werror=port-width-trunc",
+                        "leaf.sv",
+                        "top.sv"
+                    ]
+                )]
+            )]
+        );
+    }
+
+    #[test]
+    fn sv_check_runs_verilator_lint_when_slang_is_missing() {
+        assert_eq!(
+            check_stages(&staged(Language::SystemVerilog), &FlowEnv::default()),
             vec![single(
                 "check",
                 vec![step(
@@ -1848,7 +1922,7 @@ mod flow_tests {
         s.libraries = vec![("loot".to_string(), vec!["pkg.vhd".to_string()])];
         let library = step("ghdl", &["-a", "--std=08", "--work=loot", "pkg.vhd"]);
 
-        assert_eq!(check_stages(&s)[0].variants[0].steps[0], library);
+        assert_eq!(check_stages(&s, &env())[0].variants[0].steps[0], library);
 
         let stages = synth_stages(&s, &env());
         assert_eq!(stages[0], single("libraries", vec![library]));
@@ -1915,21 +1989,40 @@ mod flow_tests {
     }
 
     #[test]
-    fn sv_synth_reads_verilog() {
+    fn sv_synth_has_the_slang_then_the_read_verilog_variant() {
         assert_eq!(
             synth_stages(&staged(Language::SystemVerilog), &FlowEnv::default()),
-            vec![single(
-                "synth",
-                vec![step(
-                    "yosys",
-                    &[
-                        "-l",
-                        "yosys.log",
-                        "-p",
-                        "read_verilog -sv leaf.sv top.sv; hierarchy -top top; synth; stat"
-                    ]
-                )]
-            )]
+            vec![Stage {
+                name: "synth",
+                variants: vec![
+                    Variant {
+                        note: "",
+                        steps: vec![step(
+                            "yosys",
+                            &[
+                                "-l",
+                                "yosys.log",
+                                "-m",
+                                "slang",
+                                "-p",
+                                "read_slang --top top leaf.sv top.sv; synth; stat"
+                            ]
+                        )],
+                    },
+                    Variant {
+                        note: "yosys slang plugin failed, retrying via read_verilog -sv",
+                        steps: vec![step(
+                            "yosys",
+                            &[
+                                "-l",
+                                "yosys.log",
+                                "-p",
+                                "read_verilog -sv leaf.sv top.sv; hierarchy -top top; synth; stat"
+                            ]
+                        )],
+                    },
+                ],
+            }]
         );
     }
 
@@ -2016,20 +2109,26 @@ mod flow_tests {
             "/abs/board.pcf",
             &FlowEnv::default(),
         );
+        let scripts: Vec<&[String]> = stages[0]
+            .variants
+            .iter()
+            .map(|v| &v.steps[0].args[2..])
+            .collect();
         assert_eq!(
-            stages[0],
-            single(
-                "synth",
-                vec![step(
-                    "yosys",
-                    &[
-                        "-l",
-                        "yosys.log",
-                        "-p",
-                        "read_verilog -sv leaf.sv top.sv; synth_ice40 -top top -json design.json"
-                    ]
-                )]
-            )
+            scripts[0],
+            [
+                "-m",
+                "slang",
+                "-p",
+                "read_slang --top top leaf.sv top.sv; synth_ice40 -json design.json"
+            ]
+        );
+        assert_eq!(
+            scripts[1],
+            [
+                "-p",
+                "read_verilog -sv leaf.sv top.sv; synth_ice40 -top top -json design.json"
+            ]
         );
         assert_eq!(
             stages[1].variants[0].steps[0],
@@ -2105,7 +2204,7 @@ mod flow_tests {
         s.vhdl_std = "93".to_string();
         s.libraries = vec![("loot".to_string(), vec!["pkg.vhd".to_string()])];
 
-        let check = &check_stages(&s)[0].variants[0].steps;
+        let check = &check_stages(&s, &env())[0].variants[0].steps;
         assert_eq!(check[0].args[..3], ["-a", "--std=93", "--work=loot"]);
         assert_eq!(check[1].args[..2], ["-a", "--std=93"]);
         assert_eq!(check[2].args, ["-e", "--std=93", "top"]);

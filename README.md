@@ -69,7 +69,7 @@ first (or have the individual tools installed).
 
 ```sh
 hdlc doctor                       # which tools are on PATH, their versions, the commands that run them
-hdlc check <project.hdlc>         # elaborate: ghdl (VHDL) / verilator --lint-only (SV)
+hdlc check <project.hdlc>         # elaborate: ghdl (VHDL) / slang (SV)
 hdlc synth <project.hdlc>         # generic yosys synthesis + cell stats
 hdlc sim <project.hdlc> [--wave]  # run <top>_tb via ghdl / iverilog; --wave opens surfer or gtkwave
 hdlc fpga <project.hdlc> --family ice40|ecp5|gowin   # start a board: Makefile, board file, constraints skeleton
@@ -95,6 +95,13 @@ Notes:
 - For VHDL synthesis the ghdl-yosys-plugin is tried first; if it fails on a
   construct it does not support, the tool falls back to `ghdl synth
   --out=verilog` and feeds the netlist to yosys, with a note in the output.
+- For SystemVerilog synthesis the yosys slang plugin (`read_slang`) is tried
+  first. It reads packages, structs and interfaces. If it fails, the tool
+  falls back to `read_verilog -sv`, with a note in the output.
+- `check` on a SystemVerilog project runs `slang` when it is on PATH, with a
+  port connection of the wrong width as an error. Without `slang` it runs
+  `verilator --lint-only`. slang is stricter about the language than
+  verilator; verilator reports more style warnings inside your modules.
 - `build` also writes `<top>.floorplan.json` next to the bitstream. It
   records where nextpnr placed each cell, the device utilization, and the
   maximum clock frequency. The GUI Chip View reads it.
