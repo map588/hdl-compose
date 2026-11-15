@@ -38,6 +38,8 @@ Entry:
   `port_map_changed_bulk`, `alias_changed`, `validation_changed`,
   `selection_changed`, `library_changed`, `groups_changed`.
 - **Batch:** `begin_batch`, `end_batch`.
+- **Tests:** `new_app_state` makes an `AppState` in Rust with no window.
+  The application makes its `AppState` in C++.
 - **Project:** `new_project`, `open_project`, `save_project`,
   `save_project_as`, `generate_code`, `suggest_codegen_path`,
   `project_language`, `has_project`, `current_project_path`, `last_error`,
@@ -115,16 +117,19 @@ C++ classes:
   only code that makes and parses these strings [`items.h:NetKey`]. On the
   Rust side the wire list uses the same form [`bridge.rs:AppStateRust`,
   field `wires`].
-- A method that changes the model takes an undo snapshot first. A snapshot
-  clears the redo stack [`bridge.rs:push_snapshot`,
-  `bridge.rs:snapshot_for_mutation`]. Three methods change the schematic
-  and take no snapshot, so undo does not revert them: `add_library_path`,
-  `remove_library_path`, `clear_instance_dirty`.
+- Each method that changes the schematic calls `push_snapshot` before the
+  change. A snapshot clears the redo stack [`bridge.rs:push_snapshot`].
+- While Rust sends `project_loaded` or `groups_changed`, no change takes a
+  snapshot. The view puts each block on the grid in the handler of these
+  signals, and those moves are a part of the change that sent the signal
+  [`bridge.rs:rebuild_view`, `bridge.rs:push_snapshot`].
 - Each undo stack holds 100 entries at most [`bridge.rs:UNDO_STACK_LIMIT`].
-- `begin_batch` and `end_batch` can nest. Only the outer pair acts: one
-  snapshot at the start, and one validation and one `port_map_changed_bulk`
-  at the end when a change occurred [`bridge.rs:begin_batch`,
-  `bridge.rs:end_batch`].
+- `begin_batch` and `end_batch` can nest. Only the outer pair acts. The
+  first change in a batch takes the one snapshot of the batch; a batch with
+  no change takes none. When a change occurred, the end of the batch runs
+  one validation and sends one `port_map_changed_bulk`
+  [`bridge.rs:begin_batch`, `bridge.rs:end_batch`,
+  `bridge.rs:push_snapshot`].
 - After a change, the wire list is made again before the signal is sent,
   because the canvas reads the wire list in its signal handler
   [`bridge.rs:finish_mutation`].
@@ -132,9 +137,9 @@ C++ classes:
   instances, generics, library paths or groups. It replaces the library,
   the diagnostics, the pin notes and the wire list, and then sends
   `library_changed` and `validation_changed` each time
-  [`bridge.rs:rebuild_library_and_validate`]. It does not run after
-  `set_instance_position`, `set_instance_locked` and `set_alias`; an alias
-  change thus gets no new validation until the next change.
+  [`bridge.rs:rebuild_library_and_validate`]. It also runs after an alias
+  change [`bridge.rs:set_alias`]. It does not run after
+  `set_instance_position` and `set_instance_locked`.
 - The parse cache has one entry for each library path. An entry is valid
   while the modification time of the file is the same. A path that is no
   longer in the project leaves the cache [`bridge.rs:resolve_library_cached`].
@@ -165,13 +170,11 @@ C++ classes:
   (`ToolchainConfig::set_board`) [`bridge.rs:set_project_board`].
 - After each change, the bridge reads the modification time of each library
   file and parses a file that changed [`bridge.rs:resolve_library_cached`].
-- The `project_loaded` handler of `MainWindow` calls
-  `CanvasLayer::settleAll`. `settleAll` opens a batch each time, so it
-  takes an undo snapshot and clears the redo stack, also when no block
-  moved. `undo` and `redo` send `project_loaded`. Thus an undo is followed
-  by a new snapshot [`app.cpp:MainWindow` constructor,
-  `canvas.h:CanvasLayer::settleAll`, `bridge.rs:begin_batch`,
-  `bridge.rs:undo`]. This is a known hazard, found by reading the code.
+- The `project_loaded` and `groups_changed` handlers of `MainWindow` call
+  `CanvasLayer::settleAll`, which writes the position of each block that it
+  moved to the model. These writes take no undo snapshot
+  [`app.cpp:MainWindow` constructor, `canvas.h:CanvasLayer::settleAll`,
+  `bridge.rs:rebuild_view`].
 - `app.cpp` starts processes with `QProcess`: the `hdlc` binary itself for
   the tool commands (path from `QCoreApplication::applicationFilePath`), and
   the editor command of the user for "go to source".
@@ -186,5 +189,9 @@ C++ classes:
 ## Verification
 
 - Run: `cargo test`
-- The tests in `bridge.rs` and `editor.rs` cover free functions. No test
-  runs `AppState` or the C++ classes.
+- The tests in `bridge.rs` and `editor.rs` cover the free functions. The
+  tests in `bridge.rs` also make an `AppState` with `new_app_state` and run
+  its undo, redo, batch and alias methods; a signal handler in the test
+  does the work of `CanvasLayer::settleAll`.
+- No test runs the C++ classes. The batch calls in `app.cpp` for the
+  library path commands are compiled but not run by a test.

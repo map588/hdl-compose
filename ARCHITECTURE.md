@@ -49,7 +49,7 @@ canvas only shows topology. The product changed: the canvas is now the
 primary wiring surface (click pin to pin, drag, join a wire), and the editor
 panel is hidden by default. The text editor stays as the second view for
 bulk edits. The two views do not apply the same checks yet (see "Known
-weaknesses", item 2).
+weaknesses", item 1).
 
 ## System map
 
@@ -253,15 +253,25 @@ define. Three paths bring a changed source into the program:
 
 The reason for path 1: to change a connection in silence when a port changes
 is a correctness hazard. The three paths do not give the same result (see
-"Known weaknesses", item 4).
+"Known weaknesses", item 3).
 
 ## Undo and redo
 
-Undo is a stack of snapshots, 100 entries at most. A method that changes
-the model pushes a snapshot first, and a new edit clears the redo stack. An
-instance move takes one snapshot for a completed drag. Three changes take no
-snapshot and are not reverted by undo: to add a library path, to remove
-one, and to clear the `dirty` flag of an instance.
+Undo is a stack of snapshots, 100 entries at most. Each method that changes
+the schematic pushes a snapshot before the change (`push_snapshot`), and a
+new edit clears the redo stack. An instance move takes one snapshot for a
+completed drag. `open_project` and `new_project` clear the two stacks.
+
+Two rules make one command of the user one undo step:
+
+- **Batch.** Between `begin_batch` and `end_batch`, only the first change
+  takes a snapshot. A batch with no change takes none.
+- **View rebuild.** `project_loaded` and `groups_changed` make the canvas
+  build its items again and put each block on the grid
+  (`CanvasLayer::settleAll`). Rust sends these two signals through
+  `rebuild_view`. While the handler runs, no change takes a snapshot: the
+  moves are a part of the change that sent the signal. Without this rule,
+  the settle after an undo clears the redo stack.
 
 ## Tool flows
 
@@ -297,7 +307,10 @@ codegen or in the group collapse shows as a difference.
   SystemVerilog, with nested groups).
 - `tests/toolchain_tools.rs`: runs the real tools; skips when they are
   missing.
-- No test runs `AppState` or the C++ classes.
+- Tests in `bridge.rs` make an `AppState` with no window
+  (`new_app_state`) and run its undo, redo, batch and alias methods. A
+  signal handler in the test does the work of the C++ handler.
+- No test runs the C++ classes.
 
 ## Decisions that stay
 
@@ -318,36 +331,30 @@ codegen or in the group collapse shows as a difference.
 A review on 2026-11-14 found these. Each item was read in the code; none was
 confirmed by a run of the GUI.
 
-1. **Undo and redo.** `undo` sends `project_loaded`. The handler calls
-   `CanvasLayer::settleAll`, which opens a batch and thus takes a snapshot
-   and clears the redo stack. By reading, redo does nothing after an undo,
-   and a second undo restores the same state.
-2. **Editing rules are in the bridge.** `src/gui/bridge.rs` (about 4,300
+1. **Editing rules are in the bridge.** `src/gui/bridge.rs` (about 4,600
    lines) holds wiring rules, the grammar of the top-level buffer, undo and
-   batching, as methods of the Qt object. No test runs them. `connect_pins`
-   refuses a connection that the text editor path accepts.
-3. **Two definitions of a net.** The canvas groups, colors and highlights
+   batching, as methods of the Qt object. Tests run only the undo, batch
+   and alias methods. `connect_pins` refuses a connection that the text
+   editor path accepts.
+2. **Two definitions of a net.** The canvas groups, colors and highlights
    wires by the pin that a `port_map` entry references. Code generation
    uses `resolve_nets`. A file whose references point from the driver to
    the load, or in mixed directions, is one net for codegen and more than
    one net for the canvas. The GUI itself always writes the reference on
    the load.
-4. **Three library paths** (see "Library and module changes"). `dirty`
+3. **Three library paths** (see "Library and module changes"). `dirty`
    means that a comparison ran, not that the instance differs from its
    module. A reload also takes an undo snapshot each time, and an undo
    after a reload brings the old connections back with no flag.
-5. **No build without Qt.** `Cargo.toml` has no feature for the GUI, so the
+4. **No build without Qt.** `Cargo.toml` has no feature for the GUI, so the
    CLI and `cargo test` need Qt 6.
-6. **Failure behavior.** The project file and the generated files are
+5. **Failure behavior.** The project file and the generated files are
    replaced in place; an interrupted save can truncate the only copy. No
    autosave or recovery file exists. `open_project` discards the warnings
    of the loader. No code catches a panic.
-7. **No stated size limit.** Each change validates all, makes the wire list
+6. **No stated size limit.** Each change validates all, makes the wire list
    again and sends `library_changed`; the read methods of the bridge make
    the view list again for each call.
-8. **An alias change is not validated.** `set_alias` sends `alias_changed`
-   and does not run validation; the diagnostics are from before the change
-   until the next change of another kind.
 
 ## Out of scope
 
