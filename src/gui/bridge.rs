@@ -731,6 +731,9 @@ pub struct AppStateRust {
     // once. The first change in a batch takes the one snapshot of the batch.
     batch_depth: u32,
     batch_changed: bool,
+    // The model from before the last change, until it is known that the
+    // change is one. See `push_snapshot`.
+    pending_snapshot: Option<String>,
     // True when the open batch has its undo snapshot.
     batch_recorded: bool,
     // True while Rust sends a signal that makes the view build the canvas
@@ -2782,7 +2785,13 @@ impl qobject::AppState {
 
     /// Snapshot the current schematic for undo. Each method that changes
     /// the model calls this before the change. No-op when no project is
-    /// loaded. Wipes the redo stack — a new edit invalidates redo history.
+    /// loaded.
+    ///
+    /// The snapshot is pending first. It becomes an undo step, and removes
+    /// the redo history, only when the model is different after the call
+    /// (`settle_snapshot`). A call that changes nothing (a name that is in
+    /// use, a value that is the same) thus leaves the history as it is, and
+    /// no method needs a check of its own for that.
     ///
     /// A batch is one undo step: only the first change in a batch takes a
     /// snapshot. While the view builds the canvas again (`rebuild_view`), no
@@ -2795,20 +2804,52 @@ impl qobject::AppState {
                 return;
             }
         }
-        let snap = match self.as_ref().rust().schematic.as_ref() {
-            Some(s) => match serde_json::to_string(s) {
-                Ok(json) => json,
-                Err(_) => return,
-            },
-            None => return,
+        // The change before this one is complete.
+        self.as_mut().settle_snapshot();
+        let Some(snap) = self.snapshot_text() else {
+            return;
         };
         let m = self.as_mut().rust_mut().get_mut();
+        m.pending_snapshot = Some(snap);
+        m.batch_recorded = m.batch_depth > 0;
+    }
+
+    /// The model as the text of a snapshot. The text is a function of the
+    /// model only (the maps have sorted keys), so two texts are equal when,
+    /// and only when, the models are equal.
+    fn snapshot_text(&self) -> Option<String> {
+        self.rust()
+            .schematic
+            .as_ref()
+            .and_then(|s| serde_json::to_string(s).ok())
+    }
+
+    /// True when the model changed after the pending snapshot.
+    fn pending_changed(&self) -> bool {
+        match &self.rust().pending_snapshot {
+            Some(pending) => self.snapshot_text().as_ref() != Some(pending),
+            None => false,
+        }
+    }
+
+    /// Make the pending snapshot an undo step when the model changed after
+    /// it. A new undo step removes the redo history. Each function that
+    /// reads or changes the two stacks calls this first, or uses
+    /// `pending_changed`.
+    fn settle_snapshot(mut self: Pin<&mut Self>) {
+        let changed = self.pending_changed();
+        let m = self.as_mut().rust_mut().get_mut();
+        let Some(snap) = m.pending_snapshot.take() else {
+            return;
+        };
+        if !changed {
+            return;
+        }
         m.undo_stack.push(snap);
         if m.undo_stack.len() > UNDO_STACK_LIMIT {
             m.undo_stack.remove(0);
         }
         m.redo_stack.clear();
-        m.batch_recorded = m.batch_depth > 0;
     }
 
     /// Send a signal that makes the view build the canvas again from the
@@ -2826,17 +2867,20 @@ impl qobject::AppState {
         let m = self.as_mut().rust_mut().get_mut();
         m.undo_stack.clear();
         m.redo_stack.clear();
+        m.pending_snapshot = None;
     }
 
     pub fn can_undo(&self) -> bool {
-        !self.rust().undo_stack.is_empty()
+        !self.rust().undo_stack.is_empty() || self.pending_changed()
     }
 
     pub fn can_redo(&self) -> bool {
-        !self.rust().redo_stack.is_empty()
+        // A change after the pending snapshot removes the redo history.
+        !self.rust().redo_stack.is_empty() && !self.pending_changed()
     }
 
     pub fn undo(mut self: Pin<&mut Self>) -> bool {
+        self.as_mut().settle_snapshot();
         // Move current state onto redo stack, restore prior state.
         let prior = match self.as_mut().rust_mut().get_mut().undo_stack.pop() {
             Some(s) => s,
@@ -2870,6 +2914,7 @@ impl qobject::AppState {
     }
 
     pub fn redo(mut self: Pin<&mut Self>) -> bool {
+        self.as_mut().settle_snapshot();
         let next = match self.as_mut().rust_mut().get_mut().redo_stack.pop() {
             Some(s) => s,
             None => return false,
@@ -4693,6 +4738,245 @@ mod tests {
         assert!(state.pin_mut().undo());
         assert_eq!(state.instance_count(), 0);
         assert!(!state.can_undo());
+    }
+
+    // --- Property: the history of AppState ---------------------------------
+
+    /// One call of a method that the C++ side uses to change the model.
+    /// The names come from small sets, so that a call often hits an
+    /// instance that exists, and often one that does not.
+    #[derive(Debug, Clone)]
+    enum Edit {
+        AddInstance(&'static str, &'static str),
+        RemoveInstance(&'static str),
+        RenameInstance(&'static str, &'static str),
+        Move(&'static str, i8, i8),
+        Lock(&'static str, bool),
+        ConnectPins(&'static str, &'static str),
+        SetEntry(&'static str, &'static str, &'static str),
+        ClearEntry(&'static str, &'static str),
+        SetSlice(&'static str, &'static str, i8, i8),
+        ClearSlice(&'static str, &'static str),
+        SetGeneric(&'static str, &'static str),
+        SetAlias(&'static str, &'static str),
+        Promote(&'static str, &'static str),
+        RemoveTopPort(&'static str),
+        MatchByName(&'static str),
+        CreateGroup(&'static str, &'static str),
+        RemoveGroup(&'static str),
+        Collapse(&'static str, bool),
+        CommitBuffer(&'static str, &'static str),
+        Reload,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Step {
+        One(Edit),
+        Batch(Vec<Edit>),
+        Undo,
+        Redo,
+    }
+
+    const INSTANCES: &[&str] = &["u_a", "u_b", "u_c"];
+    const MODULES: &[&str] = &["source", "sink", "missing"];
+    const PORTS: &[&str] = &["q", "d", "e", "zz"];
+    const PINS: &[&str] = &[
+        "u_a.q", "u_b.d", "u_b.e", "u_c.d", "u_c.q", "top:q", "u_z.q",
+    ];
+    const REFERENCES: &[&str] = &[
+        "u_a.q", "u_b.d", "u_c.q", "q", "", "'0'", "u_a.q[0]", "u_z.q",
+    ];
+    const NAMES: &[&str] = &["", "net_a", "net_b"];
+    const GROUPS: &[&str] = &["g1", "g2"];
+    const MEMBERS: &[&str] = &["u_a", "u_a,u_b", "u_b,u_c", "g1", "u_z"];
+    const BUFFERS: &[&str] = &[
+        "u_b : sink\n  port map (\n    d => u_a.q,\n  );\n",
+        "u_b : sink\n  port map (\n    d => u_a.q,\n    e => u_c.q,\n  );\n",
+        "u_b : sink\n  port map (\n  );\n",
+    ];
+
+    fn edit() -> impl proptest::strategy::Strategy<Value = Edit> {
+        use proptest::prelude::*;
+        use proptest::sample::select;
+        prop_oneof![
+            4 => (select(INSTANCES), select(MODULES)).prop_map(|(i, m)| Edit::AddInstance(i, m)),
+            1 => select(INSTANCES).prop_map(Edit::RemoveInstance),
+            1 => (select(INSTANCES), select(INSTANCES)).prop_map(|(a, b)| Edit::RenameInstance(a, b)),
+            1 => (select(INSTANCES), 0i8..3, 0i8..3).prop_map(|(i, x, y)| Edit::Move(i, x, y)),
+            1 => (select(INSTANCES), any::<bool>()).prop_map(|(i, on)| Edit::Lock(i, on)),
+            3 => (select(PINS), select(PINS)).prop_map(|(a, b)| Edit::ConnectPins(a, b)),
+            3 => (select(INSTANCES), select(PORTS), select(REFERENCES))
+                .prop_map(|(i, p, r)| Edit::SetEntry(i, p, r)),
+            1 => (select(INSTANCES), select(PORTS)).prop_map(|(i, p)| Edit::ClearEntry(i, p)),
+            1 => (select(INSTANCES), select(PORTS), 0i8..3, 0i8..3)
+                .prop_map(|(i, p, h, l)| Edit::SetSlice(i, p, h, l)),
+            1 => (select(INSTANCES), select(PORTS)).prop_map(|(i, p)| Edit::ClearSlice(i, p)),
+            1 => (select(INSTANCES), select(NAMES)).prop_map(|(i, v)| Edit::SetGeneric(i, v)),
+            1 => (select(PINS), select(NAMES)).prop_map(|(p, a)| Edit::SetAlias(p, a)),
+            1 => (select(INSTANCES), select(PORTS)).prop_map(|(i, p)| Edit::Promote(i, p)),
+            1 => select(PORTS).prop_map(Edit::RemoveTopPort),
+            1 => select(INSTANCES).prop_map(Edit::MatchByName),
+            1 => (select(GROUPS), select(MEMBERS)).prop_map(|(g, m)| Edit::CreateGroup(g, m)),
+            1 => select(GROUPS).prop_map(Edit::RemoveGroup),
+            1 => (select(GROUPS), any::<bool>()).prop_map(|(g, on)| Edit::Collapse(g, on)),
+            1 => (select(INSTANCES), select(BUFFERS)).prop_map(|(i, b)| Edit::CommitBuffer(i, b)),
+            1 => Just(Edit::Reload),
+        ]
+    }
+
+    fn step() -> impl proptest::strategy::Strategy<Value = Step> {
+        use proptest::prelude::*;
+        prop_oneof![
+            8 => edit().prop_map(Step::One),
+            2 => proptest::collection::vec(edit(), 0..4).prop_map(Step::Batch),
+            2 => Just(Step::Undo),
+            1 => Just(Step::Redo),
+        ]
+    }
+
+    /// The result of each call has no effect on the property, so it is
+    /// not used: a call that the bridge refuses is a part of the input.
+    fn apply(state: &mut UniquePtr<AppState>, edit: &Edit) {
+        let s = state.pin_mut();
+        match *edit {
+            Edit::AddInstance(i, m) => {
+                s.add_instance(&q(i), &q(m));
+            }
+            Edit::RemoveInstance(i) => {
+                s.remove_instance(&q(i));
+            }
+            Edit::RenameInstance(a, b) => {
+                s.rename_instance(&q(a), &q(b));
+            }
+            Edit::Move(i, x, y) => {
+                s.set_instance_position(&q(i), f64::from(x) * 640.0, f64::from(y) * 100.0);
+            }
+            Edit::Lock(i, on) => {
+                s.set_instance_locked(&q(i), on);
+            }
+            Edit::ConnectPins(a, b) => {
+                s.connect_pins(&q(a), &q(b));
+            }
+            Edit::SetEntry(i, p, r) => {
+                s.set_port_map_entry(&q(i), &q(p), &q(r));
+            }
+            Edit::ClearEntry(i, p) => {
+                s.clear_port_map_entry(&q(i), &q(p));
+            }
+            Edit::SetSlice(i, p, h, l) => {
+                s.set_consumer_slice(&q(i), &q(p), i32::from(h), i32::from(l));
+            }
+            Edit::ClearSlice(i, p) => {
+                s.clear_consumer_slice(&q(i), &q(p));
+            }
+            Edit::SetGeneric(i, v) => {
+                s.set_generic_map_entry(&q(i), &q("WIDTH"), &q(v));
+            }
+            Edit::SetAlias(p, a) => {
+                s.set_alias(&q(p), &q(a));
+            }
+            Edit::Promote(i, p) => {
+                s.promote_port_to_top(&q(i), &q(p));
+            }
+            Edit::RemoveTopPort(p) => {
+                s.remove_top_port(&q(p));
+            }
+            Edit::MatchByName(i) => {
+                s.match_by_name(&q(i));
+            }
+            Edit::CreateGroup(g, m) => {
+                s.create_group(&q(g), &q(m));
+            }
+            Edit::RemoveGroup(g) => {
+                s.remove_group(&q(g));
+            }
+            Edit::Collapse(g, on) => {
+                s.set_group_collapsed(&q(g), on);
+            }
+            Edit::CommitBuffer(i, b) => {
+                s.commit_instance_buffer(&q(i), &q(b));
+            }
+            Edit::Reload => {
+                s.reload_library();
+            }
+        }
+    }
+
+    /// The model as a value that does not depend on the order of a map.
+    fn model(state: &UniquePtr<AppState>) -> serde_json::Value {
+        serde_json::to_value(&state.rust().schematic).unwrap()
+    }
+
+    /// The number of undo steps and of redo steps, with the pending
+    /// snapshot as `settle_snapshot` will record it.
+    fn history(state: &UniquePtr<AppState>) -> (usize, usize) {
+        let (undo, redo) = (state.rust().undo_stack.len(), state.rust().redo_stack.len());
+        if state.pending_changed() {
+            (undo + 1, 0)
+        } else {
+            (undo, redo)
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(128))]
+
+        /// The history is correct for each sequence of calls:
+        ///
+        /// - A call or a batch that changes the model adds one undo step
+        ///   and removes the redo steps. One undo gives the model from
+        ///   before the call, and one redo gives the model after it.
+        /// - A call or a batch that does not change the model does not
+        ///   change the history.
+        /// - Undo to the start gives the first model.
+        #[test]
+        fn history_follows_the_model(steps in proptest::collection::vec(step(), 0..40)) {
+            use proptest::prelude::*;
+            let (_dir, mut state) = state_with_library();
+            let first = model(&state);
+            for step in &steps {
+                let before = model(&state);
+                let (undo_before, redo_before) = history(&state);
+                match step {
+                    Step::Undo => {
+                        let did = state.pin_mut().undo();
+                        prop_assert_eq!(did, undo_before > 0);
+                        continue;
+                    }
+                    Step::Redo => {
+                        let did = state.pin_mut().redo();
+                        prop_assert_eq!(did, redo_before > 0);
+                        continue;
+                    }
+                    Step::One(edit) => apply(&mut state, edit),
+                    Step::Batch(edits) => {
+                        state.pin_mut().begin_batch();
+                        for edit in edits {
+                            apply(&mut state, edit);
+                        }
+                        state.pin_mut().end_batch();
+                    }
+                }
+                let after = model(&state);
+                if after == before {
+                    prop_assert_eq!(
+                        history(&state), (undo_before, redo_before),
+                        "{:?} changed nothing but changed the history", step
+                    );
+                } else {
+                    prop_assert_eq!(
+                        history(&state), (undo_before + 1, 0),
+                        "{:?} changed the model", step
+                    );
+                    prop_assert!(state.pin_mut().undo());
+                    prop_assert_eq!(&model(&state), &before, "undo of {:?}", step);
+                    prop_assert!(state.pin_mut().redo());
+                    prop_assert_eq!(&model(&state), &after, "redo of {:?}", step);
+                }
+            }
+            while state.pin_mut().undo() {}
+            prop_assert_eq!(model(&state), first);
+        }
     }
 
     fn pd(name: &str, dir: Direction, ty: PortType, bundle: Option<&str>) -> PortDef {
