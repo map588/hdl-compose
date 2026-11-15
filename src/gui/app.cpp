@@ -1057,6 +1057,13 @@ class MainWindow : public QMainWindow {
             // off-grid and misroute wires. No-op when already on grid.
             m_canvas_layer->settleAll();
         });
+        // The module of an instance changed on the disk, so its block has
+        // old pins. refresh_canvas() sends groups_changed, which builds the
+        // canvas again in place. The connection is queued: the signal can
+        // come while a handler of a scene item runs, and the rebuild
+        // deletes the items.
+        connect(m_state, &AppState::modules_changed, this, [this]() { m_state->refresh_canvas(); },
+                Qt::QueuedConnection);
         // Group create/collapse/expand changes the visible block set — full
         // canvas rebuild from the view model. Keep the viewport where it
         // was, and settle the result: restored members can land off-grid

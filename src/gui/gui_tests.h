@@ -18,6 +18,7 @@ class GuiTests : public QObject {
     void deleteKeyRemovesTheSelectionAsOneUndoStep();
     void lockFromTheContextMenuTurnsTheUndoEntryOn();
     void wiresOfOneNetHaveOneColorAndOneHighlight();
+    void changedSourceThatComesInWithAnEditShowsItsNewPins();
     void autosaveWritesTheRecoveryFileAndSaveRemovesIt();
     void saveKeySavesTheProject();
     void closeAsksAndDiscardRemovesTheRecoveryFile();

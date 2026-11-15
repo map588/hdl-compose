@@ -25,7 +25,9 @@
 #include <QAction>
 #include <QApplication>
 #include <QContextMenuEvent>
+#include <QDateTime>
 #include <QFile>
+#include <QFileSystemWatcher>
 #include <QGraphicsView>
 #include <QGuiApplication>
 #include <QMainWindow>
@@ -69,6 +71,14 @@ struct Fixture {
 };
 
 std::unique_ptr<Fixture> g;
+
+int pinCount(const InstanceItem *block) {
+    int count = 0;
+    for (QGraphicsItem *child : block->childItems())
+        if (dynamic_cast<PortPinItem *>(child))
+            ++count;
+    return count;
+}
 
 QList<InstanceItem *> blocks() {
     QList<InstanceItem *> out;
@@ -469,6 +479,40 @@ void GuiTests::wiresOfOneNetHaveOneColorAndOneHighlight() {
     hover(tip(p) + QPoint(0, 200), Qt::ShiftModifier);
     QCOMPARE(first->pen().widthF(), normal);
     QCOMPARE(other->pen().color().alpha(), 255);
+}
+
+// --- A source that changes on the disk ---------------------------------------
+
+// The file watcher normally reports a changed source, and the reload
+// builds the canvas again. When the watcher misses the change, the next
+// edit brings the new module in. The canvas then kept the old pins.
+void GuiTests::changedSourceThatComesInWithAnEditShowsItsNewPins() {
+    QVERIFY(g->view->placeModule(QStringLiteral("sink"), QPointF(0, 0)));
+    QCOMPARE(pinCount(block(QStringLiteral("sink_0"))), 2);
+
+    // The watcher is off for this change.
+    auto *watcher = g->window->findChild<QFileSystemWatcher *>();
+    QVERIFY(watcher);
+    watcher->removePaths(watcher->files());
+    g->writeModule(QStringLiteral("sink"),
+                   QStringLiteral("d : in std_logic; e : in std_logic; f : in std_logic"));
+    {
+        // The library cache compares modification times.
+        QFile f(g->file(QStringLiteral("sink.vhd")));
+        QVERIFY(f.open(QIODevice::ReadWrite));
+        QVERIFY(f.setFileTime(QDateTime::currentDateTime().addSecs(5), QFileDevice::FileModificationTime));
+    }
+
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(640, 0)));
+    settle();
+
+    QCOMPARE(blocks_on_canvas(), 2);
+    QCOMPARE(pinCount(block(QStringLiteral("sink_0"))), 3);
+    // The rebuild is not an edit: the history has the two blocks only.
+    QVERIFY(g->state->undo());
+    QVERIFY(g->state->undo());
+    QCOMPARE(g->state->instance_count(), 0);
+    QVERIFY(!g->state->can_undo());
 }
 
 // --- Recovery file -----------------------------------------------------------

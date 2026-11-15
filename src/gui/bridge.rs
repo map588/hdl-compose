@@ -56,6 +56,11 @@ pub mod qobject {
         #[qinvokable]
         fn discard_recovery(self: Pin<&mut AppState>);
 
+        /// Make the view build the canvas again from the model, in place.
+        /// This is the answer of the view to `modules_changed`.
+        #[qinvokable]
+        fn refresh_canvas(self: Pin<&mut AppState>);
+
         #[qinvokable]
         fn generate_code(self: Pin<&mut AppState>, path: &QString) -> bool;
 
@@ -528,6 +533,15 @@ pub mod qobject {
         #[qsignal]
         fn library_changed(self: Pin<&mut AppState>);
 
+        /// The module of an instance is different after a change of its
+        /// source on the disk, so the blocks of the canvas have old pins.
+        /// The view must build the canvas again. It must do that later,
+        /// from the event loop (a queued connection to `refresh_canvas`):
+        /// the method that sends this signal can run in a handler of a
+        /// scene item, and a rebuild deletes the items.
+        #[qsignal]
+        fn modules_changed(self: Pin<&mut AppState>);
+
         /// The undo history can be different after the method that sends
         /// this signal. Each method that changes the model sends it,
         /// because each one takes a snapshot. The history is final only
@@ -764,6 +778,11 @@ pub struct AppStateRust {
     // once. The first change in a batch takes the one snapshot of the batch.
     batch_depth: u32,
     batch_changed: bool,
+    // False from the open of a project to the first library of that project:
+    // the library of the last project is not an earlier library of this one.
+    library_baseline: bool,
+    // True from `modules_changed` to the next full rebuild of the view.
+    canvas_stale: bool,
     // The model text that the recovery file has. See `autosave`.
     autosaved: Option<String>,
     // The model from before the last change, until it is known that the
@@ -1233,6 +1252,23 @@ impl qobject::AppState {
                 None => Vec::new(),
             }
         };
+        // A block of the canvas shows the ports and the generics of its
+        // module. When these change for an instance, the blocks are stale.
+        let modules_changed = {
+            let r = self.as_ref();
+            let m = r.rust();
+            let shape = |lib: &[ModuleDef], name: &str| {
+                lib.iter()
+                    .find(|d| d.name == name)
+                    .map(|d| (d.generics.clone(), d.ports.clone()))
+            };
+            m.library_baseline
+                && m.schematic.as_ref().is_some_and(|s| {
+                    s.instances
+                        .iter()
+                        .any(|i| shape(&m.library, &i.module_ref) != shape(&library, &i.module_ref))
+                })
+        };
         if !newly_dirty.is_empty() {
             self.as_mut().rust_mut().get_mut().dirty = true;
             self.as_mut().set_dirty(true);
@@ -1278,9 +1314,14 @@ impl qobject::AppState {
             m.pin_exposed = pin_exposed;
             m.pin_origin = pin_origin;
         }
+        self.as_mut().rust_mut().get_mut().library_baseline = true;
         self.as_mut().rebuild_wires();
         self.as_mut().library_changed();
         self.as_mut().validation_changed();
+        if modules_changed {
+            self.as_mut().rust_mut().get_mut().canvas_stale = true;
+            self.as_mut().modules_changed();
+        }
     }
 
     fn rebuild_wires(mut self: Pin<&mut Self>) {
@@ -1464,6 +1505,7 @@ impl qobject::AppState {
                     // The library of the last project is not an earlier
                     // library of this one: no comparison of ports.
                     m.library.clear();
+                    m.library_baseline = false;
                 }
                 self.as_mut().clear_undo_stacks();
                 self.as_mut().refresh_project_display();
@@ -1496,6 +1538,15 @@ impl qobject::AppState {
             true
         } else {
             false
+        }
+    }
+
+    pub fn refresh_canvas(mut self: Pin<&mut Self>) {
+        // A full rebuild after the signal made the canvas current already
+        // (a reload sends `project_loaded` after `modules_changed`).
+        if self.as_ref().rust().canvas_stale {
+            // The handler of `groups_changed` builds the canvas in place.
+            self.as_mut().rebuild_view(|state| state.groups_changed());
         }
     }
 
@@ -1563,6 +1614,7 @@ impl qobject::AppState {
                     m.dirty = true;
                     m.last_error.clear();
                     m.library.clear();
+                    m.library_baseline = false;
                 }
                 self.as_mut().set_dirty(true);
                 // The recovery file has this model.
@@ -1782,6 +1834,7 @@ impl qobject::AppState {
             m.load_warnings.clear();
             m.autosaved = None;
             m.library.clear();
+            m.library_baseline = false;
             m.diagnostics.clear();
         }
         self.as_mut().clear_undo_stacks();
@@ -3007,7 +3060,9 @@ impl qobject::AppState {
     fn rebuild_view(mut self: Pin<&mut Self>, send: impl FnOnce(Pin<&mut Self>)) {
         let outer = std::mem::replace(&mut self.as_mut().rust_mut().get_mut().view_rebuild, true);
         send(self.as_mut());
-        self.as_mut().rust_mut().get_mut().view_rebuild = outer;
+        let m = self.as_mut().rust_mut().get_mut();
+        m.view_rebuild = outer;
+        m.canvas_stale = false;
     }
 
     fn clear_undo_stacks(mut self: Pin<&mut Self>) {
@@ -4593,23 +4648,11 @@ mod tests {
     #[test]
     fn changed_source_gets_the_same_comparison_with_an_edit_as_with_a_reload() {
         let (dir, mut state) = state_with_one_connection();
-        let path = dir.path().join("sink.vhd");
-        std::fs::write(
-            &path,
-            vhdl_entity(
-                "sink",
-                "d : in std_logic; e : in std_logic_vector(1 downto 0)",
-            ),
-        )
-        .unwrap();
-        // The parse cache compares modification times.
-        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
-        std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_modified(later)
-            .unwrap();
+        rewrite_source(
+            &dir,
+            "sink",
+            "d : in std_logic; e : in std_logic_vector(1 downto 0)",
+        );
 
         assert!(state.pin_mut().add_instance(&q("u_c"), &q("source")));
 
@@ -4620,6 +4663,116 @@ mod tests {
         assert_eq!(state.instance_count(), 2);
         assert!(!state.instance_is_dirty_name(&q("u_b")));
         assert_eq!(entry(&state, "u_b", "e"), "u_a.q");
+    }
+
+    /// Write a source again with other ports, as an external editor does.
+    /// The parse cache compares modification times, so the file gets a
+    /// later one.
+    fn rewrite_source(dir: &tempfile::TempDir, module: &str, ports: &str) {
+        let path = dir.path().join(format!("{module}.vhd"));
+        std::fs::write(&path, vhdl_entity(module, ports)).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+    }
+
+    fn count_signal() -> (
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        impl FnMut(Pin<&mut AppState>) + Send + 'static,
+    ) {
+        use std::sync::atomic::Ordering;
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = count.clone();
+        (count, move |_| {
+            seen.fetch_add(1, Ordering::Relaxed);
+        })
+    }
+
+    /// Regression: a changed source that came in with an edit (not with a
+    /// reload) changed the library, and the canvas kept the blocks with
+    /// the old pins of the module. `modules_changed` tells the view that
+    /// the module of an instance is different.
+    #[test]
+    fn changed_module_of_an_instance_sends_modules_changed() {
+        use std::sync::atomic::Ordering;
+        let (dir, mut state) = state_with_one_connection();
+        let (count, handler) = count_signal();
+        let _view = state.pin_mut().on_modules_changed(handler);
+
+        // An edit with no change of a source.
+        assert!(state.pin_mut().add_instance(&q("u_c"), &q("source")));
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+
+        // `sink` gets a port. `u_b` is a `sink`.
+        rewrite_source(
+            &dir,
+            "sink",
+            "d : in std_logic; e : in std_logic; f : in std_logic",
+        );
+        assert!(state.pin_mut().add_instance(&q("u_d"), &q("source")));
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            state.instance_port_count(state.instance_index(&q("u_b"))),
+            3
+        );
+
+        // The next edit sees the same library.
+        assert!(state.pin_mut().add_instance(&q("u_e"), &q("source")));
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+
+        // An open builds the view in full: it needs no second signal.
+        assert!(state.pin_mut().save_project());
+        let project = q(dir.path().join("top.hdlc").to_str().unwrap());
+        assert!(state.pin_mut().open_project(&project));
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+    }
+
+    /// A module that no instance uses changes no block.
+    #[test]
+    fn changed_module_with_no_instance_sends_no_signal() {
+        use std::sync::atomic::Ordering;
+        let (dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        let (count, handler) = count_signal();
+        let _view = state.pin_mut().on_modules_changed(handler);
+
+        rewrite_source(&dir, "sink", "d : in std_logic");
+        assert!(state.pin_mut().add_instance(&q("u_c"), &q("source")));
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+    }
+
+    /// The view answers `modules_changed` with `refresh_canvas`. The view
+    /// then builds the canvas again and puts the blocks on the grid; that
+    /// is not an edit.
+    #[test]
+    fn refresh_of_the_canvas_takes_no_snapshot() {
+        use std::sync::atomic::Ordering;
+        let (dir, mut state) = state_with_library();
+        let _view = state.pin_mut().on_groups_changed(settle);
+        let (rebuilds, handler) = count_signal();
+        let _count = state.pin_mut().on_groups_changed(handler);
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        rewrite_source(&dir, "source", "q : out std_logic; r : out std_logic");
+        assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+        assert_eq!(rebuilds.load(Ordering::Relaxed), 0);
+
+        state.pin_mut().refresh_canvas();
+        assert_eq!(rebuilds.load(Ordering::Relaxed), 1);
+        // The canvas is current now: a second call does nothing.
+        state.pin_mut().refresh_canvas();
+        assert_eq!(rebuilds.load(Ordering::Relaxed), 1);
+
+        // The settle moved `u_a`, and the history has the two edits only.
+        let index = state.instance_index(&q("u_a"));
+        assert_eq!(state.instance_pos_y(index), 100.0);
+        assert!(state.pin_mut().undo());
+        assert!(state.pin_mut().undo());
+        assert_eq!(state.instance_count(), 0);
+        assert!(!state.can_undo());
     }
 
     /// The library of one project is not the earlier library of the next
