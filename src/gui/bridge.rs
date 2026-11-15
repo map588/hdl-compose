@@ -4778,6 +4778,12 @@ mod tests {
         RemoveGroup(&'static str),
         Collapse(&'static str, bool),
         CommitBuffer(&'static str, &'static str),
+        CommitTopLevel(&'static str),
+        Bundle(&'static str, &'static str),
+        Unbundle(&'static str),
+        AddPath(&'static str),
+        RemovePath(&'static str),
+        ClearDirty(&'static str),
         Reload,
     }
 
@@ -4807,6 +4813,13 @@ mod tests {
         "u_b : sink\n  port map (\n  );\n",
     ];
 
+    const TOP_LEVELS: &[&str] = &[
+        "",
+        "clk : in std_logic\n",
+        "clk : in std_logic\nq : out std_logic\nWIDTH : integer := 8\n",
+    ];
+    const FILES: &[&str] = &["source.vhd", "sink.vhd", "extra.vhd", "missing.vhd"];
+
     fn edit() -> impl proptest::strategy::Strategy<Value = Edit> {
         use proptest::prelude::*;
         use proptest::sample::select;
@@ -4832,6 +4845,13 @@ mod tests {
             1 => select(GROUPS).prop_map(Edit::RemoveGroup),
             1 => (select(GROUPS), any::<bool>()).prop_map(|(g, on)| Edit::Collapse(g, on)),
             1 => (select(INSTANCES), select(BUFFERS)).prop_map(|(i, b)| Edit::CommitBuffer(i, b)),
+            1 => select(TOP_LEVELS).prop_map(Edit::CommitTopLevel),
+            1 => (select(INSTANCES), select(&["d", "d,e", "zz"][..]))
+                .prop_map(|(i, ports)| Edit::Bundle(i, ports)),
+            1 => select(INSTANCES).prop_map(Edit::Unbundle),
+            1 => select(FILES).prop_map(Edit::AddPath),
+            1 => select(FILES).prop_map(Edit::RemovePath),
+            1 => select(INSTANCES).prop_map(Edit::ClearDirty),
             1 => Just(Edit::Reload),
         ]
     }
@@ -4848,8 +4868,9 @@ mod tests {
 
     /// The result of each call has no effect on the property, so it is
     /// not used: a call that the bridge refuses is a part of the input.
-    fn apply(state: &mut UniquePtr<AppState>, edit: &Edit) {
+    fn apply(state: &mut UniquePtr<AppState>, dir: &Path, edit: &Edit) {
         let s = state.pin_mut();
+        let file = |name: &str| q(dir.join(name).to_str().unwrap());
         match *edit {
             Edit::AddInstance(i, m) => {
                 s.add_instance(&q(i), &q(m));
@@ -4907,6 +4928,24 @@ mod tests {
             }
             Edit::CommitBuffer(i, b) => {
                 s.commit_instance_buffer(&q(i), &q(b));
+            }
+            Edit::CommitTopLevel(b) => {
+                s.commit_top_level_buffer(&q(b));
+            }
+            Edit::Bundle(i, ports) => {
+                s.create_manual_bundle(&q(i), &q("bus"), &q(ports));
+            }
+            Edit::Unbundle(i) => {
+                s.remove_manual_bundle(&q(i), &q("bus"));
+            }
+            Edit::AddPath(f) => {
+                s.add_library_path(&file(f));
+            }
+            Edit::RemovePath(f) => {
+                s.remove_library_path(&file(f));
+            }
+            Edit::ClearDirty(i) => {
+                s.clear_instance_dirty(&q(i));
             }
             Edit::Reload => {
                 s.reload_library();
@@ -4967,7 +5006,9 @@ mod tests {
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(128))]
 
-        /// The history is correct for each sequence of calls:
+        /// The history is correct for each sequence of calls, and no call
+        /// makes the program stop (a panic in a method of the bridge
+        /// stops the application with the work of the user):
         ///
         /// - A call or a batch that changes the model adds one undo step
         ///   and removes the redo steps. One undo gives the model from
@@ -4978,7 +5019,12 @@ mod tests {
         #[test]
         fn history_follows_the_model(steps in proptest::collection::vec(step(), 0..40)) {
             use proptest::prelude::*;
-            let (_dir, mut state) = state_with_library();
+            let (dir, mut state) = state_with_library();
+            std::fs::write(
+                dir.path().join("extra.vhd"),
+                vhdl_entity("extra", "x : in std_logic"),
+            )
+            .unwrap();
             let first = model(&state);
             for step in &steps {
                 let before = model(&state);
@@ -4994,11 +5040,11 @@ mod tests {
                         prop_assert_eq!(did, redo_before > 0);
                         continue;
                     }
-                    Step::One(edit) => apply(&mut state, edit),
+                    Step::One(edit) => apply(&mut state, dir.path(), edit),
                     Step::Batch(edits) => {
                         state.pin_mut().begin_batch();
                         for edit in edits {
-                            apply(&mut state, edit);
+                            apply(&mut state, dir.path(), edit);
                         }
                         state.pin_mut().end_batch();
                     }
@@ -5020,6 +5066,26 @@ mod tests {
                     prop_assert_eq!(&model(&state), &after, "redo of {:?}", step);
                 }
             }
+            // The model can have errors here. The reads of the canvas and
+            // the generation of code must return, with or with no result.
+            for index in 0..state.instance_count() {
+                let name = state.instance_name(index);
+                let _ = state.instance_buffer(&name);
+                for port in 0..state.instance_port_count(index) {
+                    let _ = state.instance_port_width(index, port);
+                }
+            }
+            let _ = state.top_level_buffer();
+            let out = q(dir.path().join("out.vhd").to_str().unwrap());
+            let generated = state.pin_mut().generate_code(&out);
+            // Code generation stops on an error of the design. An error of
+            // a library file that no instance uses does not stop it.
+            let design_error = state
+                .validation_messages()
+                .iter()
+                .any(|m| m.starts_with("error: ") && !m.starts_with("error: library: "));
+            prop_assert!(!(generated && design_error), "{:?}", state.validation_messages());
+
             while state.pin_mut().undo() {}
             prop_assert_eq!(model(&state), first);
         }
