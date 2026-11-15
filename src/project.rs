@@ -200,6 +200,44 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
     }
 
+    proptest::proptest! {
+        /// Regression: the maps of the model went into the file in the
+        /// order of a `HashMap`, which is different for each map. Two saves
+        /// of one design gave two different files, so each save was a
+        /// change for version control. The text must be a function of the
+        /// design only.
+        #[test]
+        fn file_text_does_not_depend_on_the_order_of_the_edits(
+            keys in proptest::collection::btree_set("[a-z][a-z0-9_]{0,6}", 2..12),
+        ) {
+            let keys: Vec<String> = keys.into_iter().collect();
+            let build = |order: &mut dyn Iterator<Item = &String>| {
+                let mut s = Schematic::new("top", Language::Vhdl);
+                s.add_instance("u", "m").unwrap();
+                for key in order {
+                    let pin = NetRef::InstancePort("u".into(), key.clone());
+                    s.set_port_map_entry("u", key.clone(), Some(NetRef::TopPort(key.clone())))
+                        .unwrap();
+                    s.set_generic_map_entry("u", key.clone(), "1").unwrap();
+                    s.set_alias(pin, format!("{key}_net"));
+                    let inst = s.get_instance_mut("u").unwrap();
+                    inst.manual_bundles.insert(key.clone(), vec![key.clone()]);
+                    inst.consumer_slices.insert(key.clone(), SliceExpr::Bit(0));
+                }
+                s
+            };
+            let text = |s: &Schematic| {
+                let dir = TempDir::new().unwrap();
+                let path = dir.path().join("p.hdlc");
+                save_project(s, &path).unwrap();
+                std::fs::read_to_string(&path).unwrap()
+            };
+            let forward = text(&build(&mut keys.iter()));
+            let backward = text(&build(&mut keys.iter().rev()));
+            proptest::prop_assert_eq!(forward, backward);
+        }
+    }
+
     #[test]
     fn round_trip() {
         let mut s = Schematic::new("top_level", Language::Vhdl);

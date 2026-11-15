@@ -93,21 +93,27 @@ pub enum NetRef {
 pub struct Instance {
     pub name: String,
     pub module_ref: String,
+    #[serde(serialize_with = "serialize_sorted")]
     pub generic_map: HashMap<String, String>,
+    #[serde(serialize_with = "serialize_sorted")]
     pub port_map: HashMap<String, Option<NetRef>>,
     pub position: (f32, f32),
     /// User-authored bundle groupings that override (or add to) the module's
     /// auto-detected bundles. Keyed by bundle name → ordered list of port
     /// names that belong to it. Empty for instances that don't use manual
     /// grouping; absent from v2 `.hdlc` files and deserializes as default.
-    #[serde(default)]
+    #[serde(default, serialize_with = "serialize_sorted")]
     pub manual_bundles: HashMap<String, Vec<String>>,
     /// Optional slice of THIS instance's own port that's connected to the
     /// driver. The driver-side slice (if any) is encoded in the
     /// `port_map` value's `NetRef::*Slice` variant — these two slices are
     /// independent: a 32-bit `bus[7:0]` consumer slice can ride a 32-bit
     /// driver, or be sliced again from a wider net. Keyed by port name.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        serialize_with = "serialize_sorted"
+    )]
     pub consumer_slices: HashMap<String, SliceExpr>,
     /// Set when a library re-parse dropped a port_map entry that referenced
     /// a now-missing port. Tells the user "review this instance". Clears on
@@ -222,16 +228,28 @@ impl NetRef {
     }
 }
 
+/// Write a map with its keys in sorted order. A `HashMap` has another
+/// order for each map, so without this two saves of one design give two
+/// different files, and each save is a change for version control.
+fn serialize_sorted<V, S>(map: &HashMap<String, V>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    V: Serialize,
+    S: serde::Serializer,
+{
+    serializer.collect_map(map.iter().collect::<std::collections::BTreeMap<_, _>>())
+}
+
 fn serialize_aliases<S>(aliases: &HashMap<NetId, String>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
-    use serde::ser::SerializeMap;
-    let mut map = serializer.serialize_map(Some(aliases.len()))?;
-    for (k, v) in aliases {
-        map.serialize_entry(&k.to_key(), v)?;
-    }
-    map.end()
+    // Sorted by key, for the reason that `serialize_sorted` gives.
+    serializer.collect_map(
+        aliases
+            .iter()
+            .map(|(k, v)| (k.to_key(), v))
+            .collect::<std::collections::BTreeMap<_, _>>(),
+    )
 }
 
 fn deserialize_aliases<'de, D>(deserializer: D) -> Result<HashMap<NetId, String>, D::Error>
