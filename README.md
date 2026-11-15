@@ -68,6 +68,7 @@ PATH only, so activate your
 first (or have the individual tools installed).
 
 ```sh
+hdlc doctor                       # which tools are on PATH, their versions, the commands that run them
 hdlc check <project.hdlc>         # elaborate: ghdl (VHDL) / verilator --lint-only (SV)
 hdlc synth <project.hdlc>         # generic yosys synthesis + cell stats
 hdlc sim <project.hdlc> [--wave]  # run <top>_tb via ghdl / iverilog; --wave opens surfer or gtkwave

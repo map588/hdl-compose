@@ -177,6 +177,10 @@ enum Command {
         force: bool,
     },
 
+    /// Show which external tools are on PATH, their versions, and the
+    /// commands that run them
+    Doctor,
+
     /// Launch the Qt GUI (default when no subcommand is given)
     Gui {
         /// Project to open (.hdlc)
@@ -261,6 +265,11 @@ fn main() -> ExitCode {
             board,
             flash,
         }) => cmd_flash(&project, board.as_deref(), flash),
+        Some(Command::Doctor) => {
+            let reports = hdl_compose::toolchain::doctor();
+            print!("{}", hdl_compose::toolchain::doctor_table(&reports));
+            ExitCode::SUCCESS
+        }
         Some(Command::Synth { project }) => cmd_synth(&project),
         Some(Command::Sim { project, wave }) => cmd_sim(&project, wave),
         Some(Command::Fpga {
@@ -1237,6 +1246,12 @@ mod tests {
         assert!(dir.path().join("demo.pcf").is_file());
         let config = ToolchainConfig::load_for(&project).unwrap();
         assert_eq!(config.board, Some(PathBuf::from("demo.board.json")));
+    }
+
+    #[test]
+    fn doctor_subcommand_parses() {
+        let cli = Cli::try_parse_from(["hdlc", "doctor"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Doctor)));
     }
 
     #[test]

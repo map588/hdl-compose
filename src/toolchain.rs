@@ -50,6 +50,147 @@ where
     Ok(status.success())
 }
 
+/// What `hdlc doctor` found for one external tool.
+pub struct ToolReport {
+    /// The command of the tool, e.g. `yosys` or `yosys -m ghdl`.
+    pub name: &'static str,
+    /// The version line of the tool, or a short word when the tool prints
+    /// no version. `None`: the tool is not on PATH.
+    pub found: Option<String>,
+    /// The hdlc commands that run the tool.
+    pub used_by: &'static str,
+}
+
+/// Each tool that hdlc can run: its name, the arguments that make it print
+/// its version (empty when it has none), and the hdlc commands that run it.
+const TOOLS: &[(&str, &[&str], &str)] = &[
+    ("ghdl", &["--version"], "check, synth, build, sim (VHDL)"),
+    ("yosys", &["-V"], "synth, build"),
+    ("verilator", &["--version"], "check (SystemVerilog)"),
+    ("iverilog", &["-V"], "sim (SystemVerilog)"),
+    ("vvp", &["-V"], "sim (SystemVerilog)"),
+    ("nextpnr-ice40", &["--version"], "build (ice40)"),
+    ("nextpnr-ecp5", &["--version"], "build (ecp5)"),
+    ("nextpnr-himbaechel", &["--version"], "build (gowin)"),
+    ("icepack", &[], "build (ice40)"),
+    ("ecppack", &["--version"], "build (ecp5)"),
+    ("gowin_pack", &[], "build (gowin)"),
+    ("openFPGALoader", &["-V"], "flash"),
+    ("surfer", &["--version"], "sim --wave"),
+    (
+        "gtkwave",
+        &["--version"],
+        "sim --wave, when surfer is missing",
+    ),
+];
+
+/// The yosys plugins that hdlc loads: the name in the report, the plugin,
+/// and the hdlc commands that load it.
+const YOSYS_PLUGINS: &[(&str, &str, &str)] = &[("yosys -m ghdl", "ghdl", "synth, build (VHDL)")];
+
+/// The first line with text in the output of a tool. When the line gives
+/// the version as `(Version <text>)`, as nextpnr does, only `<text>`.
+fn first_line(output: &[u8]) -> String {
+    let text = String::from_utf8_lossy(output);
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    match line.split_once("(Version ") {
+        Some((_, version)) => version.trim_end_matches(')').to_string(),
+        None => line.to_string(),
+    }
+}
+
+/// The file of a tool in the first of `dirs` that has it.
+fn find_in(dirs: impl Iterator<Item = PathBuf>, name: &str) -> Option<PathBuf> {
+    dirs.map(|dir| dir.join(name)).find(|file| file.is_file())
+}
+
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    find_in(std::env::split_paths(&std::env::var_os("PATH")?), name)
+}
+
+/// Look for each tool that hdlc can run and ask it for its version.
+pub fn doctor() -> Vec<ToolReport> {
+    let output = |name: &str, args: &[&str]| {
+        Command::new(name)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .ok()
+    };
+    let mut reports: Vec<ToolReport> = TOOLS
+        .iter()
+        .map(|&(name, version_args, used_by)| {
+            let found = find_on_path(name).map(|_| {
+                let version = match version_args {
+                    [] => String::new(),
+                    args => output(name, args)
+                        .map(|out| first_line(&[out.stdout, out.stderr].concat()))
+                        .unwrap_or_default(),
+                };
+                if version.is_empty() {
+                    "found".to_string()
+                } else {
+                    version
+                }
+            });
+            ToolReport {
+                name,
+                found,
+                used_by,
+            }
+        })
+        .collect();
+    let has_yosys = find_on_path("yosys").is_some();
+    for &(name, plugin, used_by) in YOSYS_PLUGINS {
+        // yosys stops with an error when it cannot load a plugin.
+        let loads = has_yosys
+            && output("yosys", &["-q", "-m", plugin, "-p", ""]).is_some_and(|o| o.status.success());
+        reports.push(ToolReport {
+            name,
+            found: loads.then(|| "loads".to_string()),
+            used_by,
+        });
+    }
+    reports
+}
+
+/// The report of `hdlc doctor` as text: one line for each tool.
+pub fn doctor_table(reports: &[ToolReport]) -> String {
+    // A version line can be long (yosys prints its compiler).
+    const STATUS_WIDTH: usize = 60;
+    let status = |report: &ToolReport| -> String {
+        match &report.found {
+            Some(version) => version.chars().take(STATUS_WIDTH).collect(),
+            None => "missing".to_string(),
+        }
+    };
+    let name_width = reports.iter().map(|r| r.name.len()).max().unwrap_or(0);
+    let status_width = reports
+        .iter()
+        .map(|r| status(r).chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut table = String::new();
+    for report in reports {
+        table.push_str(&format!(
+            "{:<name_width$}  {:<status_width$}  {}\n",
+            report.name,
+            status(report),
+            report.used_by
+        ));
+    }
+    if reports.iter().any(|r| r.found.is_none()) {
+        table.push_str(
+            "\nA missing tool is not on PATH. Activate oss-cad-suite first: source <oss-cad-suite>/environment\n",
+        );
+    }
+    table
+}
+
 /// Optional per-project tool settings, loaded from
 /// `<project>.toolchain.json` next to the `.hdlc` file. Covers what the
 /// schematic itself cannot know: VHDL sources that must be analyzed into a
@@ -1540,6 +1681,78 @@ mod tests {
         assert_eq!(board.device, "GW1NR-LV9QN88PC6/I5");
         assert_eq!(board.pnr_args, ["--vopt", "family=GW1N-9C"]);
         assert_eq!(board.pack_args, ["-d", "GW1N-9C"]);
+    }
+}
+
+#[cfg(test)]
+mod doctor_tests {
+    use super::*;
+
+    #[test]
+    fn version_is_the_first_line_with_text() {
+        assert_eq!(
+            first_line(b"\n\n  GHDL 7.0.0-dev \nmore\n"),
+            "GHDL 7.0.0-dev"
+        );
+        assert_eq!(first_line(b""), "");
+    }
+
+    /// nextpnr puts its version at the end of a long line, after the cut.
+    #[test]
+    fn version_in_parentheses_replaces_the_line() {
+        assert_eq!(
+            first_line(
+                b"\"nextpnr-ecp5\" -- Next Generation Place and Route (Version nextpnr-0.10-100-gfb95bb8e)\n"
+            ),
+            "nextpnr-0.10-100-gfb95bb8e"
+        );
+    }
+
+    #[test]
+    fn a_tool_is_found_in_the_first_directory_that_has_it() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(b.path().join("yosys"), "").unwrap();
+        let dirs = || [a.path().to_path_buf(), b.path().to_path_buf()].into_iter();
+        assert_eq!(find_in(dirs(), "yosys"), Some(b.path().join("yosys")));
+        assert_eq!(find_in(dirs(), "ghdl"), None);
+        // A directory with the name of the tool is not the tool.
+        std::fs::create_dir(a.path().join("ghdl")).unwrap();
+        assert_eq!(find_in(dirs(), "ghdl"), None);
+    }
+
+    #[test]
+    fn table_has_one_aligned_line_for_each_tool_and_a_hint_for_a_missing_tool() {
+        let reports = [
+            ToolReport {
+                name: "ghdl",
+                found: Some("GHDL 7.0.0-dev".to_string()),
+                used_by: "check (VHDL)",
+            },
+            ToolReport {
+                name: "nextpnr-ecp5",
+                found: None,
+                used_by: "build (ecp5)",
+            },
+        ];
+        assert_eq!(
+            doctor_table(&reports),
+            "ghdl          GHDL 7.0.0-dev  check (VHDL)\n\
+             nextpnr-ecp5  missing         build (ecp5)\n\
+             \n\
+             A missing tool is not on PATH. Activate oss-cad-suite first: source <oss-cad-suite>/environment\n"
+        );
+        assert!(!doctor_table(&reports[..1]).contains("missing"));
+    }
+
+    #[test]
+    fn a_long_version_line_is_cut() {
+        let reports = [ToolReport {
+            name: "yosys",
+            found: Some("x".repeat(200)),
+            used_by: "synth",
+        }];
+        let line = doctor_table(&reports);
+        assert_eq!(line, format!("yosys  {}  synth\n", "x".repeat(60)));
     }
 }
 
