@@ -1138,6 +1138,26 @@ impl qobject::AppState {
             let cache = &mut self.as_mut().rust_mut().get_mut().parse_cache;
             resolve_library_cached(cache, &paths)
         };
+        // A source can change on disk between two calls. Compare the ports
+        // of each module with the library of the last call: a connection to
+        // a changed port goes away and its instance gets the dirty flag.
+        // The result is the same for a reload and for an edit that finds
+        // the change.
+        let newly_dirty = {
+            let m = self.as_mut().rust_mut().get_mut();
+            match m.schematic.as_mut() {
+                Some(s) => s.apply_library_update(&m.library, &library),
+                None => Vec::new(),
+            }
+        };
+        if !newly_dirty.is_empty() {
+            self.as_mut().rust_mut().get_mut().dirty = true;
+            self.as_mut().set_dirty(true);
+            self.as_mut().record_error(format!(
+                "library re-parse dropped connections on: {}",
+                newly_dirty.join(", ")
+            ));
+        }
         let mut diagnostics = match self.as_ref().rust().schematic.as_ref() {
             Some(s) => s.validate(&library),
             None => return,
@@ -1327,6 +1347,9 @@ impl qobject::AppState {
                     m.current_path = Some(path_buf);
                     m.dirty = false;
                     m.last_error.clear();
+                    // The library of the last project is not an earlier
+                    // library of this one: no comparison of ports.
+                    m.library.clear();
                 }
                 self.as_mut().clear_undo_stacks();
                 self.as_mut().refresh_project_display();
@@ -2637,17 +2660,9 @@ impl qobject::AppState {
         if self.as_ref().rust().schematic.is_none() {
             return false;
         }
-        self.as_mut().push_snapshot();
         // Explicit refresh must bypass the mtime check (e.g. sub-second
         // saves, or tools that preserve mtime), so drop the parse cache.
         self.as_mut().rust_mut().get_mut().parse_cache.clear();
-
-        // Snapshot the current library + re-parse to get the new library.
-        // Compare: for each instance whose module's ports changed, drop the
-        // stale port_map entries and mark the instance dirty. Parsing goes
-        // through the (just-cleared) cache so the rebuild below reuses it
-        // instead of parsing the whole library a second time.
-        let old_library: Vec<ModuleDef> = self.as_ref().rust().library.clone();
         let paths: Vec<PathBuf> = self
             .as_ref()
             .rust()
@@ -2655,32 +2670,32 @@ impl qobject::AppState {
             .as_ref()
             .map(|s| s.library_paths.clone())
             .unwrap_or_default();
+        // Parsing goes through the (just-cleared) cache so the rebuild
+        // below reuses it instead of parsing the whole library a second
+        // time.
         let new_library: Vec<ModuleDef> = {
             let cache = &mut self.as_mut().rust_mut().get_mut().parse_cache;
             resolve_library_cached(cache, &paths).0
         };
-
-        let newly_dirty = {
-            let s = self
-                .as_mut()
-                .rust_mut()
-                .get_mut()
-                .schematic
-                .as_mut()
-                .expect("checked above");
-            s.apply_library_update(&old_library, &new_library)
+        // The file watcher calls this for each save of a source. Only a
+        // reload that changes an instance is an edit; each other reload
+        // must leave the undo history as it is.
+        let changes_an_instance = {
+            let r = self.as_ref();
+            let m = r.rust();
+            m.schematic.as_ref().is_some_and(|s| {
+                !s.clone()
+                    .apply_library_update(&m.library, &new_library)
+                    .is_empty()
+            })
         };
-
+        if changes_an_instance {
+            self.as_mut().push_snapshot();
+        }
+        // This does the comparison and removes the stale connections.
         self.as_mut().rebuild_library_and_validate();
         // Full canvas rebuild so updated widths / generics / port lists reflect.
         self.as_mut().rebuild_view(|state| state.project_loaded());
-
-        if !newly_dirty.is_empty() {
-            self.as_mut().record_error(format!(
-                "library re-parse dropped connections on: {}",
-                newly_dirty.join(", ")
-            ));
-        }
         true
     }
 
@@ -4075,13 +4090,15 @@ mod tests {
     /// A VHDL project with the modules `source` (output `q`) and `sink`
     /// (inputs `d` and `e`) in its library, and an empty history.
     fn state_with_library() -> (tempfile::TempDir, UniquePtr<AppState>) {
+        state_with_sink("d : in std_logic; e : in std_logic")
+    }
+
+    /// As `state_with_library`, with the given ports of `sink`.
+    fn state_with_sink(sink_ports: &str) -> (tempfile::TempDir, UniquePtr<AppState>) {
         let dir = tempfile::tempdir().unwrap();
         let mut state = qobject::new_app_state();
         assert!(state.pin_mut().new_project(&q("top"), 0));
-        for (name, ports) in [
-            ("source", "q : out std_logic"),
-            ("sink", "d : in std_logic; e : in std_logic"),
-        ] {
+        for (name, ports) in [("source", "q : out std_logic"), ("sink", sink_ports)] {
             let path = dir.path().join(format!("{name}.vhd"));
             std::fs::write(&path, vhdl_entity(name, ports)).unwrap();
             assert!(state.pin_mut().add_library_path(&q(path.to_str().unwrap())));
@@ -4232,6 +4249,120 @@ mod tests {
         assert!(!state.instance_is_dirty_name(&q("u_b")));
         assert!(state.pin_mut().undo());
         assert!(state.instance_is_dirty_name(&q("u_b")));
+    }
+
+    /// Regression: `reload_library` took a snapshot on each call. The file
+    /// watcher calls it for each save of a source, so a save that changed no
+    /// port added an undo step and removed the redo history.
+    #[test]
+    fn reload_with_no_change_of_an_instance_leaves_the_history() {
+        let (_dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+        assert!(state.pin_mut().undo());
+
+        assert!(state.pin_mut().reload_library());
+
+        assert!(state.can_redo(), "the reload removed the redo history");
+        assert!(state.pin_mut().undo());
+        assert!(!state.can_undo(), "the reload added an undo step");
+    }
+
+    /// `u_a.q` drives `u_b.e`.
+    fn state_with_one_connection() -> (tempfile::TempDir, UniquePtr<AppState>) {
+        let (dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+        assert!(
+            state
+                .pin_mut()
+                .set_port_map_entry(&q("u_b"), &q("e"), &q("u_a.q"))
+        );
+        (dir, state)
+    }
+
+    fn entry(state: &UniquePtr<AppState>, instance: &str, port: &str) -> String {
+        state.port_map_entry(&q(instance), &q(port)).to_string()
+    }
+
+    /// A reload that removes a connection is one undo step, and it makes
+    /// the project modified. After the undo the old connection is back, and
+    /// validation reports it: no flag is necessary for that.
+    #[test]
+    fn reload_that_changes_an_instance_is_one_undo_step() {
+        let (dir, mut state) = state_with_one_connection();
+        let project = q(dir.path().join("top.hdlc").to_str().unwrap());
+        assert!(state.pin_mut().save_project_as(&project));
+        assert!(!*state.dirty());
+
+        make_sink_dirty(&dir, &mut state);
+        assert_eq!(entry(&state, "u_b", "e"), "");
+        assert!(*state.dirty(), "the reload changed the model");
+
+        assert!(state.pin_mut().undo());
+        assert!(!state.instance_is_dirty_name(&q("u_b")));
+        assert_eq!(entry(&state, "u_b", "e"), "u_a.q");
+        assert!(state.validation_error_count() > 0);
+    }
+
+    /// Regression: a change of a source that came in with an edit (the file
+    /// watcher did not report it) got no comparison. The connection to the
+    /// changed port stayed, and the instance got no flag. A reload gave
+    /// another result for the same change.
+    #[test]
+    fn changed_source_gets_the_same_comparison_with_an_edit_as_with_a_reload() {
+        let (dir, mut state) = state_with_one_connection();
+        let path = dir.path().join("sink.vhd");
+        std::fs::write(
+            &path,
+            vhdl_entity(
+                "sink",
+                "d : in std_logic; e : in std_logic_vector(1 downto 0)",
+            ),
+        )
+        .unwrap();
+        // The parse cache compares modification times.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+
+        assert!(state.pin_mut().add_instance(&q("u_c"), &q("source")));
+
+        assert!(state.instance_is_dirty_name(&q("u_b")));
+        assert_eq!(entry(&state, "u_b", "e"), "");
+        // The comparison is a part of the edit that found the change.
+        assert!(state.pin_mut().undo());
+        assert_eq!(state.instance_count(), 2);
+        assert!(!state.instance_is_dirty_name(&q("u_b")));
+        assert_eq!(entry(&state, "u_b", "e"), "u_a.q");
+    }
+
+    /// The library of one project is not the earlier library of the next
+    /// project: a module with the same name and other ports is no change.
+    #[test]
+    fn open_of_another_project_compares_with_no_earlier_library() {
+        let (_dir, mut state) = state_with_one_connection();
+        // The other project has a `sink` with another port `e`.
+        let (other_dir, mut other) =
+            state_with_sink("d : in std_logic; e : in std_logic_vector(1 downto 0)");
+        assert!(other.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(other.pin_mut().add_instance(&q("u_b"), &q("sink")));
+        assert!(
+            other
+                .pin_mut()
+                .set_port_map_entry(&q("u_b"), &q("d"), &q("u_a.q"))
+        );
+        assert!(other.pin_mut().save_project());
+
+        let project = other_dir.path().join("top.hdlc");
+        assert!(state.pin_mut().open_project(&q(project.to_str().unwrap())));
+
+        assert!(!state.instance_is_dirty_name(&q("u_b")));
+        assert_eq!(entry(&state, "u_b", "d"), "u_a.q");
     }
 
     /// A commit of the editor buffer clears the dirty flag of its instance.
