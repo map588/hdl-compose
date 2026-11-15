@@ -328,6 +328,91 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the design discussion: data
 model, net identity, mini-editor grammar, codegen rules, and the central
 text-vs-canvas decision.
 
+## Local Interface & Invariants
+
+The files in the repository root that have an effect on the build:
+
+- `Cargo.toml`: one package, `hdl-compose`, with the library `hdl_compose`
+  (`src/lib.rs`) and the binary `hdlc` (`src/main.rs`). It has no cargo
+  feature: each build includes the GUI and needs Qt 6
+  [`Cargo.toml`, `src/lib.rs`: `pub mod gui`].
+- `build.rs`: gives `src/gui/bridge.rs` to cxx-qt and compiles
+  `src/gui/app.cpp`, `src/gui/canvas.cpp` and `src/gui/items.cpp` against
+  the Qt modules Widgets and Gui. The list of C++ files is explicit: a new
+  `.cpp` file must be added there [`build.rs:main`].
+- `.cargo/config.toml`: holds the C++ flags for the macOS arm64 workaround
+  that `build.rs` names in its comment.
+- `Makefile`: `build`, `release`, `run` / `gui`, `check`, `test`, `fmt`,
+  `clippy`, `clean`, and the macOS bundle targets `app`, `app-debug`,
+  `app-release`, `app-bundle`.
+
+## Subdirectories & System Boundaries
+
+- src: [src/README.md](./src/README.md) - the Rust package: the model, the
+  net resolution, groups, code generation, the tool flows, the CLI, and the
+  Qt application. Its children have their own contracts:
+  [src/codegen/README.md](./src/codegen/README.md) and
+  [src/gui/README.md](./src/gui/README.md).
+- tests: integration and round-trip tests, fixtures, and the example
+  project `tests/projects/hdlc/` (no contract file).
+- docs: `AGENT_GUIDE.md`, `FORMAT.md` and `hdlc.schema.json`; `hdlc guide`
+  and `hdlc schema` print them (no contract file).
+- packaging: the macOS `Info.plist` of the application bundle (no contract
+  file).
+
+## Global Invariants
+
+- The `Schematic` in memory is the one model. The CLI and the GUI generate
+  HDL through the same function, `codegen::generate_design`, and write it
+  through `GeneratedDesign::write_to`
+  [`src/codegen/mod.rs:generate_design`, `src/gui/bridge.rs:generate_code`].
+- A `port_map` entry states that two pins are connected; its direction has
+  no effect. The nets come from `nets::resolve_nets` (union-find), and
+  codegen and validation both use that result [`src/nets.rs`].
+- The generated HDL must connect what the schematic connects. `hdlc check`
+  compares the two through yosys, and `tests/netlist_roundtrip.rs` does the
+  same for random designs [`src/netcheck.rs:compare`].
+- A group must not change what is connected [`src/netcheck.rs:expected`,
+  `src/groups.rs:expand_hierarchy`].
+- A project has one language, VHDL or SystemVerilog
+  [`src/types.rs:Language`, field `Schematic.language`].
+- The `.hdlc` file holds no module definition. The loader reads the modules
+  from the library sources. It accepts format versions 2 to 5
+  [`src/project.rs:load_project`].
+- Decisions are in Rust; the C++ side draws and takes input. Placement and
+  routing are in `src/routing.rs`, which has no Qt type
+  [`src/routing.rs` module comment].
+- The tool commands of the GUI start the `hdlc` binary as a subprocess.
+  They do not go through the bridge [`src/gui/app.cpp:MainWindow`].
+- The external tools come from PATH only [`src/toolchain.rs` module
+  comment].
+- `hdlc` deletes a build directory only when it is empty or holds the
+  marker file `.hdlc-build` [`src/toolchain.rs:reset_build_dir`].
+
+## Global Side Effects
+
+- **Files next to a project:** the `.hdlc` file, `<name>.toolchain.json`,
+  the generated `<top>.vhd` or `<top>.sv` and one file for each group, the
+  directory `build/<top>/`, the bitstream, `<top>.floorplan.json`, the
+  testbench `<top>_tb`, and the wave file of a simulation.
+- **Writes are not atomic:** the project file and the generated files are
+  replaced with `std::fs::write` [`src/project.rs:save_project`,
+  `src/codegen/mod.rs:GeneratedDesign::write_to`].
+- **External processes:** ghdl, slang, verilator, yosys, nextpnr, the pack
+  tools, iverilog, surfer or gtkwave, and the editor command of the user.
+  `hdlc flash` programs hardware with openFPGALoader.
+- **User settings:** the GUI keeps the recent projects, the window layout
+  and the preferences with `QSettings` [`src/gui/app.cpp`].
+- **`make app`, `app-debug`, `app-release`:** copy the binary into
+  `/Applications/hdl-compose.app`, stop each running `hdlc` process, and
+  register the bundle with the operating system [`Makefile`].
+
+## System Verification
+
+- Run: `cargo test`
+- Run: `cargo fmt --check`
+- Run: `cargo clippy --all-targets -- -D warnings`
+
 ## Known limitations
 
 - One language per project: VHDL or SystemVerilog, never both. A Verilog
