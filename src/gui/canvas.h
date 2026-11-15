@@ -169,8 +169,11 @@ class CanvasView : public QGraphicsView {
                 }
             }
             bool did_something = false;
-            // Batch multi-wire deletes: one undo step + one rebuild.
-            const bool batch = wires_to_clear.size() > 1;
+            // Batch so one Delete of more than one item is one undo step.
+            // The loops use names only, so a canvas rebuild in the batch
+            // (remove_top_port sends project_loaded) is safe.
+            const bool batch =
+                wires_to_clear.size() + top_ports_to_remove.size() + instances_to_remove.size() > 1;
             if (batch)
                 m_state->begin_batch();
             for (const auto &p : wires_to_clear) {
@@ -178,8 +181,6 @@ class CanvasView : public QGraphicsView {
                     did_something = true;
                 }
             }
-            if (batch)
-                m_state->end_batch();
             for (const QString &name : top_ports_to_remove) {
                 if (m_state->remove_top_port(name)) {
                     did_something = true;
@@ -190,6 +191,8 @@ class CanvasView : public QGraphicsView {
                     did_something = true;
                 }
             }
+            if (batch)
+                m_state->end_batch();
             if (did_something) {
                 event->accept();
                 return;
@@ -754,11 +757,12 @@ class CanvasLayer {
             ii->setPos(x, p.y);
             m_state->set_instance_position(ii->instanceName(), x, p.y);
         }
-        m_state->end_batch();
         // Clear any overlap between the fresh layout and locked blocks —
-        // the locked ones stay, everything else shifts minimally.
+        // the locked ones stay, everything else shifts minimally. The
+        // settle is in the batch, so the command stays one undo step.
         if (!locked.isEmpty())
             settleAfterMove(locked);
+        m_state->end_batch();
         rebuildTopPorts();
         replanWires();
         tidyTopPorts();
