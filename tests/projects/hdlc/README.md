@@ -34,8 +34,9 @@ hdlc codegen synth_top.hdlc   -o rtl/gen/synth_top.vhd
 ./run_sims.sh            # or ./run_sims.sh /path/to/ghdl
 ```
 
-`library_paths` in the .hdlc files are relative to this directory — run
-hdl-compose (CLI or GUI) with cwd here.
+`library_paths` in the .hdlc files are relative to this directory. The
+commands here use paths relative to it, but `hdlc` also takes a project
+path from another directory.
 
 Toolchain checks (oss-cad-suite on PATH):
 

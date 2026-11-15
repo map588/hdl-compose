@@ -93,10 +93,12 @@ impl ToolchainConfig {
     }
 }
 
-/// A project's complete HDL staged into a scratch directory: library sources
+/// A project's complete HDL staged into its build directory: library sources
 /// copied in, generated files written out, everything addressed by relative
 /// filename so tool command lines stay simple.
 pub struct StagedBuild {
+    /// The build directory (see `build_dir`). The tools run in it and write
+    /// their output files to it.
     pub dir: PathBuf,
     /// Filenames (relative to `dir`) in analysis order: config extra sources,
     /// then library sources with dependencies first, then generated group
@@ -163,8 +165,41 @@ pub fn dependency_ordered_sources(library: &[ModuleDef]) -> Vec<PathBuf> {
     files
 }
 
-/// Codegen the project and lay everything out in a scratch dir.
-/// `project_dir` anchors the config's relative paths.
+/// The file that marks a directory as a build directory that hdlc made.
+const BUILD_MARKER: &str = ".hdlc-build";
+
+/// The build directory of a project: `build/<top>` next to the project file.
+/// The intermediate files of a tool run stay there until the next run.
+pub fn build_dir(project_dir: &Path, top_name: &str) -> PathBuf {
+    project_dir.join("build").join(top_name)
+}
+
+/// Make `dir` an empty build directory. The directory is in the project of
+/// the user, so this deletes it only when it is empty or holds the marker
+/// file of an earlier run.
+fn reset_build_dir(dir: &Path) -> Result<(), String> {
+    if dir.exists() {
+        let is_empty = dir
+            .read_dir()
+            .is_ok_and(|mut entries| entries.next().is_none());
+        if !is_empty && !dir.join(BUILD_MARKER).is_file() {
+            return Err(format!(
+                "{} exists and hdlc did not make it (no {BUILD_MARKER} file); move it or delete it",
+                dir.display()
+            ));
+        }
+        std::fs::remove_dir_all(dir).map_err(|e| format!("cannot clean {}: {e}", dir.display()))?;
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    std::fs::write(
+        dir.join(BUILD_MARKER),
+        "hdlc made this directory. hdlc deletes it at the start of each tool run.\n",
+    )
+    .map_err(|e| format!("cannot write {}: {e}", dir.join(BUILD_MARKER).display()))
+}
+
+/// Codegen the project and lay everything out in its build directory.
+/// `project_dir` anchors the config's relative paths and the build directory.
 pub fn stage(
     schematic: &Schematic,
     library: &[ModuleDef],
@@ -172,9 +207,8 @@ pub fn stage(
     config: &ToolchainConfig,
     project_dir: &Path,
 ) -> Result<StagedBuild, String> {
-    let dir = std::env::temp_dir().join(format!("hdl-compose-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let dir = build_dir(project_dir, &schematic.top_name);
+    reset_build_dir(&dir)?;
 
     // A path in the config is relative to the project directory. A library
     // source is not: `load_project` already resolved it.
@@ -275,6 +309,34 @@ impl Step {
     }
 }
 
+/// Quote an argument for a POSIX shell. A shell that reads the result gets
+/// the argument back.
+fn sh_quote(arg: &str) -> String {
+    let plain = !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
+    if plain {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    }
+}
+
+/// The step as a shell command line.
+impl std::fmt::Display for Step {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", sh_quote(&self.tool))?;
+        for arg in &self.args {
+            write!(f, " {}", sh_quote(arg))?;
+        }
+        if let Some(file) = &self.stdout_to {
+            write!(f, " > {}", sh_quote(file))?;
+        }
+        Ok(())
+    }
+}
+
 /// One way to do a stage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Variant {
@@ -322,9 +384,29 @@ impl FlowEnv {
     }
 }
 
+/// The record of a tool run in the build directory: each command line and
+/// its exit status.
+const STEPS_LOG: &str = "steps.log";
+
+/// Add a line to the record. The record is a help for the user; a run does
+/// not fail when the line cannot be written.
+fn record(dir: &Path, line: &str) {
+    use std::io::Write;
+    if let Ok(mut log) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(STEPS_LOG))
+    {
+        let _ = writeln!(log, "{line}");
+    }
+}
+
 /// Run one step. Returns whether the tool exited successfully. A tool that
-/// is not on PATH is an error, not a failed step.
+/// is not on PATH is an error, not a failed step. The command line goes to
+/// the terminal and, with the exit status, to the record.
 fn run_step(step: &Step, dir: &Path) -> Result<bool, String> {
+    println!("$ {step}");
+    record(dir, &format!("$ {step}"));
     let mut cmd = Command::new(&step.tool);
     cmd.args(&step.args).current_dir(dir);
     let spawn_error = |e: std::io::Error| {
@@ -334,18 +416,25 @@ fn run_step(step: &Step, dir: &Path) -> Result<bool, String> {
             format!("failed to run {}: {e}", step.tool)
         }
     };
-    match &step.stdout_to {
-        None => Ok(cmd.status().map_err(spawn_error)?.success()),
+    let status = match &step.stdout_to {
+        None => cmd.status().map_err(spawn_error)?,
         Some(file) => {
             let out = cmd.stderr(Stdio::inherit()).output().map_err(spawn_error)?;
-            if !out.status.success() {
-                return Ok(false);
+            if out.status.success() {
+                std::fs::write(dir.join(file), out.stdout)
+                    .map_err(|e| format!("cannot write {file}: {e}"))?;
             }
-            std::fs::write(dir.join(file), out.stdout)
-                .map_err(|e| format!("cannot write {file}: {e}"))?;
-            Ok(true)
+            out.status
         }
-    }
+    };
+    record(
+        dir,
+        &match status.code() {
+            Some(code) => format!("exit {code}"),
+            None => "stopped by a signal".to_string(),
+        },
+    );
+    Ok(status.success())
 }
 
 /// Run steps in order. Stop at the first step that fails.
@@ -553,7 +642,8 @@ fn yosys_stage(
     let variants = frontends(staged, env)
         .into_iter()
         .map(|frontend| {
-            let mut args: Vec<String> = Vec::new();
+            // yosys writes its messages to the terminal and to this file.
+            let mut args = vec!["-l".to_string(), "yosys.log".to_string()];
             if let Some(plugin) = frontend.plugin {
                 args.extend(["-m".to_string(), plugin.to_string()]);
             }
@@ -652,6 +742,7 @@ fn pnr_step(board: &crate::board::Board, constraints: &str) -> Step {
         args.extend(["--write".into(), "pnr.json".into()]);
     }
     args.extend(["--report", "report.json", "--placed-svg", "placed.svg"].map(String::from));
+    args.extend(["--log", "nextpnr.log"].map(String::from));
     Step::new(tool, args)
 }
 
@@ -1351,7 +1442,7 @@ mod flow_tests {
         assert_eq!(stages[0], single("libraries", vec![library]));
         let plugin = &stages[1].variants[0].steps[0];
         assert_eq!(
-            plugin.args[3],
+            plugin.args[5],
             "ghdl --std=08 --PREFIX=/ghdl/lib -P. leaf.vhd top.vhd -e top; synth; stat"
         );
         let netlist = &stages[1].variants[1].steps[1];
@@ -1375,6 +1466,8 @@ mod flow_tests {
                         steps: vec![step(
                             "yosys",
                             &[
+                                "-l",
+                                "yosys.log",
                                 "-m",
                                 "ghdl",
                                 "-p",
@@ -1396,6 +1489,8 @@ mod flow_tests {
                             step(
                                 "yosys",
                                 &[
+                                    "-l",
+                                    "yosys.log",
                                     "-p",
                                     "read_verilog design_net.v; hierarchy -top top; synth; stat"
                                 ]
@@ -1416,6 +1511,8 @@ mod flow_tests {
                 vec![step(
                     "yosys",
                     &[
+                        "-l",
+                        "yosys.log",
                         "-p",
                         "read_verilog -sv leaf.sv top.sv; hierarchy -top top; synth; stat"
                     ]
@@ -1441,6 +1538,8 @@ mod flow_tests {
             vec![step(
                 "yosys",
                 &[
+                    "-l",
+                    "yosys.log",
                     "-m",
                     "ghdl",
                     "-p",
@@ -1453,6 +1552,8 @@ mod flow_tests {
             step(
                 "yosys",
                 &[
+                    "-l",
+                    "yosys.log",
                     "-p",
                     "read_verilog design_net.v; synth_ecp5 -top top -json design.json"
                 ]
@@ -1480,6 +1581,8 @@ mod flow_tests {
                         "report.json",
                         "--placed-svg",
                         "placed.svg",
+                        "--log",
+                        "nextpnr.log",
                     ]
                 )]
             )
@@ -1508,6 +1611,8 @@ mod flow_tests {
                 vec![step(
                     "yosys",
                     &[
+                        "-l",
+                        "yosys.log",
                         "-p",
                         "read_verilog -sv leaf.sv top.sv; synth_ice40 -top top -json design.json"
                     ]
@@ -1534,6 +1639,8 @@ mod flow_tests {
                     "report.json",
                     "--placed-svg",
                     "placed.svg",
+                    "--log",
+                    "nextpnr.log",
                 ]
             )
         );
@@ -1569,6 +1676,8 @@ mod flow_tests {
                     "report.json",
                     "--placed-svg",
                     "placed.svg",
+                    "--log",
+                    "nextpnr.log",
                 ]
             )
         );
@@ -1637,6 +1746,33 @@ mod flow_tests {
         }
 
         #[test]
+        fn steps_log_records_each_command_and_its_exit_status() {
+            let dir = tempfile::tempdir().unwrap();
+            let echo = Step {
+                stdout_to: Some("out.txt".to_string()),
+                ..step("echo", &["two words", "plain"])
+            };
+            let stages = [variants(&["false", "true"]), single("echo", vec![echo])];
+            assert_eq!(run_stages(&stages, dir.path()), Ok(true));
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join(STEPS_LOG)).unwrap(),
+                "$ false\nexit 1\n$ true\nexit 0\n$ echo 'two words' plain > out.txt\nexit 0\n"
+            );
+        }
+
+        proptest::proptest! {
+            /// A shell that reads a quoted argument gets the argument back.
+            #[test]
+            fn sh_quote_round_trips_through_a_shell(arg in "[^\\x00]{0,24}") {
+                let out = Command::new("sh")
+                    .args(["-c", &format!("printf %s {}", sh_quote(&arg))])
+                    .output()
+                    .unwrap();
+                proptest::prop_assert_eq!(String::from_utf8_lossy(&out.stdout), arg);
+            }
+        }
+
+        #[test]
         fn stdout_of_a_step_goes_to_its_file() {
             let dir = tempfile::tempdir().unwrap();
             let echo = Step {
@@ -1660,13 +1796,8 @@ mod config_tests {
     use super::*;
     use crate::codegen::GeneratedDesign;
 
-    /// `stage` gives each call in one process the same directory. The tests
-    /// that call it must not run at the same time.
-    static STAGE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn stage_honors_config_order_libraries_and_excludes() {
-        let _stage = STAGE.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("hdlc-cfgtest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("rtl")).unwrap();
@@ -1729,7 +1860,6 @@ mod config_tests {
     /// `stage` added that directory a second time.
     #[test]
     fn stage_takes_library_sources_as_the_loader_resolved_them() {
-        let _stage = STAGE.lock().unwrap_or_else(|e| e.into_inner());
         // The working directory of a test is the package root. `tempfile`
         // gives an absolute path; the defect needs a relative one.
         let project = tempfile::Builder::new()
@@ -1773,7 +1903,67 @@ mod config_tests {
         )
         .unwrap();
         assert_eq!(staged.sources, vec!["mod_a.vhd", "top.vhd"]);
-        let _ = std::fs::remove_dir_all(&staged.dir);
+    }
+
+    /// A project directory with one generated file, staged with no config.
+    fn stage_in(project_dir: &Path) -> Result<StagedBuild, String> {
+        let design = GeneratedDesign {
+            files: vec![],
+            top_filename: "top.vhd".into(),
+            top_code: "-- top".into(),
+        };
+        stage(
+            &Schematic::new("top", Language::Vhdl),
+            &[],
+            &design,
+            &ToolchainConfig::default(),
+            project_dir,
+        )
+    }
+
+    #[test]
+    fn stage_writes_to_build_top_next_to_the_project() {
+        let project = tempfile::tempdir().unwrap();
+        let staged = stage_in(project.path()).unwrap();
+        assert_eq!(staged.dir, project.path().join("build").join("top"));
+        assert_eq!(staged.dir, build_dir(project.path(), "top"));
+        assert!(staged.dir.join("top.vhd").is_file());
+        assert!(staged.dir.join(BUILD_MARKER).is_file());
+    }
+
+    #[test]
+    fn stage_replaces_the_build_directory_of_the_run_before() {
+        let project = tempfile::tempdir().unwrap();
+        let staged = stage_in(project.path()).unwrap();
+        std::fs::write(staged.dir.join("design.json"), "{}").unwrap();
+
+        let staged = stage_in(project.path()).unwrap();
+        assert!(!staged.dir.join("design.json").exists());
+        assert!(staged.dir.join("top.vhd").is_file());
+    }
+
+    #[test]
+    fn stage_uses_an_empty_directory() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(build_dir(project.path(), "top")).unwrap();
+        assert!(stage_in(project.path()).is_ok());
+    }
+
+    /// The build directory is in the project of the user. `stage` must not
+    /// delete a directory there that it did not make.
+    #[test]
+    fn stage_does_not_delete_a_directory_that_hdlc_did_not_make() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = build_dir(project.path(), "top");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("notes.txt"), "mine").unwrap();
+
+        let error = stage_in(project.path()).err().unwrap();
+        assert!(error.contains("hdlc did not make"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes.txt")).unwrap(),
+            "mine"
+        );
     }
 
     #[test]

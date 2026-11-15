@@ -78,6 +78,13 @@ hdlc flash <project.hdlc> --board <x.board.json>     # program via openFPGALoade
 
 Notes:
 
+- The tool commands copy the sources to `build/<top>/` next to the project
+  and run the tools there. The directory keeps the intermediate files until
+  the next run: the netlist (`design.json`), the nextpnr output (`pnr.json`,
+  `report.json`), `yosys.log`, `nextpnr.log`, and `steps.log` (each command
+  line and its exit status). `hdlc` deletes the directory at the start of
+  each run. It stops with an error when the directory holds files and no
+  `.hdlc-build` marker, because then `hdlc` did not make it.
 - `sim` generates an editable `<top>_tb` skeleton next to the project on
   first run and never overwrites an existing one.
 - For VHDL synthesis the ghdl-yosys-plugin is tried first; if it fails on a

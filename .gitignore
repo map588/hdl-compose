@@ -23,3 +23,6 @@ target
 
 # macOS noise
 .DS_Store
+
+# Build directories that hdlc makes next to a project
+build/
