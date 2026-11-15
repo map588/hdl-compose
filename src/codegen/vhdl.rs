@@ -243,12 +243,18 @@ fn emit_instance(
             let value = crate::codegen::format_generic_value(value, gdef, &schematic.top_generics);
             writeln!(out, "      {} => {}{}", name, value, sep).unwrap();
         }
-        writeln!(out, "    )").unwrap();
-    } else {
-        writeln!(out).unwrap();
+        write!(out, "    )").unwrap();
+    }
+
+    // VHDL does not accept an empty port map. A group with no net across
+    // its boundary is a module with no port.
+    if module.ports.is_empty() {
+        writeln!(out, ";").unwrap();
+        return;
     }
 
     // Port map
+    writeln!(out).unwrap();
     writeln!(out, "    port map (").unwrap();
     // Emit ports in module declaration order
     for (i, port) in module.ports.iter().enumerate() {
@@ -990,5 +996,45 @@ mod tests {
             "{output}"
         );
         assert!(output.contains("count(28 downto 24) => led_s"), "{output}");
+    }
+
+    /// Regression: the instance in the group has a constant on its input
+    /// and no output in use, so the group has no port. VHDL does not accept
+    /// the empty `port map ( )` that codegen wrote for the group.
+    #[test]
+    fn group_with_no_port_gets_no_port_map() {
+        let port = |name: &str, direction: Direction| PortDef {
+            name: name.into(),
+            direction,
+            port_type: PortType::StdLogic,
+            bundle: None,
+        };
+        let lib = vec![ModuleDef {
+            name: "m1".into(),
+            generics: vec![],
+            ports: vec![port("i1", Direction::In), port("o0", Direction::Out)],
+            source_path: "m1.vhd".into(),
+            source_hash: 0,
+            dependencies: Vec::new(),
+        }];
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.add_instance("u2", "m1").unwrap();
+        s.set_port_map_entry("u2", "i1", Some(NetRef::Constant("'0'".into())))
+            .unwrap();
+        s.groups.push(Group {
+            name: "g0".into(),
+            members: vec!["u2".into()],
+            parent: None,
+            collapsed: false,
+            position: (0.0, 0.0),
+        });
+
+        let design = crate::codegen::generate_design(&s, &lib).unwrap();
+        assert!(
+            design.top_code.contains("  u_g0 : g0;\n"),
+            "{}",
+            design.top_code
+        );
+        assert!(!design.top_code.contains("port map"), "{}", design.top_code);
     }
 }
