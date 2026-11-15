@@ -34,6 +34,14 @@ make help                 # all targets
 
 `cargo build` alone also works; `cxx-qt-build` locates Qt via `qmake`.
 
+The GUI is the cargo feature `gui`, which is on by default. A build with
+no Qt gives the CLI only:
+
+```sh
+cargo build --no-default-features   # no Qt necessary; `hdlc gui` reports an error
+cargo test --no-default-features    # all tests but those of the GUI
+```
+
 On macOS, `make app` installs `/Applications/hdl-compose.app`. The bundle
 starts from Finder and opens `.hdlc` files on double-click.
 
@@ -333,13 +341,16 @@ the tool flows, and the known weaknesses.
 The files in the repository root that have an effect on the build:
 
 - `Cargo.toml`: one package, `hdl-compose`, with the library `hdl_compose`
-  (`src/lib.rs`) and the binary `hdlc` (`src/main.rs`). It has no cargo
-  feature: each build includes the GUI and needs Qt 6
-  [`Cargo.toml`, `src/lib.rs`: `pub mod gui`].
-- `build.rs`: gives `src/gui/bridge.rs` to cxx-qt and compiles
-  `src/gui/app.cpp`, `src/gui/canvas.cpp` and `src/gui/items.cpp` against
-  the Qt modules Widgets and Gui. The list of C++ files is explicit: a new
-  `.cpp` file must be added there [`build.rs:main`].
+  (`src/lib.rs`) and the binary `hdlc` (`src/main.rs`). The cargo feature
+  `gui` is on by default. Only with it, the build has the module `gui`,
+  the cxx-qt dependencies and the C++ code, and needs Qt 6. With no `gui`
+  feature, `hdlc gui` and `hdlc` with no command return exit code 2
+  [`Cargo.toml`, `src/lib.rs`: `pub mod gui`, `src/main.rs:cmd_gui`].
+- `build.rs`: with the `gui` feature, gives `src/gui/bridge.rs` to cxx-qt
+  and compiles `src/gui/app.cpp`, `src/gui/canvas.cpp` and
+  `src/gui/items.cpp` against the Qt modules Widgets and Gui. The list of
+  C++ files is explicit: a new `.cpp` file must be added there. With no
+  `gui` feature it does nothing [`build.rs:main`].
 - `.cargo/config.toml`: holds the C++ flags for the macOS arm64 workaround
   that `build.rs` names in its comment.
 - `Makefile`: `build`, `release`, `run` / `gui`, `check`, `test`, `fmt`,

@@ -1,6 +1,9 @@
-use cxx_qt_build::CxxQtBuilder;
-
+// The C++ side of the GUI. A build with no `gui` feature has no C++ and
+// needs no Qt.
+#[cfg(feature = "gui")]
 fn main() {
+    use cxx_qt_build::CxxQtBuilder;
+
     // SAFETY: cc_builder callback only adds source files to the C++ build.
     // Note: arm64-macOS workaround for Qt's qyieldcpu.h lives in
     // .cargo/config.toml (`CXXFLAGS_aarch64_apple_darwin`) so it reaches
@@ -18,3 +21,6 @@ fn main() {
             .build();
     }
 }
+
+#[cfg(not(feature = "gui"))]
+fn main() {}

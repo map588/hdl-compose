@@ -487,6 +487,7 @@ fn cmd_migrate(projects: &[PathBuf]) -> ExitCode {
     }
 }
 
+#[cfg(feature = "gui")]
 fn cmd_gui(project: Option<&std::path::Path>) -> ExitCode {
     let code = hdl_compose::gui::run(project);
     if code == 0 {
@@ -494,6 +495,14 @@ fn cmd_gui(project: Option<&std::path::Path>) -> ExitCode {
     } else {
         ExitCode::from(code as u8)
     }
+}
+
+/// A build with no `gui` feature has only the CLI.
+#[cfg(not(feature = "gui"))]
+fn cmd_gui(_project: Option<&std::path::Path>) -> ExitCode {
+    eprintln!("hdlc: this build has no GUI. Build with the feature `gui` to get it.");
+    eprintln!("hdlc: `hdlc --help` shows the commands of the CLI.");
+    ExitCode::from(2)
 }
 
 fn cmd_parse(file: &std::path::Path) -> ExitCode {
