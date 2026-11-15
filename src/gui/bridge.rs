@@ -347,6 +347,11 @@ pub mod qobject {
         #[qinvokable]
         fn wire_width(self: &AppState, index: i32) -> i32;
 
+        /// The identity of the net of a wire. Two wires have the same value
+        /// when, and only when, they are on one net of the schematic.
+        #[qinvokable]
+        fn wire_net(self: &AppState, index: i32) -> QString;
+
         #[qinvokable]
         fn set_alias(self: Pin<&mut AppState>, net_key: &QString, alias: &QString) -> bool;
 
@@ -700,11 +705,8 @@ pub struct AppStateRust {
     library: Vec<ModuleDef>,
     diagnostics: Vec<Diagnostic>,
     selected_instance: String,
-    // Flattened wire list cache: (driver_key, target_key, width).
-    // driver_key: "top:<name>" or "<inst>.<port>" (with optional `[h:l]` slice)
-    // target_key: always "<inst>.<port>"
-    // width: bus width of the wire (1 for scalar, N for vector); -1 unknown.
-    wires: Vec<(String, String, i32)>,
+    // Flattened wire list cache, one wire for each port_map entry.
+    wires: Vec<Wire>,
     // Per-pin issue markers for canvas highlighting, keyed like wires
     // ("inst.port" / "top:name"): (severity 1|2, message). Rebuilt with
     // diagnostics on every validate.
@@ -734,6 +736,34 @@ pub struct AppStateRust {
     // True while Rust sends a signal that makes the view build the canvas
     // again (`project_loaded`, `groups_changed`). See `rebuild_view`.
     view_rebuild: bool,
+}
+
+/// One wire of the canvas: one port_map entry.
+struct Wire {
+    /// The pin that the entry references: "top:<name>" or "<inst>.<port>",
+    /// with an optional `[h:l]` slice. This is not always the driver.
+    source: String,
+    /// The pin that has the entry: always "<inst>.<port>".
+    target: String,
+    /// Bus width (1 for scalar, N for vector); -1 unknown.
+    width: i32,
+    /// The identity of the net (see `net_key`).
+    net: String,
+}
+
+/// A key that identifies a net among the nets of one schematic. The canvas
+/// uses it for the color and the highlight of a net, so that it shows the
+/// same nets as the generated HDL. A wire alone does not give the net: an
+/// entry can reference a pin that is not the driver.
+///
+/// The key is the one driver of the net, so that the color of a net stays
+/// while its loads change. A net with no driver, or with more than one,
+/// takes its first pin.
+fn net_key(net: &crate::nets::Net) -> String {
+    match net.drivers.as_slice() {
+        [driver] => driver.to_key(),
+        _ => net.members.first().map(NetRef::to_key).unwrap_or_default(),
+    }
 }
 
 struct ParseCacheEntry {
@@ -1205,7 +1235,7 @@ impl qobject::AppState {
     }
 
     fn rebuild_wires(mut self: Pin<&mut Self>) {
-        let mut entries: Vec<(String, String, String, i32)> = Vec::new();
+        let mut entries: Vec<(String, String, String, i32, String)> = Vec::new();
         // Collapsed groups: pins hidden inside render at the group block's
         // boundary-port pin instead; fully internal wires disappear.
         let mut hidden: HashSet<String> = HashSet::new();
@@ -1216,6 +1246,7 @@ impl qobject::AppState {
                 return;
             };
             let lib = &r.rust().library;
+            let nets = crate::nets::resolve_nets(s, lib);
             for g in s
                 .groups
                 .iter()
@@ -1261,7 +1292,14 @@ impl qobject::AppState {
                                 None => -1,
                             },
                         };
-                        entries.push((inst.name.clone(), port.clone(), driver.to_key(), w));
+                        // The net of the pin, also when a collapsed group
+                        // hides the pin and the wire goes to the group block.
+                        let pin = NetRef::InstancePort(inst.name.clone(), port.clone());
+                        let net = nets
+                            .net_for(&pin)
+                            .map(net_key)
+                            .unwrap_or_else(|| driver.base().to_key());
+                        entries.push((inst.name.clone(), port.clone(), driver.to_key(), w, net));
                     }
                 }
             }
@@ -1271,9 +1309,9 @@ impl qobject::AppState {
         // dedup on the unordered pair of base pin keys.
         let mut seen_pairs: std::collections::HashSet<(String, String)> =
             std::collections::HashSet::new();
-        let wires: Vec<(String, String, i32)> = entries
+        let wires: Vec<Wire> = entries
             .into_iter()
-            .filter_map(|(inst, port, driver, width)| {
+            .filter_map(|(inst, port, driver, width, net)| {
                 let mut target = format!("{inst}.{port}");
                 // Self-reference: used only as a net identity marker for
                 // multi-load undriven signals. Don't render as a wire.
@@ -1311,7 +1349,12 @@ impl qobject::AppState {
                 if !seen_pairs.insert(pair) {
                     return None;
                 }
-                Some((driver, target, width))
+                Some(Wire {
+                    source: driver,
+                    target,
+                    width,
+                    net,
+                })
             })
             .collect();
         self.as_mut().rust_mut().get_mut().wires = wires;
@@ -3109,7 +3152,7 @@ impl qobject::AppState {
         self.rust()
             .wires
             .get(index as usize)
-            .map(|(src, _, _)| QString::from(src))
+            .map(|w| QString::from(&w.source))
             .unwrap_or_default()
     }
 
@@ -3117,7 +3160,7 @@ impl qobject::AppState {
         self.rust()
             .wires
             .get(index as usize)
-            .map(|(_, tgt, _)| QString::from(tgt))
+            .map(|w| QString::from(&w.target))
             .unwrap_or_default()
     }
 
@@ -3125,8 +3168,16 @@ impl qobject::AppState {
         self.rust()
             .wires
             .get(index as usize)
-            .map(|(_, _, w)| *w)
+            .map(|w| w.width)
             .unwrap_or(0)
+    }
+
+    pub fn wire_net(&self, index: i32) -> QString {
+        self.rust()
+            .wires
+            .get(index as usize)
+            .map(|w| QString::from(&w.net))
+            .unwrap_or_default()
     }
 
     pub fn set_alias(mut self: Pin<&mut Self>, net_key: &QString, alias: &QString) -> bool {
@@ -3139,8 +3190,14 @@ impl qobject::AppState {
             return false;
         };
         self.as_mut().push_snapshot();
+        // One net has one alias. The key can be each pin of the net, so
+        // first remove the alias of each other pin of the net.
+        let members = self.net_members(&net_ref);
         let ok = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => {
+                for member in &members {
+                    s.remove_alias(member);
+                }
                 if alias_s.trim().is_empty() {
                     s.remove_alias(&net_ref);
                 } else {
@@ -3172,11 +3229,25 @@ impl qobject::AppState {
         let Some(net_ref) = NetRef::from_key(&key_s).map(|n| n.base()) else {
             return QString::default();
         };
-        self.rust()
-            .schematic
-            .as_ref()
-            .and_then(|s| s.aliases.get(&net_ref))
+        let Some(s) = self.rust().schematic.as_ref() else {
+            return QString::default();
+        };
+        // The alias of the net: it can be on another pin of the net.
+        std::iter::once(net_ref.clone())
+            .chain(self.net_members(&net_ref))
+            .find_map(|pin| s.aliases.get(&pin))
             .map(QString::from)
+            .unwrap_or_default()
+    }
+
+    /// The pins of the net of `pin`. Empty when the pin has no connection.
+    fn net_members(&self, pin: &NetRef) -> Vec<NetRef> {
+        let Some(s) = self.rust().schematic.as_ref() else {
+            return Vec::new();
+        };
+        crate::nets::resolve_nets(s, &self.rust().library)
+            .net_for(pin)
+            .map(|net| net.members.clone())
             .unwrap_or_default()
     }
 
@@ -4412,6 +4483,96 @@ mod tests {
         // After the save the file is the model.
         assert!(state.pin_mut().save_project());
         assert!(!cleared(&state));
+    }
+
+    /// Regression: the canvas took the pin that an entry references as the
+    /// net of the wire. A file can reference a load, or reference from the
+    /// driver to the load. The canvas then showed one net of the generated
+    /// HDL as two nets. `wire_net` gives the net of `resolve_nets`.
+    #[test]
+    fn wires_of_one_net_have_one_net_key() {
+        let (_dir, mut state) = state_with_library();
+        for (name, module) in [("u_a", "source"), ("u_b", "sink"), ("u_c", "sink")] {
+            assert!(state.pin_mut().add_instance(&q(name), &q(module)));
+        }
+        let mut connect = |instance: &str, port: &str, to: &str| {
+            assert!(
+                state
+                    .pin_mut()
+                    .set_port_map_entry(&q(instance), &q(port), &q(to))
+            );
+        };
+        // One net, written as a chain: the second entry references a load.
+        connect("u_b", "d", "u_a.q");
+        connect("u_c", "d", "u_b.d");
+        // A second net with no driver.
+        connect("u_c", "e", "u_b.e");
+
+        let net_of = |target: &str| {
+            (0..state.wire_count())
+                .find(|&i| state.wire_target(i).to_string() == target)
+                .map(|i| state.wire_net(i).to_string())
+                .unwrap_or_else(|| panic!("no wire to {target}"))
+        };
+        // The key of the first net is its driver, as for a net that the
+        // canvas itself made.
+        assert_eq!(net_of("u_b.d"), "u_a.q");
+        assert_eq!(net_of("u_c.d"), "u_a.q");
+        assert_ne!(net_of("u_c.e"), "u_a.q");
+        // The source of the second wire is a load: the old identity.
+        assert_eq!(state.wire_source(1).to_string(), "u_b.d");
+    }
+
+    /// Regression: an alias was a property of the pin that the wire
+    /// references. Two wires of one net with different such pins gave the
+    /// net two aliases, which is an error.
+    #[test]
+    fn alias_is_a_property_of_the_net() {
+        let (_dir, mut state) = state_with_library();
+        for (name, module) in [("u_a", "source"), ("u_b", "sink"), ("u_c", "sink")] {
+            assert!(state.pin_mut().add_instance(&q(name), &q(module)));
+        }
+        // One net as a chain: the wires reference `u_a.q` and `u_b.d`.
+        for (instance, to) in [("u_b", "u_a.q"), ("u_c", "u_b.d")] {
+            assert!(
+                state
+                    .pin_mut()
+                    .set_port_map_entry(&q(instance), &q("d"), &q(to))
+            );
+        }
+
+        assert!(state.pin_mut().set_alias(&q("u_a.q"), &q("first")));
+        assert_eq!(state.net_alias(&q("u_b.d")).to_string(), "first");
+        assert!(state.pin_mut().set_alias(&q("u_b.d"), &q("second")));
+
+        assert_eq!(
+            state.validation_error_count(),
+            0,
+            "{:?}",
+            state.validation_messages()
+        );
+        for pin in ["u_a.q", "u_b.d", "u_c.d"] {
+            assert_eq!(state.net_alias(&q(pin)).to_string(), "second", "{pin}");
+        }
+        // An empty alias removes the alias of the net.
+        assert!(state.pin_mut().set_alias(&q("u_c.d"), &q("")));
+        assert_eq!(state.net_alias(&q("u_a.q")).to_string(), "");
+    }
+
+    /// An entry on the driver that references the load is the same net.
+    #[test]
+    fn wire_from_the_driver_to_the_load_has_the_key_of_the_driver() {
+        let (_dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+        assert!(
+            state
+                .pin_mut()
+                .set_port_map_entry(&q("u_a"), &q("q"), &q("u_b.d"))
+        );
+        assert_eq!(state.wire_count(), 1);
+        assert_eq!(state.wire_source(0).to_string(), "u_b.d");
+        assert_eq!(state.wire_net(0).to_string(), "u_a.q");
     }
 
     /// A commit of the editor buffer clears the dirty flag of its instance.

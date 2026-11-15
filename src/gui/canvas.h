@@ -849,34 +849,35 @@ class CanvasLayer {
     static QString baseKey(const QString &key) { return NetKey::base(key); }
 
     // Net highlight: light up every wire of one net so fan-out is traceable.
-    // Empty key clears. Callers outside this class use setPointerNet,
-    // setPointerPin and setShiftHeld, which apply the Shift condition.
-    void setHoveredNet(const QString &base) {
-        if (m_hovered_net == base)
+    // `net` is a net key (WireItem::netKey). Empty key clears. Callers
+    // outside this class use setPointerNet, setPointerPin and setShiftHeld,
+    // which apply the Shift condition.
+    void setHoveredNet(const QString &net) {
+        if (m_hovered_net == net)
             return;
-        m_hovered_net = base;
+        m_hovered_net = net;
         for (auto *w : m_wires) {
-            const bool on_net = !base.isEmpty() && baseKey(w->sourceKey()) == base;
+            const bool on_net = !net.isEmpty() && w->netKey() == net;
             w->setNetHover(on_net);
-            w->setNetDimmed(!base.isEmpty() && !on_net);
+            w->setNetDimmed(!net.isEmpty() && !on_net);
         }
     }
 
-    // The pointer is on a wire of net `base`, or on no net (empty key). The
-    // net shows its highlight only while Shift is down, so a pointer that
-    // moves across the canvas does not change the drawing.
-    void setPointerNet(const QString &base, bool shift) {
-        m_pointer_net = base;
+    // The pointer is on a wire of net `net` (a net key), or on no net (empty
+    // key). The net shows its highlight only while Shift is down, so a
+    // pointer that moves across the canvas does not change the drawing.
+    void setPointerNet(const QString &net, bool shift) {
+        m_pointer_net = net;
         setShiftHeld(shift);
     }
 
-    // The pointer is on a PIN: a load pin's key differs from the net's source
-    // key, so find the net through a wire that touches the pin.
+    // The pointer is on a PIN: find the net through a wire that touches the
+    // pin.
     void setPointerPin(const QString &pin_key, bool shift) {
         const QString base = baseKey(pin_key);
         for (auto *w : m_wires) {
             if (baseKey(w->sourceKey()) == base || baseKey(w->targetKey()) == base) {
-                setPointerNet(baseKey(w->sourceKey()), shift);
+                setPointerNet(w->netKey(), shift);
                 return;
             }
         }
@@ -967,7 +968,9 @@ class CanvasLayer {
             net_index.insert(key, static_cast<int>(net_wires.size()));
             nets.push_back(std::move(net));
             net_wires.push_back(wires);
-            net_colors.push_back(WireItem::colorForNet(src_key));
+            // `wires` is not empty here. All wires of one source are on
+            // one net.
+            net_colors.push_back(WireItem::colorForNet(wires.first()->netKey()));
         }
 
         rust::Vec<FfiRect> obstacles;
@@ -1016,7 +1019,7 @@ class CanvasLayer {
         for (int i = 0; i < wc; ++i) {
             QString src_key = m_state->wire_source(i);
             QString dst_key = m_state->wire_target(i);
-            auto *w = new WireItem(src_key, dst_key);
+            auto *w = new WireItem(src_key, dst_key, m_state->wire_net(i));
             w->setAppState(m_state);
             w->setCanvasLayer(this);
             w->setWidth(m_state->wire_width(i));

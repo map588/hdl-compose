@@ -77,8 +77,7 @@ void WireItem::mousePressEvent(QGraphicsSceneMouseEvent *event) {
 
 void WireItem::hoverEnterEvent(QGraphicsSceneHoverEvent *event) {
     if (m_layer)
-        m_layer->setPointerNet(CanvasLayer::baseKey(m_source_key),
-                               event->modifiers().testFlag(Qt::ShiftModifier));
+        m_layer->setPointerNet(m_net_key, event->modifiers().testFlag(Qt::ShiftModifier));
 }
 
 void WireItem::hoverMoveEvent(QGraphicsSceneHoverEvent *event) {

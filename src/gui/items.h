@@ -129,12 +129,15 @@ inline const QColor kWiringAccent(0, 210, 255);
 
 class WireItem : public QGraphicsPathItem {
   public:
-    WireItem(const QString &source_key, const QString &target_key)
-        : m_source_key(source_key), m_target_key(target_key) {
+    // `net_key` is the identity of the net (AppState::wire_net). The source
+    // key is only the pin that the port_map entry references; it is not
+    // always the driver, so it does not identify the net.
+    WireItem(const QString &source_key, const QString &target_key, const QString &net_key)
+        : m_source_key(source_key), m_target_key(target_key), m_net_key(net_key) {
         setFlag(QGraphicsItem::ItemIsSelectable, true);
         setAcceptedMouseButtons(Qt::LeftButton | Qt::RightButton);
         setAcceptHoverEvents(true);
-        QPen pen(colorForNet(source_key), 1.5);
+        QPen pen(colorForNet(net_key), 1.5);
         pen.setCosmetic(true);
         setPen(pen);
     }
@@ -153,6 +156,7 @@ class WireItem : public QGraphicsPathItem {
 
     const QString &sourceKey() const { return m_source_key; }
     const QString &targetKey() const { return m_target_key; }
+    const QString &netKey() const { return m_net_key; }
 
     void setWaypoints(const QVector<QPointF> &pts) {
         m_waypoints = pts;
@@ -225,7 +229,7 @@ class WireItem : public QGraphicsPathItem {
 
     // Base weight scales with bus width so buses read heavier than scalars.
     void refreshPen() {
-        QColor c = colorForNet(m_source_key);
+        QColor c = colorForNet(m_net_key);
         qreal base = m_width > 1 ? 2.2 : 1.5;
         if (m_net_hover) {
             c = QColor::fromHsv(c.hue(), 160, 255);
@@ -335,6 +339,7 @@ class WireItem : public QGraphicsPathItem {
   private:
     QString m_source_key;
     QString m_target_key;
+    QString m_net_key;
     AppState *m_state = nullptr;
     CanvasLayer *m_layer = nullptr;
     int m_width = 1;
