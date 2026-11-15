@@ -260,6 +260,88 @@ impl ToolchainConfig {
         serde_json::from_str(&text).map_err(|e| format!("invalid {}: {e}", path.display()))
     }
 
+    /// The config for a tool run of a project: its own config, with the
+    /// sources that its child designs need.
+    ///
+    /// A child is a design of the folder of the project whose module the
+    /// project uses, in an instance or through the modules of the library.
+    /// A parent needs the packages and the leaf sources of a child, and
+    /// the child has them in its config already. Thus the function adds
+    /// `vhdl_libraries`, `extra_sources` and `exclude_sources` of each
+    /// child, in the order of the file names of the children and before
+    /// the entries of the project. Each other key is a decision for one
+    /// build (flags, the VHDL standard, the board, the clocks): it comes
+    /// from the config of the project only.
+    pub fn load_with_children(
+        project_path: &Path,
+        schematic: &Schematic,
+        library: &[ModuleDef],
+    ) -> Result<ToolchainConfig, String> {
+        let mut config = Self::load_for(project_path)?;
+
+        // The modules in use: those of the instances, and those that they
+        // instantiate.
+        let by_name: HashMap<&str, &ModuleDef> =
+            library.iter().map(|m| (m.name.as_str(), m)).collect();
+        let mut used: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut pending: Vec<&str> = schematic
+            .instances
+            .iter()
+            .map(|instance| instance.module_ref.as_str())
+            .collect();
+        while let Some(name) = pending.pop() {
+            if used.insert(name)
+                && let Some(module) = by_name.get(name)
+            {
+                pending.extend(module.dependencies.iter().map(String::as_str));
+            }
+        }
+
+        let dir = match project_path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => Path::new("."),
+        };
+        let own = ToolchainConfig {
+            vhdl_libraries: std::mem::take(&mut config.vhdl_libraries),
+            extra_sources: std::mem::take(&mut config.extra_sources),
+            exclude_sources: std::mem::take(&mut config.exclude_sources),
+            ..ToolchainConfig::default()
+        };
+        for design in crate::designs::folder_designs(dir) {
+            if design.path.file_name() != project_path.file_name()
+                && used.contains(design.top_name.as_str())
+            {
+                config.add_sources(Self::load_for(&design.path)?);
+            }
+        }
+        config.add_sources(own);
+        Ok(config)
+    }
+
+    /// Add the libraries and the source lists of `other`. A path that is in
+    /// a list already is not added a second time.
+    fn add_sources(&mut self, other: ToolchainConfig) {
+        fn add(list: &mut Vec<PathBuf>, paths: Vec<PathBuf>) {
+            for path in paths {
+                if !list.iter().any(|p| plain_path(p) == plain_path(&path)) {
+                    list.push(path);
+                }
+            }
+        }
+        for library in other.vhdl_libraries {
+            match self
+                .vhdl_libraries
+                .iter_mut()
+                .find(|l| l.name == library.name)
+            {
+                Some(same) => add(&mut same.files, library.files),
+                None => self.vhdl_libraries.push(library),
+            }
+        }
+        add(&mut self.extra_sources, other.extra_sources);
+        add(&mut self.exclude_sources, other.exclude_sources);
+    }
+
     /// The board file of the config, resolved against the project directory.
     pub fn board_path(&self, project_dir: &Path) -> Option<PathBuf> {
         self.board.as_ref().map(|board| {
@@ -437,6 +519,13 @@ fn reset_build_dir(dir: &Path) -> Result<(), String> {
     .map_err(|e| format!("cannot write {}: {e}", dir.join(BUILD_MARKER).display()))
 }
 
+/// `./rtl/a.vhd` and `rtl/a.vhd` are the same file.
+fn plain_path(path: &Path) -> PathBuf {
+    path.components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect()
+}
+
 /// Codegen the project and lay everything out in its build directory.
 /// `project_dir` anchors the config's relative paths and the build directory.
 pub fn stage(
@@ -458,12 +547,7 @@ pub fn stage(
             path.to_path_buf()
         }
     };
-    // `./rtl/a.vhd` and `rtl/a.vhd` are the same file.
-    let plain = |path: &Path| -> PathBuf {
-        path.components()
-            .filter(|c| !matches!(c, std::path::Component::CurDir))
-            .collect()
-    };
+    let plain = plain_path;
 
     let mut used: Vec<String> = Vec::new();
     let mut copy_in = |src: &Path| -> Result<String, String> {
@@ -2623,6 +2707,161 @@ mod config_tests {
         );
         assert_eq!(staged.sources, vec!["leaf.vhd", "mod_a.vhd", "top.vhd"]);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The sources of a config as text, for a comparison.
+    fn sources_of(config: &ToolchainConfig) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let text = |paths: &[PathBuf]| -> Vec<String> {
+            paths.iter().map(|p| p.display().to_string()).collect()
+        };
+        (
+            config
+                .vhdl_libraries
+                .iter()
+                .map(|l| format!("{}: {}", l.name, text(&l.files).join(" ")))
+                .collect(),
+            text(&config.extra_sources),
+            text(&config.exclude_sources),
+        )
+    }
+
+    /// A parent uses the design `child`, and `child` uses `grandchild`.
+    /// A tool run of the parent needs the packages and the leaf sources of
+    /// the two. Before, the user wrote them into the config of the parent
+    /// a second time. The flags and the VHDL standard of a child stay with
+    /// the child.
+    #[test]
+    fn config_of_a_parent_gets_the_sources_of_its_child_designs() {
+        let dir = tempfile::tempdir().unwrap();
+        let design = |name: &str, uses: &[&str], config: &str| {
+            let mut s = Schematic::new(name, Language::Vhdl);
+            for module in uses {
+                s.add_instance(format!("u_{module}"), *module).unwrap();
+            }
+            let path = dir.path().join(format!("{name}.hdlc"));
+            crate::project::save_project(&s, &path).unwrap();
+            std::fs::write(path.with_extension("toolchain.json"), config).unwrap();
+            (path, s)
+        };
+        design(
+            "child",
+            &[],
+            r#"{
+                "vhdl_libraries": [{"name": "loot", "files": ["rtl/pkg.vhd"]}],
+                "extra_sources": ["rtl/leaf.vhd", "rtl/shared.vhd"],
+                "exclude_sources": ["rtl/vendor.v"],
+                "ghdl_synth_flags": ["--latches"],
+                "vhdl_std": "93"
+            }"#,
+        );
+        design("grandchild", &[], r#"{"extra_sources": ["rtl/deep.vhd"]}"#);
+        design("other", &[], r#"{"extra_sources": ["rtl/other.vhd"]}"#);
+        let (parent, schematic) = design(
+            "parent",
+            &["child"],
+            r#"{
+                "vhdl_libraries": [
+                    {"name": "loot", "files": ["./rtl/pkg.vhd", "rtl/pkg2.vhd"]},
+                    {"name": "mine", "files": ["rtl/mine.vhd"]}
+                ],
+                "extra_sources": ["rtl/shared.vhd", "rtl/own.vhd"],
+                "synth_args": ["-abc9"]
+            }"#,
+        );
+        let module = |name: &str, dependencies: &[&str]| ModuleDef {
+            name: name.into(),
+            generics: vec![],
+            ports: vec![],
+            source_path: dir.path().join(format!("{name}.vhd")),
+            source_hash: 0,
+            dependencies: dependencies.iter().map(|d| d.to_string()).collect(),
+        };
+        let library = [module("child", &["grandchild"]), module("grandchild", &[])];
+
+        let config = ToolchainConfig::load_with_children(&parent, &schematic, &library).unwrap();
+
+        assert_eq!(
+            sources_of(&config),
+            (
+                vec![
+                    "loot: rtl/pkg.vhd rtl/pkg2.vhd".to_string(),
+                    "mine: rtl/mine.vhd".to_string()
+                ],
+                vec![
+                    "rtl/leaf.vhd".to_string(),
+                    "rtl/shared.vhd".to_string(),
+                    "rtl/deep.vhd".to_string(),
+                    "rtl/own.vhd".to_string()
+                ],
+                vec!["rtl/vendor.v".to_string()],
+            )
+        );
+        assert_eq!(config.synth_args, ["-abc9"]);
+        assert!(config.ghdl_synth_flags.is_empty());
+        assert_eq!(config.vhdl_std, None);
+
+        // A design with no child gets its own config.
+        let (child, _) = crate::project::load_project(&dir.path().join("child.hdlc")).unwrap();
+        let alone =
+            ToolchainConfig::load_with_children(&dir.path().join("child.hdlc"), &child, &[])
+                .unwrap();
+        let own = ToolchainConfig::load_for(&dir.path().join("child.hdlc")).unwrap();
+        assert_eq!(sources_of(&alone), sources_of(&own));
+        assert_eq!(alone.ghdl_synth_flags, ["--latches"]);
+
+        // A config of a child that is not valid stops the run.
+        std::fs::write(dir.path().join("child.toolchain.json"), "{ not json").unwrap();
+        let error = ToolchainConfig::load_with_children(&parent, &schematic, &library)
+            .err()
+            .unwrap();
+        assert!(error.contains("child.toolchain.json"), "{error}");
+    }
+
+    /// The example in the repository: `synth_top` uses the design
+    /// `voice_chain`. Its config no longer repeats the library `loot` and
+    /// the leaf sources of `voice_chain`.
+    #[test]
+    fn example_parent_gets_the_sources_of_the_example_child() {
+        let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/projects/hdlc");
+        let load = |name: &str| {
+            let path = folder.join(name);
+            let (schematic, _) = crate::project::load_project(&path).unwrap();
+            let (library, errors) = schematic.resolve_modules();
+            assert!(errors.is_empty(), "{errors:?}");
+            ToolchainConfig::load_with_children(&path, &schematic, &library).unwrap()
+        };
+
+        let own = ToolchainConfig::load_for(&folder.join("synth_top.hdlc")).unwrap();
+        assert_eq!(
+            sources_of(&own).1,
+            ["rtl/audio/i2s_tx.vhd", "sim/selectio_sim.vhd"],
+            "the config of the parent has only its own sources"
+        );
+        assert!(own.vhdl_libraries.is_empty());
+        let (libraries, extra, exclude) = sources_of(&load("synth_top.hdlc"));
+        assert_eq!(
+            libraries,
+            ["loot: rtl/loot/midi_lut_pkg.vhd rtl/loot/cc_lut_pkg.vhd"]
+        );
+        assert_eq!(
+            extra,
+            [
+                "rtl/registers/ranger_mapper.vhd",
+                "rtl/registers/dflipflop.vhd",
+                "rtl/registers/n_parallel_register.vhd",
+                "rtl/registers/addressed_pl_reg.vhd",
+                "rtl/registers/map_reg.vhd",
+                "rtl/midi/edge_detect.vhd",
+                "rtl/audio/i2s_tx.vhd",
+                "sim/selectio_sim.vhd",
+            ]
+        );
+        assert_eq!(exclude, ["rtl/audio/clocked_data_out.v"]);
+
+        // The child has no child: its sources do not change.
+        let child = load("voice_chain.hdlc");
+        let child_own = ToolchainConfig::load_for(&folder.join("voice_chain.hdlc")).unwrap();
+        assert_eq!(sources_of(&child), sources_of(&child_own));
     }
 
     /// Regression: `hdlc check tests/projects/hdlc/voice_chain.hdlc` from

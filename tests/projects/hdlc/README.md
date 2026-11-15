@@ -51,6 +51,11 @@ the library modules (register chain, i2s_tx, edge_detect), the GHDL-only
 `selectio_sim.vhd`, the Vivado-only `clocked_data_out.v` exclusion, and
 `--latches` for the midi_processor state decode.
 
+`synth_top` uses the design `voice_chain`. A tool run of `synth_top` takes
+the `loot` packages and the leaf sources from `voice_chain.toolchain.json`,
+so `synth_top.toolchain.json` holds only what `synth_top` adds: `i2s_tx`,
+`selectio_sim.vhd`, the exclusion and the `--latches` flag.
+
 Net convention reminder: an instance OUTPUT feeding others references
 itself in its port_map; INPUTS reference the driving instance/port.
 Mutual references silently split the net in two.

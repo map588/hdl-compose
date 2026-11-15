@@ -783,7 +783,13 @@ fn stage_loaded(
             return Err(ExitCode::from(2));
         }
     };
-    let config = hdl_compose::toolchain::ToolchainConfig::load_for(project_path).map_err(|e| {
+    // With the sources that the child designs of the project need.
+    let config = hdl_compose::toolchain::ToolchainConfig::load_with_children(
+        project_path,
+        schematic,
+        library,
+    )
+    .map_err(|e| {
         eprintln!("error: {e}");
         ExitCode::from(2)
     })?;
