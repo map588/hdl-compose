@@ -4575,6 +4575,56 @@ mod tests {
         assert_eq!(state.wire_net(0).to_string(), "u_a.q");
     }
 
+    /// The canvas refuses a connection that is an error. The text editor
+    /// accepts each line that it can parse. The rule that holds for the two
+    /// paths: validation reports each connection that the canvas refuses,
+    /// and code generation stops on an error. This test keeps the rule.
+    #[test]
+    fn validation_reports_each_connection_that_the_canvas_refuses() {
+        // (module of `u_x`, pin of `u_x`, the other pin): two outputs, a
+        // scalar on a vector, and two vectors of different widths.
+        let cases = [
+            ("source", "q", "u_a.q"),
+            ("sink", "e", "u_a.q"),
+            ("sink", "e", "u_w.q"),
+        ];
+        for (module, port, from) in cases {
+            let (dir, mut state) =
+                state_with_sink("d : in std_logic; e : in std_logic_vector(1 downto 0)");
+            let wide = dir.path().join("wide.vhd");
+            std::fs::write(
+                &wide,
+                vhdl_entity("wide", "q : out std_logic_vector(3 downto 0)"),
+            )
+            .unwrap();
+            assert!(state.pin_mut().add_library_path(&q(wide.to_str().unwrap())));
+            for (name, of) in [("u_a", "source"), ("u_w", "wide"), ("u_x", module)] {
+                assert!(state.pin_mut().add_instance(&q(name), &q(of)));
+            }
+            assert_eq!(state.validation_error_count(), 0);
+
+            // The canvas refuses and changes nothing.
+            let pin = format!("u_x.{port}");
+            let result = state.pin_mut().connect_pins(&q(from), &q(&pin));
+            assert!(!result.committed, "{from} -> {pin}");
+            assert!(!result.error.is_empty());
+            assert_eq!(entry(&state, "u_x", port), "");
+
+            // The text editor accepts the same connection.
+            let buffer = q(&format!(
+                "u_x : {module}\n  port map (\n    {port} => {from},\n  );\n"
+            ));
+            let issues = state.pin_mut().commit_instance_buffer(&q("u_x"), &buffer);
+            assert!(issues.messages.is_empty(), "{:?}", issues.messages);
+            assert_eq!(entry(&state, "u_x", port), from);
+            assert!(
+                state.validation_error_count() > 0,
+                "{from} -> {pin}: {:?}",
+                state.validation_messages()
+            );
+        }
+    }
+
     /// A commit of the editor buffer clears the dirty flag of its instance.
     /// The connections and the flag come back with one undo.
     #[test]
