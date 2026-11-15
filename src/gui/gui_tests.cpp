@@ -26,10 +26,13 @@
 #include <QApplication>
 #include <QContextMenuEvent>
 #include <QDateTime>
+#include <QDialog>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileSystemWatcher>
 #include <QGraphicsView>
 #include <QGuiApplication>
+#include <QLineEdit>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMessageBox>
@@ -258,6 +261,43 @@ void clickInNextMessageBox(QMessageBox::StandardButton button, int *answered) {
         answered);
 }
 
+// What the dialogs of File > New did. A watcher answers each dialog that
+// opens while it runs: it types `name` into a dialog with a text field,
+// closes a message box and keeps its text, and counts and cancels a file
+// dialog.
+struct NewDialogs {
+    int name_dialogs = 0;
+    int file_dialogs = 0;
+    QStringList messages;
+};
+
+NewDialogs newDesignFromTheMenu(const QString &name) {
+    NewDialogs seen;
+    QTimer watcher;
+    QObject::connect(&watcher, &QTimer::timeout, &watcher, [&seen, name]() {
+        QWidget *open = QApplication::activeModalWidget();
+        if (auto *files = qobject_cast<QFileDialog *>(open)) {
+            ++seen.file_dialogs;
+            files->reject();
+        } else if (auto *box = qobject_cast<QMessageBox *>(open)) {
+            seen.messages << box->text();
+            box->accept();
+        } else if (auto *dialog = qobject_cast<QDialog *>(open)) {
+            if (auto *edit = dialog->findChild<QLineEdit *>()) {
+                edit->setText(name);
+                ++seen.name_dialogs;
+                dialog->accept();
+            }
+        }
+    });
+    watcher.start(10);
+    // Returns when each dialog is closed.
+    action(QStringLiteral("New..."))->trigger();
+    watcher.stop();
+    settle();
+    return seen;
+}
+
 } // namespace
 
 // --- Each test ---------------------------------------------------------------
@@ -279,10 +319,10 @@ void GuiTests::init() {
     QVERIFY(g->view);
 
     g->project = g->file(QStringLiteral("top.hdlc"));
-    QVERIFY(g->state->new_project(QStringLiteral("top"), 0));
+    QVERIFY(g->state->new_project_at(g->project, 0));
     QVERIFY(g->state->add_library_path(g->file(QStringLiteral("source.vhd"))));
     QVERIFY(g->state->add_library_path(g->file(QStringLiteral("sink.vhd"))));
-    QVERIFY(g->state->save_project_as(g->project));
+    QVERIFY(g->state->save_project());
     // Open it the way the operating system does. This makes the history
     // empty.
     hdlc_test_open_project(g->window.get(), g->project);
@@ -632,6 +672,29 @@ void GuiTests::openAfterAStopOffersTheChanges() {
 }
 
 // --- Entry point -------------------------------------------------------------
+
+// File > New with a design open asks for a name and a language only. The
+// new design goes into the folder of the open design, where the two can use
+// each other. Before, a file dialog asked for the place.
+void GuiTests::newDesignGoesIntoTheFolderOfTheOpenDesignWithNoFileDialog() {
+    NewDialogs seen = newDesignFromTheMenu(QStringLiteral("child"));
+    QCOMPARE(seen.name_dialogs, 1);
+    QCOMPARE(seen.file_dialogs, 0);
+    QCOMPARE(seen.messages, QStringList());
+    QVERIFY(QFile::exists(g->file(QStringLiteral("child.hdlc"))));
+    QCOMPARE(QFileInfo(g->state->current_project_path()).fileName(), QStringLiteral("child.hdlc"));
+    QCOMPARE(g->state->getProject_name(), QStringLiteral("child"));
+    QCOMPARE(g->state->project_language(), 0);
+
+    // The name of a design of the folder is refused, and the open design
+    // stays.
+    seen = newDesignFromTheMenu(QStringLiteral("top"));
+    QCOMPARE(seen.file_dialogs, 0);
+    QCOMPARE(seen.messages.size(), 1);
+    QVERIFY2(seen.messages.first().contains(QStringLiteral("is there already")),
+             qPrintable(seen.messages.first()));
+    QCOMPARE(g->state->getProject_name(), QStringLiteral("child"));
+}
 
 extern "C" int run_gui_tests() {
     // The platform is fixed here, so that no call of the tests can open a

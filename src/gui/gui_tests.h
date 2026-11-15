@@ -25,4 +25,5 @@ class GuiTests : public QObject {
     void closeWithSaveWritesTheProject();
     void openAfterAStopOffersTheChanges_data();
     void openAfterAStopOffersTheChanges();
+    void newDesignGoesIntoTheFolderOfTheOpenDesignWithNoFileDialog();
 };

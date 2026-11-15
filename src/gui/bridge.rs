@@ -76,8 +76,12 @@ pub mod qobject {
         #[qinvokable]
         fn commit_top_level_buffer(self: Pin<&mut AppState>, buffer: &QString) -> bool;
 
+        /// Make a new design in the file `path` and open it. The name of
+        /// the design is the name of the file. The function changes
+        /// nothing when the name is not a module name, when another design
+        /// of the folder has it, or when the file is there already.
         #[qinvokable]
-        fn new_project(self: Pin<&mut AppState>, name: &QString, language: i32) -> bool;
+        fn new_project_at(self: Pin<&mut AppState>, path: &QString, language: i32) -> bool;
 
         #[qinvokable]
         fn has_project(self: &AppState) -> bool;
@@ -823,6 +827,14 @@ fn net_key(net: &crate::nets::Net) -> String {
     }
 }
 
+/// The name of the design in the file `path`, when it is a module name of
+/// the language and no other design of the folder has it.
+fn design_name_for(path: &Path, language: &Language) -> Result<String, String> {
+    let name = crate::designs::design_name(path, language)?;
+    crate::designs::check_name_is_free(path, &name)?;
+    Ok(name)
+}
+
 /// The recovery file of a project: `.<project file name>.autosave` in the
 /// directory of the project file. It is in the same directory so that it
 /// has the same relative library paths as the project file, and so that
@@ -1533,12 +1545,47 @@ impl qobject::AppState {
 
     pub fn save_project_as(mut self: Pin<&mut Self>, path: &QString) -> bool {
         let path_buf = PathBuf::from(path.to_string());
-        if self.as_mut().save_to(&path_buf) {
-            self.as_mut().rust_mut().get_mut().current_path = Some(path_buf);
-            true
-        } else {
-            false
+        let Some((language, old_name)) = self
+            .as_ref()
+            .rust()
+            .schematic
+            .as_ref()
+            .map(|s| (s.language.clone(), s.top_name.clone()))
+        else {
+            self.as_mut().record_error("no project loaded");
+            return false;
+        };
+        // The name of a design is the name of its file: a save with a new
+        // file name gives the design that name.
+        let name = match design_name_for(&path_buf, &language) {
+            Ok(name) => name,
+            Err(e) => {
+                self.as_mut().record_error(e);
+                return false;
+            }
+        };
+        let renamed = name != old_name;
+        let set_name = |state: Pin<&mut Self>, name: String| {
+            if let Some(s) = state.rust_mut().get_mut().schematic.as_mut() {
+                s.top_name = name;
+            }
+        };
+        if renamed {
+            set_name(self.as_mut(), name);
         }
+        if !self.as_mut().save_to(&path_buf) {
+            if renamed {
+                set_name(self.as_mut(), old_name);
+            }
+            return false;
+        }
+        self.as_mut().rust_mut().get_mut().current_path = Some(path_buf);
+        if renamed {
+            // Each step of the history holds the design with its old name.
+            self.as_mut().clear_undo_stacks();
+            self.as_mut().rebuild_library_and_validate();
+        }
+        true
     }
 
     pub fn refresh_canvas(mut self: Pin<&mut Self>) {
@@ -1819,29 +1866,36 @@ impl qobject::AppState {
         true
     }
 
-    pub fn new_project(mut self: Pin<&mut Self>, name: &QString, language: i32) -> bool {
-        let lang = match language {
+    pub fn new_project_at(mut self: Pin<&mut Self>, path: &QString, language: i32) -> bool {
+        let language = match language {
             0 => Language::Vhdl,
             1 => Language::SystemVerilog,
-            _ => return false,
+            _ => {
+                self.as_mut().record_error("unknown language");
+                return false;
+            }
         };
-        {
-            let m = self.as_mut().rust_mut().get_mut();
-            m.schematic = Some(Schematic::new(name.to_string(), lang));
-            m.current_path = None;
-            m.dirty = true;
-            m.last_error.clear();
-            m.load_warnings.clear();
-            m.autosaved = None;
-            m.library.clear();
-            m.library_baseline = false;
-            m.diagnostics.clear();
+        let path_buf = PathBuf::from(path.to_string());
+        let name = match design_name_for(&path_buf, &language) {
+            Ok(name) => name,
+            Err(e) => {
+                self.as_mut().record_error(e);
+                return false;
+            }
+        };
+        if path_buf.exists() {
+            self.as_mut().record_error(format!(
+                "{} is there already; a new design does not replace a file",
+                path_buf.display()
+            ));
+            return false;
         }
-        self.as_mut().clear_undo_stacks();
-        self.as_mut().refresh_project_display();
-        self.as_mut().rebuild_view(|state| state.project_loaded());
-        self.as_mut().validation_changed();
-        true
+        // The open design stays until the file of the new one is written.
+        if let Err(e) = project::save_project(&Schematic::new(name, language), &path_buf) {
+            self.as_mut().record_error(e.to_string());
+            return false;
+        }
+        self.open_project(path)
     }
 
     pub fn has_project(&self) -> bool {
@@ -4433,15 +4487,15 @@ mod tests {
     fn state_with_sink(sink_ports: &str) -> (tempfile::TempDir, UniquePtr<AppState>) {
         let dir = tempfile::tempdir().unwrap();
         let mut state = qobject::new_app_state();
-        assert!(state.pin_mut().new_project(&q("top"), 0));
+        let project = q(dir.path().join("top.hdlc").to_str().unwrap());
+        assert!(state.pin_mut().new_project_at(&project, 0));
         for (name, ports) in [("source", "q : out std_logic"), ("sink", sink_ports)] {
             let path = dir.path().join(format!("{name}.vhd"));
             std::fs::write(&path, vhdl_entity(name, ports)).unwrap();
             assert!(state.pin_mut().add_library_path(&q(path.to_str().unwrap())));
         }
         // To open a project makes the history empty.
-        let project = q(dir.path().join("top.hdlc").to_str().unwrap());
-        assert!(state.pin_mut().save_project_as(&project));
+        assert!(state.pin_mut().save_project());
         assert!(state.pin_mut().open_project(&project));
         assert!(!state.can_undo() && !state.can_redo());
         (dir, state)
@@ -4983,6 +5037,97 @@ mod tests {
         dir.path().join("top.hdlc")
     }
 
+    fn file_in(dir: &tempfile::TempDir, name: &str) -> QString {
+        q(dir.path().join(name).to_str().unwrap())
+    }
+
+    /// The name of a new design is the name of its file. A name that is not
+    /// a module name, the name of another design of the folder, and a file
+    /// that is there already are refused, and the open design stays.
+    #[test]
+    fn new_design_gets_the_name_of_its_file_or_changes_nothing() {
+        let (dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        let before = model(&state);
+
+        for (file, reason) in [
+            ("2fast.hdlc", "starts with a letter"),
+            ("TOP.hdlc", "is the name of the design in"),
+            ("top.hdlc", "is there already"),
+        ] {
+            assert!(
+                !state.pin_mut().new_project_at(&file_in(&dir, file), 0),
+                "{file}"
+            );
+            let error = state.last_error().to_string();
+            assert!(error.contains(reason), "{file}: {error}");
+            assert_eq!(model(&state), before, "{file}: the open design stays");
+            assert!(state.can_undo(), "{file}: the history stays");
+        }
+        assert!(!dir.path().join("2fast.hdlc").exists());
+
+        assert!(
+            state
+                .pin_mut()
+                .new_project_at(&file_in(&dir, "uart.hdlc"), 1)
+        );
+        assert_eq!(state.project_name().to_string(), "uart");
+        assert_eq!(state.project_language(), 1);
+        assert_eq!(state.current_project_path(), file_in(&dir, "uart.hdlc"));
+        assert!(!*state.dirty() && !state.can_undo());
+        assert!(dir.path().join("uart.hdlc").exists());
+    }
+
+    /// A save with a new file name gives the design that name: two designs
+    /// of one folder then never generate one file. The name of another
+    /// design of the folder is refused, and the design keeps its name.
+    #[test]
+    fn save_as_gives_the_design_the_name_of_the_file() {
+        let (dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+
+        assert!(state.pin_mut().save_project_as(&file_in(&dir, "copy.hdlc")));
+        assert_eq!(state.project_name().to_string(), "copy");
+        assert_eq!(state.rust().schematic.as_ref().unwrap().top_name, "copy");
+        let saved = std::fs::read_to_string(dir.path().join("copy.hdlc")).unwrap();
+        assert!(saved.contains(r#""top_name": "copy""#), "{saved}");
+        // An undo must not bring the old name back.
+        assert!(!state.can_undo());
+        assert_eq!(
+            state.suggest_codegen_path(),
+            file_in(&dir, "copy.vhd"),
+            "the copy does not generate the file of the first design"
+        );
+
+        // `top.hdlc` is in the folder with the name `top`.
+        assert!(!state.pin_mut().save_project_as(&file_in(&dir, "Top.hdlc")));
+        assert!(
+            state
+                .last_error()
+                .to_string()
+                .contains("is the name of the design in"),
+            "{}",
+            state.last_error()
+        );
+        assert!(
+            !state
+                .pin_mut()
+                .save_project_as(&file_in(&dir, "my-copy.hdlc"))
+        );
+        assert_eq!(state.project_name().to_string(), "copy");
+        assert_eq!(state.current_project_path(), file_in(&dir, "copy.hdlc"));
+
+        // A save with the same name in another folder keeps the history.
+        assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+        let other = tempfile::tempdir().unwrap();
+        assert!(
+            state
+                .pin_mut()
+                .save_project_as(&file_in(&other, "copy.hdlc"))
+        );
+        assert!(state.can_undo());
+    }
+
     /// The autosave writes only the recovery file, and only when the
     /// project has changes that the file does not have. The project stays
     /// "not saved": only a save of the user changes the project file.
@@ -5384,7 +5529,7 @@ mod tests {
     fn each_kind_of_history_change_sends_the_signal() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let (_dir, mut state) = state_with_library();
+        let (dir, mut state) = state_with_library();
         let count = Arc::new(AtomicUsize::new(0));
         let seen = count.clone();
         let _menu = state.pin_mut().on_history_changed(move |_| {
@@ -5407,8 +5552,9 @@ mod tests {
         sent("undo");
         assert!(state.pin_mut().redo());
         sent("redo");
-        assert!(state.pin_mut().new_project(&q("other"), 0));
-        sent("new_project");
+        let other = q(dir.path().join("other.hdlc").to_str().unwrap());
+        assert!(state.pin_mut().new_project_at(&other, 0));
+        sent("new_project_at");
     }
 
     /// The model as a value that does not depend on the order of a map.

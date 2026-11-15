@@ -425,6 +425,8 @@ bool prompt_new_project(QWidget *parent, QString &out_name, int &out_lang) {
     auto *lang_combo = new QComboBox(&dlg);
     lang_combo->addItem(QStringLiteral("VHDL"), 0);
     lang_combo->addItem(QStringLiteral("SystemVerilog"), 1);
+    // `out_lang` comes in as the language to show first.
+    lang_combo->setCurrentIndex(lang_combo->findData(out_lang));
 
     auto *form = new QFormLayout;
     form->addRow(QStringLiteral("&Name:"), name_edit);
@@ -1451,28 +1453,33 @@ class MainWindow : public QMainWindow {
             return;
         }
         QString name;
-        int lang = 0;
+        // Designs of one folder can use each other only in one language.
+        int lang = std::max(0, m_state->project_language());
         if (!prompt_new_project(this, name, lang)) {
             return;
         }
         // A project always has a file from the start: relative source paths,
-        // the Toolchain menu and Generate HDL all need its location. Ask
-        // before the current project is replaced, so Cancel changes nothing.
-        QString path = QFileDialog::getSaveFileName(
-            this, QStringLiteral("Save New Project"),
-            QDir(default_open_dir()).filePath(name + QStringLiteral(".hdlc")),
-            QStringLiteral("HDL Compose Projects (*.hdlc)"));
-        if (path.isEmpty()) {
-            return;
+        // the Toolchain menu and Generate HDL all need its location. With a
+        // design open, the new design goes into the folder of that design,
+        // where the two can use each other; no dialog asks for a place.
+        QString path;
+        const QString open_design = m_state->current_project_path();
+        if (!open_design.isEmpty()) {
+            path = QFileInfo(open_design).absoluteDir().filePath(name + QStringLiteral(".hdlc"));
+        } else {
+            path = QFileDialog::getSaveFileName(
+                this, QStringLiteral("Save New Project"),
+                QDir(default_open_dir()).filePath(name + QStringLiteral(".hdlc")),
+                QStringLiteral("HDL Compose Projects (*.hdlc)"));
+            if (path.isEmpty()) {
+                return;
+            }
+            if (!path.endsWith(QStringLiteral(".hdlc"), Qt::CaseInsensitive)) {
+                path += QStringLiteral(".hdlc");
+            }
         }
-        if (!path.endsWith(QStringLiteral(".hdlc"), Qt::CaseInsensitive)) {
-            path += QStringLiteral(".hdlc");
-        }
-        if (!m_state->new_project(name, lang)) {
-            show_state_error(this, m_state, QStringLiteral("New Project"));
-            return;
-        }
-        if (!m_state->save_project_as(path)) {
+        // The open design stays when the new one is refused.
+        if (!m_state->new_project_at(path, lang)) {
             show_state_error(this, m_state, QStringLiteral("New Project"));
             return;
         }
