@@ -24,6 +24,10 @@ pub struct Board {
     pub pack_args: Vec<String>,
     #[serde(default)]
     pub prog_args: Vec<String>,
+    /// Extra arguments for nextpnr that the board needs (e.g. the Gowin
+    /// `--vopt family=<name>`).
+    #[serde(default)]
+    pub pnr_args: Vec<String>,
 }
 
 impl Board {
@@ -82,6 +86,20 @@ pub fn constraint_port_names(text: &str, family: FpgaFamily) -> HashSet<String> 
         }
     }
     names
+}
+
+/// The ports for which a constraints file sets a clock frequency. Only an
+/// LPF line `FREQUENCY PORT "<name>" ...` is read: nextpnr-ecp5 gives that
+/// line priority over an SDC file (measured with nextpnr 0.10). The other
+/// families return an empty set.
+pub fn constraint_clock_ports(text: &str, family: FpgaFamily) -> HashSet<String> {
+    if !matches!(family, FpgaFamily::Ecp5) {
+        return HashSet::new();
+    }
+    text.lines()
+        .filter_map(|line| line.trim().strip_prefix("FREQUENCY PORT"))
+        .filter_map(quoted)
+        .collect()
 }
 
 fn quoted(s: &str) -> Option<String> {
@@ -178,6 +196,32 @@ LOCATE COMP "led[1]" SITE "D14";
                 "led[1]".to_string()
             ])
         );
+    }
+
+    #[test]
+    fn lpf_clock_ports_extracted() {
+        let lpf = "FREQUENCY PORT \"clk\" 50 MHZ;\n# FREQUENCY PORT \"off\" 1 MHZ;\nFREQUENCY NET \"n\" 25 MHZ;\n";
+        assert_eq!(
+            constraint_clock_ports(lpf, FpgaFamily::Ecp5),
+            HashSet::from(["clk".to_string()])
+        );
+        assert!(constraint_clock_ports(lpf, FpgaFamily::Ice40).is_empty());
+    }
+
+    #[test]
+    fn a_board_file_needs_no_pnr_args() {
+        let board: Board = serde_json::from_str(
+            r#"{"name": "b", "family": "ecp5", "device": "25k", "package": "CABGA256",
+                "constraints": "b.lpf"}"#,
+        )
+        .unwrap();
+        assert!(board.pnr_args.is_empty());
+        let board: Board = serde_json::from_str(
+            r#"{"name": "b", "family": "gowin", "device": "d", "package": "",
+                "constraints": "b.cst", "pnr_args": ["--vopt", "family=GW1N-9C"]}"#,
+        )
+        .unwrap();
+        assert_eq!(board.pnr_args, ["--vopt", "family=GW1N-9C"]);
     }
 
     #[test]

@@ -53,9 +53,9 @@ where
 /// Optional per-project tool settings, loaded from
 /// `<project>.toolchain.json` next to the `.hdlc` file. Covers what the
 /// schematic itself cannot know: VHDL sources that must be analyzed into a
-/// named library (packages, vendor stubs) and extra analysis units (e.g.
-/// sim-only implementations of a module). Paths are relative to the project
-/// directory.
+/// named library (packages, vendor stubs), extra analysis units (e.g.
+/// sim-only implementations of a module), the board, and options for the
+/// tools. Paths are relative to the project directory.
 #[derive(Default, serde::Deserialize)]
 pub struct ToolchainConfig {
     #[serde(default)]
@@ -72,6 +72,25 @@ pub struct ToolchainConfig {
     /// (e.g. "--latches" for designs with intentional latches).
     #[serde(default)]
     pub ghdl_synth_flags: Vec<String>,
+    /// The board definition file for `build` and `flash`. The `--board`
+    /// flag has priority over it.
+    #[serde(default)]
+    pub board: Option<PathBuf>,
+    /// The VHDL standard for each ghdl step (`--std=<value>`). Default: 08.
+    #[serde(default)]
+    pub vhdl_std: Option<String>,
+    /// Extra options for the yosys `synth_<family>` command of `build`
+    /// (e.g. "-abc9"). The generic `synth` command does not know them all,
+    /// so `hdlc synth` does not use them.
+    #[serde(default)]
+    pub synth_args: Vec<String>,
+    /// Extra arguments for nextpnr. They follow the arguments of the board.
+    #[serde(default)]
+    pub pnr_args: Vec<String>,
+    /// Clock constraints for nextpnr: top-level port name to frequency in
+    /// MHz.
+    #[serde(default)]
+    pub clocks: std::collections::BTreeMap<String, f64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -91,6 +110,48 @@ impl ToolchainConfig {
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         serde_json::from_str(&text).map_err(|e| format!("invalid {}: {e}", path.display()))
     }
+
+    /// The board file of the config, resolved against the project directory.
+    pub fn board_path(&self, project_dir: &Path) -> Option<PathBuf> {
+        self.board.as_ref().map(|board| {
+            if board.is_relative() {
+                project_dir.join(board)
+            } else {
+                board.clone()
+            }
+        })
+    }
+
+    /// Set the `board` key in `<stem>.toolchain.json` of a project. This is
+    /// the only function that writes that file. A board below the project
+    /// directory is stored relative to it, so the project stays portable;
+    /// a board elsewhere is stored as given. Each other key keeps its
+    /// value. The file gets the standard layout of `serde_json`.
+    pub fn set_board(project_path: &Path, board: &Path) -> Result<(), String> {
+        let path = project_path.with_extension("toolchain.json");
+        let mut config: serde_json::Value = if path.exists() {
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            serde_json::from_str(&text).map_err(|e| format!("invalid {}: {e}", path.display()))?
+        } else {
+            serde_json::Value::Object(serde_json::Map::new())
+        };
+        let keys = config
+            .as_object_mut()
+            .ok_or_else(|| format!("invalid {}: not a JSON object", path.display()))?;
+        let stored = project_path
+            .parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .and_then(|dir| board.strip_prefix(dir).ok())
+            .unwrap_or(board);
+        keys.insert(
+            "board".to_string(),
+            serde_json::Value::String(stored.to_string_lossy().into_owned()),
+        );
+        let text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+        std::fs::write(&path, text + "\n")
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))
+    }
 }
 
 /// A project's complete HDL staged into its build directory: library sources
@@ -109,6 +170,15 @@ pub struct StagedBuild {
     pub libraries: Vec<(String, Vec<String>)>,
     /// Config's extra ghdl flags for the yosys plugin.
     pub ghdl_synth_flags: Vec<String>,
+    /// The VHDL standard for each ghdl step.
+    pub vhdl_std: String,
+    /// Config's extra options for `synth_<family>`.
+    pub synth_args: Vec<String>,
+    /// Config's extra arguments for nextpnr.
+    pub pnr_args: Vec<String>,
+    /// The top-level ports that have a clock frequency in the config. When
+    /// there is one, `dir` holds the clock constraints file `clocks.sdc`.
+    pub clock_ports: Vec<String>,
     pub top_name: String,
     pub language: Language,
 }
@@ -275,14 +345,51 @@ pub fn stage(
         sources.push(fname.clone());
     }
 
+    write_clocks(schematic, config, &dir)?;
+
     Ok(StagedBuild {
         dir,
         sources,
         libraries,
         ghdl_synth_flags: config.ghdl_synth_flags.clone(),
+        vhdl_std: config.vhdl_std.clone().unwrap_or_else(|| "08".to_string()),
+        synth_args: config.synth_args.clone(),
+        pnr_args: config.pnr_args.clone(),
+        clock_ports: config.clocks.keys().cloned().collect(),
         top_name: schematic.top_name.clone(),
         language: schematic.language.clone(),
     })
+}
+
+/// The file in the build directory with the clock constraints.
+const SDC_FILE: &str = "clocks.sdc";
+
+/// Write the clocks of the config as an SDC file in `dir`. nextpnr reads the
+/// same file format for each FPGA family. A config without clocks gets no
+/// file.
+fn write_clocks(schematic: &Schematic, config: &ToolchainConfig, dir: &Path) -> Result<(), String> {
+    if config.clocks.is_empty() {
+        return Ok(());
+    }
+    let mut text = String::new();
+    for (port, mhz) in &config.clocks {
+        if !schematic.top_ports.iter().any(|p| &p.name == port) {
+            return Err(format!(
+                "clocks: '{port}' is not a top-level port of {}",
+                schematic.top_name
+            ));
+        }
+        if !(mhz.is_finite() && *mhz > 0.0) {
+            return Err(format!(
+                "clocks: the frequency of '{port}' must be more than 0 MHz"
+            ));
+        }
+        text.push_str(&format!(
+            "create_clock -period {:.3} [get_ports {{{port}}}]\n",
+            1000.0 / mhz
+        ));
+    }
+    std::fs::write(dir.join(SDC_FILE), text).map_err(|e| format!("cannot write {SDC_FILE}: {e}"))
 }
 
 /// One external command of a flow. It runs in the build directory.
@@ -472,11 +579,7 @@ fn library_steps(staged: &StagedBuild) -> Vec<Step> {
         .libraries
         .iter()
         .map(|(name, files)| {
-            let mut args = vec![
-                "-a".to_string(),
-                "--std=08".to_string(),
-                format!("--work={name}"),
-            ];
+            let mut args = vec!["-a".to_string(), std_flag(staged), format!("--work={name}")];
             args.extend(files.iter().cloned());
             Step::new("ghdl", args)
         })
@@ -491,9 +594,14 @@ fn library_stage(staged: &StagedBuild) -> Option<Stage> {
         .then(|| Stage::single("libraries", steps))
 }
 
+/// The ghdl option that selects the VHDL standard of the design.
+fn std_flag(staged: &StagedBuild) -> String {
+    format!("--std={}", staged.vhdl_std)
+}
+
 /// The ghdl step that analyzes every work source.
 fn analyze_step(staged: &StagedBuild) -> Step {
-    let mut args = vec!["-a".to_string(), "--std=08".to_string()];
+    let mut args = vec!["-a".to_string(), std_flag(staged)];
     args.extend(staged.sources.iter().cloned());
     Step::new("ghdl", args)
 }
@@ -507,7 +615,7 @@ pub fn check_stages(staged: &StagedBuild) -> Vec<Stage> {
             steps.push(analyze_step(staged));
             steps.push(Step::new(
                 "ghdl",
-                ["-e", "--std=08", staged.top_name.as_str()],
+                ["-e", &std_flag(staged), staged.top_name.as_str()],
             ));
             steps
         }
@@ -550,7 +658,7 @@ fn ghdl_prefix() -> Option<String> {
 /// shapes). The standalone ghdl analyzes the sources and writes a Verilog
 /// netlist to `design_net.v` in the build directory for yosys to read.
 fn netlist_steps(staged: &StagedBuild) -> Vec<Step> {
-    let mut args = vec!["synth".to_string(), "--std=08".to_string()];
+    let mut args = vec!["synth".to_string(), std_flag(staged)];
     if !staged.libraries.is_empty() {
         args.push("-P.".to_string());
     }
@@ -570,7 +678,7 @@ fn netlist_steps(staged: &StagedBuild) -> Vec<Step> {
 /// Argument string for the ghdl-yosys-plugin: std, library prefix, search
 /// path for pre-analyzed named libraries, then every work source.
 fn ghdl_plugin_flags(staged: &StagedBuild, env: &FlowEnv) -> String {
-    let mut flags = String::from("--std=08 ");
+    let mut flags = std_flag(staged) + " ";
     if let Some(p) = &env.ghdl_prefix {
         flags.push_str(&format!("--PREFIX={p} "));
     }
@@ -691,7 +799,7 @@ fn pnr_output(family: FpgaFamily) -> &'static str {
 
 /// The place-and-route step for a board. `constraints` is the absolute path
 /// of the constraints file of the board.
-fn pnr_step(board: &crate::board::Board, constraints: &str) -> Step {
+fn pnr_step(staged: &StagedBuild, board: &crate::board::Board, constraints: &str) -> Step {
     let output = pnr_output(board.family);
     let (tool, mut args): (&str, Vec<String>) = match board.family {
         FpgaFamily::Ice40 => (
@@ -743,6 +851,11 @@ fn pnr_step(board: &crate::board::Board, constraints: &str) -> Step {
     }
     args.extend(["--report", "report.json", "--placed-svg", "placed.svg"].map(String::from));
     args.extend(["--log", "nextpnr.log"].map(String::from));
+    if !staged.clock_ports.is_empty() {
+        args.extend(["--sdc", SDC_FILE].map(String::from));
+    }
+    args.extend(board.pnr_args.iter().cloned());
+    args.extend(staged.pnr_args.iter().cloned());
     Step::new(tool, args)
 }
 
@@ -781,6 +894,10 @@ pub fn build_stages(
         FpgaFamily::Ecp5 => "synth_ecp5",
         FpgaFamily::Gowin => "synth_gowin",
     };
+    let synth_cmd = std::iter::once(synth_cmd)
+        .chain(staged.synth_args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
     let top = &staged.top_name;
     let mut stages: Vec<Stage> = library_stage(staged).into_iter().collect();
     stages.push(yosys_stage("synth", staged, env, |frontend| {
@@ -793,7 +910,10 @@ pub fn build_stages(
             )
         }
     }));
-    stages.push(Stage::single("pnr", vec![pnr_step(board, constraints)]));
+    stages.push(Stage::single(
+        "pnr",
+        vec![pnr_step(staged, board, constraints)],
+    ));
     stages.push(Stage::single("pack", vec![pack_step(board)]));
     stages
 }
@@ -903,20 +1023,21 @@ pub fn run_sim(
                 return Ok(None);
             }
             let wave = project_dir.join(format!("{tb_name}.ghw"));
-            let mut args = vec!["-a".to_string(), "--std=08".to_string()];
+            let std = std_flag(staged);
+            let mut args = vec!["-a".to_string(), std.clone()];
             args.extend(staged.sources.iter().cloned());
             args.push(tb_file.clone());
             if !run_tool("ghdl", &args, &staged.dir)? {
                 return Ok(None);
             }
-            if !run_tool("ghdl", ["-e", "--std=08", &tb_name], &staged.dir)? {
+            if !run_tool("ghdl", ["-e", &std, &tb_name], &staged.dir)? {
                 return Ok(None);
             }
             let wave_arg = format!("--wave={}", wave.display());
             // Clock generators never stop on their own; bound the run.
             if !run_tool(
                 "ghdl",
-                ["-r", "--std=08", &tb_name, &wave_arg, "--stop-time=1us"],
+                ["-r", &std, &tb_name, &wave_arg, "--stop-time=1us"],
                 &staged.dir,
             )? {
                 return Ok(None);
@@ -1364,6 +1485,10 @@ mod flow_tests {
             sources: vec![format!("leaf.{ext}"), format!("top.{ext}")],
             libraries: Vec::new(),
             ghdl_synth_flags: Vec::new(),
+            vhdl_std: "08".to_string(),
+            synth_args: Vec::new(),
+            pnr_args: Vec::new(),
+            clock_ports: Vec::new(),
             top_name: "top".to_string(),
             language,
         }
@@ -1384,6 +1509,7 @@ mod flow_tests {
             constraints: PathBuf::from("pins"),
             pack_args: vec!["--compress".to_string()],
             prog_args: Vec::new(),
+            pnr_args: Vec::new(),
         }
     }
 
@@ -1687,6 +1813,87 @@ mod flow_tests {
         );
     }
 
+    #[test]
+    fn vhdl_std_goes_to_each_ghdl_step() {
+        let mut s = staged(Language::Vhdl);
+        s.vhdl_std = "93".to_string();
+        s.libraries = vec![("loot".to_string(), vec!["pkg.vhd".to_string()])];
+
+        let check = &check_stages(&s)[0].variants[0].steps;
+        assert_eq!(check[0].args[..3], ["-a", "--std=93", "--work=loot"]);
+        assert_eq!(check[1].args[..2], ["-a", "--std=93"]);
+        assert_eq!(check[2].args, ["-e", "--std=93", "top"]);
+
+        let synth = &synth_stages(&s, &env())[1];
+        let script = synth.variants[0].steps[0].args.last().unwrap();
+        assert!(script.starts_with("ghdl --std=93 "), "{script}");
+        assert_eq!(synth.variants[1].steps[0].args[..2], ["-a", "--std=93"]);
+        assert_eq!(synth.variants[1].steps[1].args[..2], ["synth", "--std=93"]);
+    }
+
+    /// `synth_args` are options of `synth_<family>`. The generic `synth`
+    /// command does not know them all, so `hdlc synth` does not get them.
+    #[test]
+    fn synth_args_go_to_the_family_synth_command_only() {
+        let mut s = staged(Language::Vhdl);
+        s.synth_args = vec!["-abc9".to_string(), "-retime".to_string()];
+
+        let build = build_stages(
+            &s,
+            &board(FpgaFamily::Ecp5, "25k", "CABGA256"),
+            "/abs/board.lpf",
+            &env(),
+        );
+        let scripts: Vec<&String> = build[0]
+            .variants
+            .iter()
+            .map(|v| v.steps.last().unwrap().args.last().unwrap())
+            .collect();
+        assert!(
+            scripts[0].ends_with("-e top; synth_ecp5 -abc9 -retime -json design.json"),
+            "{}",
+            scripts[0]
+        );
+        assert_eq!(
+            scripts[1],
+            "read_verilog design_net.v; synth_ecp5 -abc9 -retime -top top -json design.json"
+        );
+
+        let generic = &synth_stages(&s, &env())[0].variants[0].steps[0];
+        assert!(
+            generic
+                .args
+                .last()
+                .unwrap()
+                .ends_with("-e top; synth; stat")
+        );
+    }
+
+    #[test]
+    fn nextpnr_gets_the_clocks_then_the_arguments_of_the_board_then_of_the_project() {
+        let mut s = staged(Language::SystemVerilog);
+        s.clock_ports = vec!["clk".to_string()];
+        s.pnr_args = vec!["--seed".to_string(), "3".to_string()];
+        let mut b = board(FpgaFamily::Gowin, "GW1NR-LV9QN88PC6/I5", "");
+        b.pnr_args = vec!["--vopt".to_string(), "family=GW1N-9C".to_string()];
+
+        let stages = build_stages(&s, &b, "/abs/board.cst", &FlowEnv::default());
+        let args = &stages[1].variants[0].steps[0].args;
+        assert_eq!(
+            args[args.len() - 8..],
+            [
+                "--log",
+                "nextpnr.log",
+                "--sdc",
+                "clocks.sdc",
+                "--vopt",
+                "family=GW1N-9C",
+                "--seed",
+                "3"
+            ]
+        );
+    }
+
     #[cfg(unix)]
     mod run {
         use super::*;
@@ -1964,6 +2171,163 @@ mod config_tests {
             std::fs::read_to_string(dir.join("notes.txt")).unwrap(),
             "mine"
         );
+    }
+
+    fn clock_project(clocks: &str) -> (tempfile::TempDir, Result<StagedBuild, String>) {
+        let project = tempfile::tempdir().unwrap();
+        let mut schematic = Schematic::new("top", Language::Vhdl);
+        schematic.top_ports = vec![crate::types::PortDef {
+            name: "clk".to_string(),
+            direction: Direction::In,
+            port_type: PortType::StdLogic,
+            bundle: None,
+        }];
+        let design = GeneratedDesign {
+            files: vec![],
+            top_filename: "top.vhd".into(),
+            top_code: "-- top".into(),
+        };
+        let config: ToolchainConfig =
+            serde_json::from_str(&format!(r#"{{"clocks": {clocks}}}"#)).unwrap();
+        let staged = stage(&schematic, &[], &design, &config, project.path());
+        (project, staged)
+    }
+
+    #[test]
+    fn clocks_become_an_sdc_file_in_the_build_directory() {
+        let (_project, staged) = clock_project(r#"{"clk": 50}"#);
+        let staged = staged.unwrap();
+        assert_eq!(staged.clock_ports, ["clk"]);
+        assert_eq!(
+            std::fs::read_to_string(staged.dir.join("clocks.sdc")).unwrap(),
+            "create_clock -period 20.000 [get_ports {clk}]\n"
+        );
+    }
+
+    #[test]
+    fn a_project_without_clocks_has_no_sdc_file() {
+        let (_project, staged) = clock_project("{}");
+        let staged = staged.unwrap();
+        assert!(staged.clock_ports.is_empty());
+        assert!(!staged.dir.join("clocks.sdc").exists());
+    }
+
+    #[test]
+    fn a_clock_on_a_name_that_is_not_a_top_level_port_is_an_error() {
+        let (_project, staged) = clock_project(r#"{"clock": 50}"#);
+        let error = staged.err().unwrap();
+        assert!(error.contains("'clock' is not a top-level port"), "{error}");
+    }
+
+    #[test]
+    fn a_clock_frequency_must_be_more_than_zero() {
+        for bad in ["0", "-12.5"] {
+            let (_project, staged) = clock_project(&format!(r#"{{"clk": {bad}}}"#));
+            let error = staged.err().unwrap();
+            assert!(error.contains("must be more than 0 MHz"), "{error}");
+        }
+    }
+
+    #[test]
+    fn config_defaults_keep_the_flow_of_a_project_without_a_sidecar() {
+        let project = tempfile::tempdir().unwrap();
+        let staged = stage_in(project.path()).unwrap();
+        assert_eq!(staged.vhdl_std, "08");
+        assert!(staged.synth_args.is_empty() && staged.pnr_args.is_empty());
+        assert!(staged.clock_ports.is_empty());
+    }
+
+    #[test]
+    fn board_path_is_relative_to_the_project_directory() {
+        let config: ToolchainConfig =
+            serde_json::from_str(r#"{"board": "boards/x.board.json"}"#).unwrap();
+        assert_eq!(
+            config.board_path(Path::new("proj")),
+            Some(PathBuf::from("proj/boards/x.board.json"))
+        );
+        let config: ToolchainConfig =
+            serde_json::from_str(r#"{"board": "/abs/x.board.json"}"#).unwrap();
+        assert_eq!(
+            config.board_path(Path::new("proj")),
+            Some(PathBuf::from("/abs/x.board.json"))
+        );
+        assert_eq!(
+            ToolchainConfig::default().board_path(Path::new("proj")),
+            None
+        );
+    }
+
+    #[test]
+    fn set_board_makes_the_sidecar_and_stores_a_path_below_the_project_as_relative() {
+        let project = tempfile::tempdir().unwrap();
+        let hdlc = project.path().join("demo.hdlc");
+        let board = project.path().join("boards").join("x.board.json");
+
+        ToolchainConfig::set_board(&hdlc, &board).unwrap();
+
+        let text = std::fs::read_to_string(project.path().join("demo.toolchain.json")).unwrap();
+        assert_eq!(text, "{\n  \"board\": \"boards/x.board.json\"\n}\n");
+        let config = ToolchainConfig::load_for(&hdlc).unwrap();
+        assert_eq!(config.board_path(project.path()), Some(board));
+    }
+
+    #[test]
+    fn set_board_keeps_a_path_outside_the_project_as_given() {
+        let project = tempfile::tempdir().unwrap();
+        let hdlc = project.path().join("demo.hdlc");
+        ToolchainConfig::set_board(&hdlc, Path::new("/elsewhere/x.board.json")).unwrap();
+        let config = ToolchainConfig::load_for(&hdlc).unwrap();
+        assert_eq!(config.board, Some(PathBuf::from("/elsewhere/x.board.json")));
+    }
+
+    #[test]
+    fn set_board_refuses_a_sidecar_that_is_not_an_object() {
+        let project = tempfile::tempdir().unwrap();
+        let hdlc = project.path().join("demo.hdlc");
+        let sidecar = project.path().join("demo.toolchain.json");
+        std::fs::write(&sidecar, "[1, 2]").unwrap();
+        assert!(ToolchainConfig::set_board(&hdlc, Path::new("x.board.json")).is_err());
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "[1, 2]");
+    }
+
+    proptest::proptest! {
+        /// `set_board` changes the `board` key only. Each other key of the
+        /// sidecar, also one that hdlc does not know, keeps its value.
+        #[test]
+        fn set_board_keeps_each_other_key(
+            unknown in proptest::collection::btree_map("x_[a-z]{0,6}", "[ -~]{0,12}", 0..5),
+            flags in proptest::collection::vec("--[a-z]{1,8}", 0..3),
+            old_board in proptest::option::of("[a-z]{1,8}\\.board\\.json"),
+            new_board in "[a-z]{1,8}\\.board\\.json",
+        ) {
+            let project = tempfile::tempdir().unwrap();
+            let hdlc = project.path().join("demo.hdlc");
+            let sidecar = project.path().join("demo.toolchain.json");
+            let mut before = serde_json::Map::new();
+            for (key, value) in &unknown {
+                before.insert(key.clone(), serde_json::Value::from(value.clone()));
+            }
+            before.insert("ghdl_synth_flags".to_string(), serde_json::Value::from(flags.clone()));
+            if let Some(board) = &old_board {
+                before.insert("board".to_string(), serde_json::Value::from(board.clone()));
+            }
+            std::fs::write(&sidecar, serde_json::to_string(&before).unwrap()).unwrap();
+
+            ToolchainConfig::set_board(&hdlc, Path::new(&new_board)).unwrap();
+
+            let text = std::fs::read_to_string(&sidecar).unwrap();
+            let mut after: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&text).unwrap();
+            proptest::prop_assert_eq!(
+                after.remove("board"),
+                Some(serde_json::Value::from(new_board.clone()))
+            );
+            before.remove("board");
+            proptest::prop_assert_eq!(after, before);
+            let config = ToolchainConfig::load_for(&hdlc).unwrap();
+            proptest::prop_assert_eq!(config.board, Some(PathBuf::from(&new_board)));
+            proptest::prop_assert_eq!(config.ghdl_synth_flags, flags);
+        }
     }
 
     #[test]

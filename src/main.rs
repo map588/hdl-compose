@@ -125,9 +125,10 @@ enum Command {
         /// Path to .hdlc project file
         project: PathBuf,
 
-        /// Path to a .board.json file (family, device, package, constraints)
+        /// Path to a .board.json file (family, device, package, constraints).
+        /// Default: the `board` key of <project>.toolchain.json
         #[arg(long)]
-        board: PathBuf,
+        board: Option<PathBuf>,
 
         /// Output bitstream (default: <projectdir>/<top>.bit)
         #[arg(short, long)]
@@ -140,9 +141,10 @@ enum Command {
         /// Path to .hdlc project file
         project: PathBuf,
 
-        /// Path to a .board.json file
+        /// Path to a .board.json file. Default: the `board` key of
+        /// <project>.toolchain.json
         #[arg(long)]
-        board: PathBuf,
+        board: Option<PathBuf>,
 
         /// Write to config flash (persistent) instead of SRAM
         #[arg(long)]
@@ -245,12 +247,12 @@ fn main() -> ExitCode {
             project,
             board,
             output,
-        }) => cmd_build(&project, &board, output.as_deref()),
+        }) => cmd_build(&project, board.as_deref(), output.as_deref()),
         Some(Command::Flash {
             project,
             board,
             flash,
-        }) => cmd_flash(&project, &board, flash),
+        }) => cmd_flash(&project, board.as_deref(), flash),
         Some(Command::Synth { project }) => cmd_synth(&project),
         Some(Command::Sim { project, wave }) => cmd_sim(&project, wave),
         Some(Command::Fpga {
@@ -854,6 +856,17 @@ fn build_bitstream(
     for w in hdl_compose::board::pin_check(&schematic, &names) {
         eprintln!("warning: {w}");
     }
+    let board_clocks = hdl_compose::board::constraint_clock_ports(&text, board.family);
+    for port in staged
+        .clock_ports
+        .iter()
+        .filter(|port| board_clocks.contains(*port))
+    {
+        eprintln!(
+            "warning: the clock frequency of '{port}' in the toolchain config has no effect: {} sets FREQUENCY for that port",
+            board.constraints.display()
+        );
+    }
 
     let out_bit = match output {
         Some(p) => p.to_path_buf(),
@@ -875,19 +888,37 @@ fn build_bitstream(
     }
 }
 
-fn load_board(board_path: &std::path::Path) -> Result<hdl_compose::board::Board, ExitCode> {
-    hdl_compose::board::Board::load(board_path).map_err(|e| {
-        eprintln!("error: {e}");
+/// Load the board for `build` and `flash`: the file of the `--board` flag,
+/// else the file of the `board` key in the toolchain config of the project.
+fn load_board(
+    project_path: &std::path::Path,
+    flag: Option<&std::path::Path>,
+) -> Result<hdl_compose::board::Board, ExitCode> {
+    let fail = |msg: String| {
+        eprintln!("error: {msg}");
         ExitCode::from(2)
-    })
+    };
+    let board_path = match flag {
+        Some(path) => path.to_path_buf(),
+        None => hdl_compose::toolchain::ToolchainConfig::load_for(project_path)
+            .map_err(fail)?
+            .board_path(project_dir(project_path))
+            .ok_or_else(|| {
+                fail(format!(
+                    "no board: pass --board <x.board.json>, or set \"board\" in {}",
+                    project_path.with_extension("toolchain.json").display()
+                ))
+            })?,
+    };
+    hdl_compose::board::Board::load(&board_path).map_err(fail)
 }
 
 fn cmd_build(
     project_path: &std::path::Path,
-    board_path: &std::path::Path,
+    board_path: Option<&std::path::Path>,
     output: Option<&std::path::Path>,
 ) -> ExitCode {
-    let board = match load_board(board_path) {
+    let board = match load_board(project_path, board_path) {
         Ok(b) => b,
         Err(code) => return code,
     };
@@ -899,10 +930,10 @@ fn cmd_build(
 
 fn cmd_flash(
     project_path: &std::path::Path,
-    board_path: &std::path::Path,
+    board_path: Option<&std::path::Path>,
     persistent: bool,
 ) -> ExitCode {
-    let board = match load_board(board_path) {
+    let board = match load_board(project_path, board_path) {
         Ok(b) => b,
         Err(code) => return code,
     };
@@ -1086,6 +1117,16 @@ mod tests {
     fn the_binary_is_named_hdlc() {
         assert_eq!(Cli::command().get_name(), "hdlc");
         assert_eq!(env!("CARGO_BIN_NAME"), "hdlc");
+    }
+
+    #[test]
+    fn build_and_flash_need_no_board_flag() {
+        for verb in ["build", "flash"] {
+            assert!(Cli::try_parse_from(["hdlc", verb, "demo.hdlc"]).is_ok());
+            assert!(
+                Cli::try_parse_from(["hdlc", verb, "demo.hdlc", "--board", "x.board.json"]).is_ok()
+            );
+        }
     }
 
     #[test]

@@ -72,8 +72,8 @@ hdlc check <project.hdlc>         # elaborate: ghdl (VHDL) / verilator --lint-on
 hdlc synth <project.hdlc>         # generic yosys synthesis + cell stats
 hdlc sim <project.hdlc> [--wave]  # run <top>_tb via ghdl / iverilog; --wave opens surfer or gtkwave
 hdlc fpga <project.hdlc> --family ice40|ecp5|gowin   # emit a Makefile + constraints skeleton
-hdlc build <project.hdlc> --board <x.board.json>     # bitstream: yosys, nextpnr, pack
-hdlc flash <project.hdlc> --board <x.board.json>     # program via openFPGALoader (SRAM; --flash writes config flash)
+hdlc build <project.hdlc> [--board <x.board.json>]   # bitstream: yosys, nextpnr, pack
+hdlc flash <project.hdlc> [--board <x.board.json>]   # program via openFPGALoader (SRAM; --flash writes config flash)
 ```
 
 Notes:
@@ -100,7 +100,10 @@ Notes:
 ### Board definitions
 
 `build` and `flash` take a board definition file: plain JSON you keep
-wherever you like, typically next to the board's own repository.
+wherever you like, typically next to the board's own repository. Name the
+file with `--board`, or one time with the `board` key of the
+[toolchain config](#per-project-toolchain-config) of the project. The flag
+has priority.
 
 ```json
 {
@@ -116,6 +119,8 @@ wherever you like, typically next to the board's own repository.
 
 `constraints` (.lpf/.pcf/.cst) resolves relative to the board file.
 `pack_args` go to ecppack/icepack/gowin_pack, `prog_args` to openFPGALoader.
+The optional `pnr_args` go to nextpnr; a Gowin board uses them for
+`["--vopt", "family=GW1N-9C"]`.
 Before place and route, `build` checks every top-level port against the
 constraints file and warns about ports the board has no pin for. A working
 example for the [Icepi Zero](https://github.com/cheyao/icepi-zero) is at
@@ -133,9 +138,16 @@ the tools to work. Add `<name>.toolchain.json` next to `<name>.hdlc`:
   "vhdl_libraries": [{ "name": "loot", "files": ["rtl/loot/midi_lut_pkg.vhd"] }],
   "extra_sources": ["rtl/registers/dflipflop.vhd", "sim/selectio_sim.vhd"],
   "exclude_sources": ["rtl/audio/clocked_data_out.v"],
-  "ghdl_synth_flags": ["--latches"]
+  "ghdl_synth_flags": ["--latches"],
+  "board": "boards/icepi-zero.board.json",
+  "clocks": { "clk": 50 },
+  "synth_args": ["-abc9"],
+  "pnr_args": ["--seed", "3"],
+  "vhdl_std": "08"
 }
 ```
+
+Each key is optional. Paths are relative to the project directory.
 
 - `vhdl_libraries`: sources analyzed into a named library (`--work=<name>`),
   for packages and vendor stubs.
@@ -144,6 +156,17 @@ the tools to work. Add `<name>.toolchain.json` next to `<name>.hdlc`:
   implementations). Analyzed before the module sources.
 - `exclude_sources`: library entries that only make sense in a vendor flow.
 - `ghdl_synth_flags`: extra flags for ghdl during synthesis.
+- `board`: the board definition file for `build` and `flash`.
+- `clocks`: top-level port name to clock frequency in MHz. `build` gives
+  them to nextpnr as an SDC file (`build/<top>/clocks.sdc`), which each FPGA
+  family reads. An ECP5 constraints file with a `FREQUENCY PORT` line for
+  the same port has priority in nextpnr; `build` prints a warning then.
+- `synth_args`: extra options for the yosys `synth_<family>` command of
+  `build`. `hdlc synth` runs the generic `synth` command, which does not
+  know all of them, so it does not use them.
+- `pnr_args`: extra arguments for nextpnr, after the `pnr_args` of the
+  board.
+- `vhdl_std`: the VHDL standard for ghdl (`--std=<value>`). Default `08`.
 
 `tests/projects/hdlc/` is a complete example: a two-voice synthesizer with a
 named library, mixed leaf dependencies, and both `.hdlc` projects checked and
