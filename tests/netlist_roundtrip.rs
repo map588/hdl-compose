@@ -11,10 +11,6 @@
 //! The test needs yosys with the ghdl plugin (VHDL) and the slang plugin
 //! (SystemVerilog). When a tool is missing it prints a message and tests
 //! only the language that has its tools.
-//!
-//! The generator does not make two designs for which codegen has a known
-//! defect. `CLOCK` and `may_drive` in `design` give the conditions. Remove
-//! each limit together with the correction of its defect.
 
 use std::path::Path;
 
@@ -54,11 +50,6 @@ const MODULE_GENERIC: &str = "WIDTH";
 const MODULE_DEFAULT: i64 = 4;
 /// The name of the top-level generic.
 const TOP_GENERIC: &str = "TW";
-/// The name of the clock input of each library module, and of the top-level
-/// input that drives each of them. With it each group has a port: codegen
-/// writes a VHDL group module with no port as `port map ()`, which is not
-/// legal VHDL.
-const CLOCK: &str = "clk";
 
 /// The type of a port of a library module.
 #[derive(Clone, Copy)]
@@ -108,12 +99,13 @@ fn sv_type(shape: Shape) -> String {
 fn module_source(module: &ModuleSpec, language: &Language) -> String {
     match language {
         Language::Vhdl => {
-            let clock = format!("    {CLOCK} : in std_logic");
-            let ports: Vec<String> = std::iter::once(clock)
-                .chain(module.ports.iter().map(|p| {
+            let ports: Vec<String> = module
+                .ports
+                .iter()
+                .map(|p| {
                     let mode = if p.output { "out" } else { "in" };
                     format!("    {} : {mode} {}", p.name, vhdl_type(p.shape))
-                }))
+                })
                 .collect();
             let generic = if module.has_generic {
                 format!("  generic ({MODULE_GENERIC} : integer := {MODULE_DEFAULT});\n")
@@ -127,12 +119,13 @@ fn module_source(module: &ModuleSpec, language: &Language) -> String {
             )
         }
         Language::SystemVerilog => {
-            let clock = format!("  input logic {CLOCK}");
-            let ports: Vec<String> = std::iter::once(clock)
-                .chain(module.ports.iter().map(|p| {
+            let ports: Vec<String> = module
+                .ports
+                .iter()
+                .map(|p| {
                     let mode = if p.output { "output" } else { "input" };
                     format!("  {mode} {} {}", sv_type(p.shape), p.name)
-                }))
+                })
                 .collect();
             let parameter = if module.has_generic {
                 format!(" #(\n  parameter int {MODULE_GENERIC} = {MODULE_DEFAULT}\n)")
@@ -151,8 +144,6 @@ fn module_source(module: &ModuleSpec, language: &Language) -> String {
 /// A pin that can drive a net, with the numbers of its type.
 struct Source {
     reference: NetRef,
-    /// The instance of the pin. None for a top-level input.
-    from: Option<usize>,
     /// 0 for a pin that is not a vector.
     width: i64,
     /// The lowest index number of the type.
@@ -251,12 +242,6 @@ fn design(choices: &mut Choices, language: Language, dir: &Path) -> (Schematic, 
         let module = &modules[choices.pick(modules.len())];
         let name = format!("u{i}");
         s.add_instance(&name, &module.name).unwrap();
-        s.set_port_map_entry(
-            &name,
-            CLOCK.to_string(),
-            Some(NetRef::TopPort(CLOCK.to_string())),
-        )
-        .unwrap();
         let (width, top) = match (module.has_generic, choices.pick(3)) {
             (true, 1) => {
                 let width = 2 + choices.pick(7) as i64;
@@ -288,23 +273,8 @@ fn design(choices: &mut Choices, language: Language, dir: &Path) -> (Schematic, 
     // group. The second group can be inside the first.
     let group_of: Vec<usize> = (0..count).map(|_| choices.pick(3)).collect();
     let nested = choices.flip() && group_of.contains(&1) && group_of.contains(&2);
-    // Known defect of `expand_hierarchy`: a net from the inner group that
-    // goes to the outer group and to an instance outside the two groups can
-    // get no connection to the port of the outer group. The generated HDL
-    // then has one name for a port and for a signal, and no tool reads it.
-    // Until the correction, a net from the inner group goes only to the two
-    // groups and to top-level ports.
-    let may_drive = |driver: usize, consumer: usize| {
-        !(nested && group_of[driver] == 2) || group_of[consumer] != 0
-    };
 
     // Top-level inputs.
-    s.top_ports.push(PortDef {
-        name: CLOCK.to_string(),
-        direction: Direction::In,
-        port_type: PortType::StdLogic,
-        bundle: None,
-    });
     let mut sources: Vec<Source> = Vec::new();
     for t in 0..1 + choices.pick(2) {
         let name = format!("tin{t}");
@@ -323,7 +293,6 @@ fn design(choices: &mut Choices, language: Language, dir: &Path) -> (Schematic, 
         });
         sources.push(Source {
             reference: NetRef::TopPort(name),
-            from: None,
             width,
             low: 0,
         });
@@ -359,7 +328,6 @@ fn design(choices: &mut Choices, language: Language, dir: &Path) -> (Schematic, 
             }
             sources.push(Source {
                 reference,
-                from: Some(i),
                 width,
                 low,
             });
@@ -375,8 +343,7 @@ fn design(choices: &mut Choices, language: Language, dir: &Path) -> (Schematic, 
             let source = match choices.pick(sources.len() + 1) {
                 0 => None,
                 n => Some(&sources[n - 1]),
-            }
-            .filter(|source| source.from.is_none_or(|driver| may_drive(driver, i)));
+            };
             let slice = |slice: SliceExpr, source: &Source| match &source.reference {
                 NetRef::TopPort(name) => NetRef::TopPortSlice(name.clone(), slice),
                 NetRef::InstancePort(instance, pin) => {
