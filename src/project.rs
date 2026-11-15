@@ -56,7 +56,8 @@ pub fn save_project(schematic: &Schematic, path: &Path) -> Result<(), ProjectErr
         schematic,
     };
     let json = serde_json::to_string_pretty(&project)?;
-    std::fs::write(path, json)?;
+    // The project file is the only copy of the design.
+    crate::replace_file(path, json.as_bytes())?;
     Ok(())
 }
 
@@ -115,6 +116,89 @@ mod tests {
     use super::*;
     use crate::types::*;
     use tempfile::TempDir;
+
+    fn two_states() -> (Schematic, Schematic) {
+        let old = Schematic::new("old_design", Language::Vhdl);
+        let mut new = Schematic::new("new_design", Language::Vhdl);
+        new.add_instance("u_a", "source").unwrap();
+        (old, new)
+    }
+
+    /// Regression: the save wrote into the project file in place. A
+    /// failure during the write left a file with no project in it. The
+    /// save must make a complete new file and then put it in the place of
+    /// the old one, so the old file stays complete until that moment. A
+    /// reader that opened the old file shows which of the two occurred.
+    #[cfg(unix)]
+    #[test]
+    fn save_replaces_the_file_and_does_not_write_into_it() {
+        use std::io::Read;
+        let (old, new) = two_states();
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.hdlc");
+        save_project(&old, &path).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let mut reader = std::fs::File::open(&path).unwrap();
+
+        save_project(&new, &path).unwrap();
+
+        let mut seen = String::new();
+        reader.read_to_string(&mut seen).unwrap();
+        assert_eq!(seen, before, "the save changed the old file");
+        assert_eq!(load_project(&path).unwrap().0.top_name, "new_design");
+    }
+
+    /// A rename can replace a file that has no write permission. The save
+    /// must refuse it, as it did before.
+    #[cfg(unix)]
+    #[test]
+    fn save_refuses_a_read_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let (old, new) = two_states();
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.hdlc");
+        save_project(&old, &path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        assert!(save_project(&new, &path).is_err());
+        assert_eq!(load_project(&path).unwrap().0.top_name, "old_design");
+    }
+
+    #[test]
+    fn save_leaves_no_other_file() {
+        let (old, new) = two_states();
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.hdlc");
+        save_project(&old, &path).unwrap();
+        save_project(&new, &path).unwrap();
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["test.hdlc"]);
+    }
+
+    /// The save keeps the properties of the file that `std::fs::write`
+    /// kept: a symbolic link stays a link, and the mode stays.
+    #[cfg(unix)]
+    #[test]
+    fn save_keeps_a_symbolic_link_and_the_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let (old, new) = two_states();
+        let dir = TempDir::new().unwrap();
+        let real = dir.path().join("real.hdlc");
+        let link = dir.path().join("link.hdlc");
+        save_project(&old, &real).unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        save_project(&new, &link).unwrap();
+
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(load_project(&real).unwrap().0.top_name, "new_design");
+        let mode = std::fs::metadata(&real).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
 
     #[test]
     fn round_trip() {

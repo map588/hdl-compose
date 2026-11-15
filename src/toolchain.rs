@@ -312,7 +312,8 @@ impl ToolchainConfig {
             ),
         );
         let text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-        std::fs::write(&path, text + "\n")
+        // The user can write this file by hand; keep it complete.
+        crate::replace_file(&path, (text + "\n").as_bytes())
             .map_err(|e| format!("cannot write {}: {e}", path.display()))
     }
 }
