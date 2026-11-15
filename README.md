@@ -324,9 +324,9 @@ from there.
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the design discussion: data
-model, net identity, mini-editor grammar, codegen rules, and the central
-text-vs-canvas decision.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the design discussion: the data
+model, nets and groups, the split between Rust and C++, how a change flows,
+the tool flows, and the known weaknesses.
 
 ## Local Interface & Invariants
 
