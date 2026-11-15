@@ -818,6 +818,48 @@ void GuiTests::generatedDesignIsInTheLibraryOfANewDesignAndADoubleClickPlacesIt(
     QVERIFY(!g->state->can_undo());
 }
 
+// A module lost a port while the design was closed. The connection to that
+// port stays in the file, and the block has no pin for it. The context menu
+// of the block removes it, as one undo step.
+void GuiTests::contextMenuRemovesAConnectionToAPortThatIsGone() {
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(0, 0)));
+    QVERIFY(g->view->placeModule(QStringLiteral("sink"), QPointF(640, 0)));
+    QVERIFY(g->state->set_port_map_entry(QStringLiteral("sink_0"), QStringLiteral("d"),
+                                         QStringLiteral("source_0.q")));
+    QVERIFY(g->state->save_project());
+    QCOMPARE(g->state->validation_error_count(), 0);
+
+    // The source changes with the design closed: `q` has the name `q2`.
+    auto *watcher = g->window->findChild<QFileSystemWatcher *>();
+    QVERIFY(watcher);
+    watcher->removePaths(watcher->files());
+    g->writeModule(QStringLiteral("source"), QStringLiteral("q2 : out std_logic"));
+    hdlc_test_open_project(g->window.get(), g->project);
+    settle();
+    QVERIFY(g->state->validation_error_count() > 0);
+    QCOMPARE(g->state->stale_connection_count(QStringLiteral("source_0")), 1);
+    QVERIFY(!g->state->can_undo());
+
+    int chosen = 0;
+    chooseFromNextMenu(QStringLiteral("Remove Stale Connections (1)"), &chosen);
+    const QPoint at = center(block(QStringLiteral("source_0")));
+    QContextMenuEvent event(QContextMenuEvent::Mouse, at, g->view->viewport()->mapToGlobal(at));
+    QApplication::sendEvent(g->view->viewport(), &event);
+    QTRY_COMPARE(g->state->stale_connection_count(QStringLiteral("source_0")), 0);
+
+    QCOMPARE(chosen, 1);
+    QCOMPARE(g->state->validation_error_count(), 0);
+    QCOMPARE(g->state->port_map_entry(QStringLiteral("sink_0"), QStringLiteral("d")), QString());
+    QTRY_VERIFY(action(QStringLiteral("Undo"))->isEnabled());
+
+    // A block with no stale connection has no such entry.
+    int other = 0;
+    chooseFromNextMenu(QStringLiteral("Lock Position"), &other);
+    QContextMenuEvent again(QContextMenuEvent::Mouse, at, g->view->viewport()->mapToGlobal(at));
+    QApplication::sendEvent(g->view->viewport(), &again);
+    QCOMPARE(other, 1);
+}
+
 extern "C" int run_gui_tests() {
     // The platform is fixed here, so that no call of the tests can open a
     // window on the screen.

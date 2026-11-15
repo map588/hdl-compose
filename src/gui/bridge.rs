@@ -250,6 +250,18 @@ pub mod qobject {
             port: &QString,
         ) -> bool;
 
+        /// The number of connections that name a port that the module of
+        /// `instance` does not have: entries of the instance, and
+        /// references of other instances to such a port. They come from a
+        /// module that changed while the design was closed.
+        #[qinvokable]
+        fn stale_connection_count(self: &AppState, instance: &QString) -> i32;
+
+        /// Remove the connections that `stale_connection_count` counts, as
+        /// one undo step. Returns false when there is none.
+        #[qinvokable]
+        fn remove_stale_connections(self: Pin<&mut AppState>, instance: &QString) -> bool;
+
         #[qinvokable]
         fn port_map_entry(self: &AppState, instance: &QString, port: &QString) -> QString;
 
@@ -3430,6 +3442,29 @@ impl qobject::AppState {
         }
     }
 
+    pub fn stale_connection_count(&self, instance: &QString) -> i32 {
+        let m = self.rust();
+        // The count is what the removal does, on a copy of the model.
+        m.schematic.clone().map_or(0, |mut s| {
+            s.remove_stale_connections(&instance.to_string(), &m.library) as i32
+        })
+    }
+
+    pub fn remove_stale_connections(mut self: Pin<&mut Self>, instance: &QString) -> bool {
+        if self.stale_connection_count(instance) == 0 {
+            return false;
+        }
+        self.as_mut().push_snapshot();
+        {
+            let m = self.as_mut().rust_mut().get_mut();
+            if let Some(s) = m.schematic.as_mut() {
+                s.remove_stale_connections(&instance.to_string(), &m.library);
+            }
+        }
+        self.as_mut().finish_mutation(None);
+        true
+    }
+
     pub fn set_generic_map_entry(
         mut self: Pin<&mut Self>,
         instance: &QString,
@@ -5377,6 +5412,83 @@ mod tests {
         // instance of a module that the library does not have.
         assert!(state.pin_mut().add_instance(&q("u_parent"), &q("parent")));
         assert_eq!(library_files(&state), ["source.vhd", "sink.vhd"]);
+    }
+
+    /// The ports of a child design change while the parent is closed. At
+    /// its next open the parent has no earlier library to compare with: the
+    /// connection stays, validation reports it, and codegen stops. The
+    /// instance is not `dirty`. `remove_stale_connections` removes the
+    /// connection as one undo step.
+    #[test]
+    fn changed_child_leaves_a_stale_connection_that_the_command_removes() {
+        let (dir, mut state) = state_with_library();
+        generate_top_as_a_module(&mut state);
+        let child_port = state.top_port_name(0).to_string();
+
+        // The parent connects the output of the child to `u_s.d`.
+        assert!(
+            state
+                .pin_mut()
+                .new_project_at(&file_in(&dir, "parent.hdlc"), 0)
+        );
+        assert!(state.pin_mut().add_instance(&q("u_top"), &q("top")));
+        assert!(state.pin_mut().add_instance(&q("u_s"), &q("sink")));
+        let entry = format!("u_top.{child_port}");
+        assert!(
+            state
+                .pin_mut()
+                .set_port_map_entry(&q("u_s"), &q("d"), &q(&entry))
+        );
+        assert_eq!(
+            state.validation_error_count(),
+            0,
+            "{:?}",
+            state.validation_messages()
+        );
+        assert_eq!(state.stale_connection_count(&q("u_top")), 0);
+        assert!(!state.pin_mut().remove_stale_connections(&q("u_top")));
+        assert!(state.pin_mut().save_project());
+
+        // The child loses its port and is generated again.
+        assert!(state.pin_mut().open_project(&file_in(&dir, "top.hdlc")));
+        assert!(state.pin_mut().remove_top_port(&q(&child_port)));
+        assert!(state.pin_mut().save_project());
+        let out = state.suggest_codegen_path();
+        assert!(
+            state.pin_mut().generate_code(&out),
+            "{}",
+            state.last_error()
+        );
+
+        assert!(state.pin_mut().open_project(&file_in(&dir, "parent.hdlc")));
+        let stale = format!("port '{child_port}' does not exist on module 'top'");
+        let reported = |state: &UniquePtr<AppState>| {
+            state
+                .validation_messages()
+                .iter()
+                .any(|m| m.contains(&stale))
+        };
+        assert!(reported(&state), "{:?}", state.validation_messages());
+        assert!(!state.instance_is_dirty_name(&q("u_top")));
+        assert_eq!(state.port_map_entry(&q("u_s"), &q("d")).to_string(), entry);
+        let out = state.suggest_codegen_path();
+        assert!(!state.pin_mut().generate_code(&out));
+
+        assert_eq!(state.stale_connection_count(&q("u_top")), 1);
+        assert_eq!(state.stale_connection_count(&q("u_s")), 0);
+        assert!(state.pin_mut().remove_stale_connections(&q("u_top")));
+        assert!(!reported(&state), "{:?}", state.validation_messages());
+        assert_eq!(state.port_map_entry(&q("u_s"), &q("d")).to_string(), "");
+        assert!(*state.dirty());
+        assert!(
+            state.pin_mut().generate_code(&out),
+            "{}",
+            state.last_error()
+        );
+
+        assert!(state.pin_mut().undo());
+        assert!(reported(&state));
+        assert!(!state.can_undo());
     }
 
     /// The open design is not a module for itself, and a design in the

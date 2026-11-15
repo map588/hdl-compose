@@ -915,6 +915,7 @@ void InstanceItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     QAction *collapseAct = nullptr;
     QAction *createGroupAct = nullptr;
     QAction *lockAct = nullptr;
+    QAction *staleAct = nullptr;
     if (group_block) {
         expandAct = menu.addAction(QStringLiteral("Expand group"));
         ungroupAct = menu.addAction(QStringLiteral("Ungroup"));
@@ -931,6 +932,15 @@ void InstanceItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
                                         : QStringLiteral("Lock Position"));
         lockAct->setToolTip(QStringLiteral(
             "Locked blocks only move by manual drag — Tidy and push-shove leave them alone"));
+        // A module that changed while the design was closed leaves
+        // connections to ports that it no longer has. The block has no pin
+        // for them, so this entry is the way to remove them.
+        const int stale = m_state->stale_connection_count(m_name);
+        if (stale > 0) {
+            staleAct = menu.addAction(QStringLiteral("Remove Stale Connections (%1)").arg(stale));
+            staleAct->setToolTip(QStringLiteral(
+                "Remove the connections to ports that the module no longer has"));
+        }
     }
     QAction *chosen = menu.exec(event->screenPos());
     event->accept();
@@ -951,6 +961,8 @@ void InstanceItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     if (chosen == lockAct) {
         st->set_instance_locked(name, !st->instance_locked(name));
         update();
+    } else if (chosen == staleAct) {
+        QTimer::singleShot(0, [st, name]() { st->remove_stale_connections(name); });
     } else if (chosen == groupPortsAct) {
         prompt_create_manual_bundle(parent_w, m_state, m_name, QString());
     } else if (chosen == expandAct) {

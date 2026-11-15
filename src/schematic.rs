@@ -230,6 +230,51 @@ impl Schematic {
         newly_dirty
     }
 
+    /// Remove each connection that names a port that the module of the
+    /// instance `name` does not have: the `port_map` entries and the
+    /// consumer slices of the instance for such a port, each reference of
+    /// an instance to such a port, and the alias on such a pin. Returns
+    /// the number of connections that it removed.
+    ///
+    /// A design that is open while a module changes gets this from
+    /// `apply_library_update`. A design that was closed has no earlier
+    /// library to compare with: its connections stay, `validate` reports
+    /// them, and this function removes them.
+    pub fn remove_stale_connections(&mut self, name: &str, library: &[ModuleDef]) -> usize {
+        let Some(module) = self
+            .get_instance(name)
+            .and_then(|inst| library.iter().find(|m| m.name == inst.module_ref))
+        else {
+            return 0;
+        };
+        let has_port = |port: &str| module.ports.iter().any(|p| p.name == port);
+        let stale_pin = |pin: &NetRef| matches!(pin.base(), NetRef::InstancePort(inst, port) if inst == name && !has_port(&port));
+
+        let mut removed = 0;
+        for inst in self.instances.iter_mut() {
+            if inst.name == name {
+                let stale: HashSet<String> = inst
+                    .port_map
+                    .keys()
+                    .chain(inst.consumer_slices.keys())
+                    .filter(|port| !has_port(port))
+                    .cloned()
+                    .collect();
+                removed += stale.len();
+                inst.port_map.retain(|port, _| !stale.contains(port));
+                inst.consumer_slices.retain(|port, _| !stale.contains(port));
+            }
+            for entry in inst.port_map.values_mut() {
+                if entry.as_ref().is_some_and(stale_pin) {
+                    *entry = None;
+                    removed += 1;
+                }
+            }
+        }
+        self.aliases.retain(|pin, _| !stale_pin(pin));
+        removed
+    }
+
     /// Clear the dirty flag on an instance.
     pub fn clear_instance_dirty(&mut self, name: &str) -> bool {
         if let Some(inst) = self.get_instance_mut(name) {
@@ -1356,6 +1401,73 @@ mod tests {
             errors(&s.validate(&lib)),
             ["module 'fifo' is defined in two sources: fifo.vhd and vendor/fifo.v"]
         );
+    }
+
+    /// A module lost the ports `gone_in` and `gone_out` while the design
+    /// was closed. The connections that name them stay in the file, and
+    /// `validate` reports them. `remove_stale_connections` removes those
+    /// and no other connection.
+    #[test]
+    fn remove_stale_connections_removes_each_connection_to_a_port_that_is_gone() {
+        let bit = || PortType::StdLogic;
+        let lib = vec![
+            make_module(
+                "child",
+                vec![
+                    make_port("keep", Direction::In, bit()),
+                    make_port("out2", Direction::Out, bit()),
+                ],
+            ),
+            make_module(
+                "sink",
+                vec![
+                    make_port("d", Direction::In, bit()),
+                    make_port("e", Direction::In, bit()),
+                ],
+            ),
+        ];
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.top_ports.push(make_port("clk", Direction::In, bit()));
+        s.add_instance("u_c", "child").unwrap();
+        s.add_instance("u_s", "sink").unwrap();
+        let top = |name: &str| Some(NetRef::TopPort(name.into()));
+        let pin = |port: &str| NetRef::InstancePort("u_c".into(), port.into());
+        s.set_port_map_entry("u_c", "keep", top("clk")).unwrap();
+        s.set_port_map_entry("u_c", "gone_in", top("clk")).unwrap();
+        s.set_port_map_entry("u_c", "gone_open", None).unwrap();
+        s.set_port_map_entry("u_s", "d", Some(pin("gone_out")))
+            .unwrap();
+        s.set_port_map_entry("u_s", "e", Some(pin("out2"))).unwrap();
+        s.set_alias(pin("gone_out"), "old_net");
+        s.set_alias(pin("out2"), "data");
+        let stale_errors = |s: &Schematic| {
+            errors(&s.validate(&lib))
+                .iter()
+                .filter(|e| e.contains("does not exist on module 'child'"))
+                .count()
+        };
+        assert_eq!(stale_errors(&s), 3);
+
+        // Three connections: `gone_in`, `gone_open` and the reference of
+        // `u_s.d`.
+        assert_eq!(s.remove_stale_connections("u_c", &lib), 3);
+
+        assert_eq!(errors(&s.validate(&lib)), [] as [&str; 0]);
+        let u_c = s.get_instance("u_c").unwrap();
+        assert_eq!(u_c.port_map.keys().collect::<Vec<_>>(), ["keep"]);
+        let u_s = s.get_instance("u_s").unwrap();
+        assert_eq!(u_s.port_map["d"], None);
+        assert_eq!(u_s.port_map["e"], Some(pin("out2")));
+        assert_eq!(s.aliases.values().collect::<Vec<_>>(), ["data"]);
+
+        // No stale connection: no change.
+        let before = serde_json::to_string(&s).unwrap();
+        assert_eq!(s.remove_stale_connections("u_c", &lib), 0);
+        assert_eq!(s.remove_stale_connections("u_s", &lib), 0);
+        // A module that is not in the library has no port list to compare.
+        assert_eq!(s.remove_stale_connections("u_c", &[]), 0);
+        assert_eq!(s.remove_stale_connections("no_such", &lib), 0);
+        assert_eq!(serde_json::to_string(&s).unwrap(), before);
     }
 
     #[test]
