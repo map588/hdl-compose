@@ -71,7 +71,7 @@ first (or have the individual tools installed).
 hdlc check <project.hdlc>         # elaborate: ghdl (VHDL) / verilator --lint-only (SV)
 hdlc synth <project.hdlc>         # generic yosys synthesis + cell stats
 hdlc sim <project.hdlc> [--wave]  # run <top>_tb via ghdl / iverilog; --wave opens surfer or gtkwave
-hdlc fpga <project.hdlc> --family ice40|ecp5|gowin   # emit a Makefile + constraints skeleton
+hdlc fpga <project.hdlc> --family ice40|ecp5|gowin   # start a board: Makefile, board file, constraints skeleton
 hdlc build <project.hdlc> [--board <x.board.json>]   # bitstream: yosys, nextpnr, pack
 hdlc flash <project.hdlc> [--board <x.board.json>]   # program via openFPGALoader (SRAM; --flash writes config flash)
 ```
@@ -97,9 +97,15 @@ Notes:
 - `build` also writes `<top>.floorplan.json` next to the bitstream. It
   records where nextpnr placed each cell, the device utilization, and the
   maximum clock frequency. The GUI Chip View reads it.
-- `fpga` writes a Makefile (codegen, yosys, nextpnr, pack, openFPGALoader)
-  plus a per-port constraints placeholder. Edit the `DEVICE` / `PACKAGE`
-  variables for your part. `--force` overwrites.
+- `fpga` starts a board for a project. It writes `<top>.board.json` with a
+  usual part of the family, a constraints placeholder with one line for
+  each top-level port, and a Makefile: `make` runs `hdlc build`, `make prog`
+  runs `hdlc flash`. It also sets the `board` key of the toolchain config
+  when the config names no board. Set `device` and `package` in the board
+  file for your part and fill in the pins; nextpnr stops on a port without
+  a pin. The Makefile holds no tool command of its own, so the flow has one
+  definition; `hdlc build --dry-run` prints the commands. `--force`
+  overwrites the three files.
 
 ### Board definitions
 

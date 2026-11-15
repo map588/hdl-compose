@@ -156,8 +156,10 @@ enum Command {
         flash: bool,
     },
 
-    /// Emit an FPGA build Makefile + constraints skeleton
-    /// (yosys → nextpnr → pack → openFPGALoader) next to the project
+    /// Start a board for a project: write a Makefile that calls `hdlc
+    /// build` and `hdlc flash`, a board file template and a constraints
+    /// skeleton next to the project, and name the board in the toolchain
+    /// config of the project
     Fpga {
         /// Path to .hdlc project file
         project: PathBuf,
@@ -170,7 +172,7 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// Overwrite an existing Makefile / constraints file
+        /// Overwrite an existing Makefile / board file / constraints file
         #[arg(long)]
         force: bool,
     },
@@ -1016,45 +1018,69 @@ fn cmd_fpga(
     output: Option<&std::path::Path>,
     force: bool,
 ) -> ExitCode {
-    let (schematic, library) = match load_project_and_library(project_path) {
+    let (schematic, _) = match load_project(project_path) {
         Ok(v) => v,
         Err(code) => return code,
     };
+    let fail = |msg: String| {
+        eprintln!("error: {msg}");
+        ExitCode::from(2)
+    };
     let out_dir = output.unwrap_or_else(|| project_dir(project_path));
     if let Err(e) = std::fs::create_dir_all(out_dir) {
-        eprintln!("error: cannot create {}: {e}", out_dir.display());
-        return ExitCode::from(2);
+        return fail(format!("cannot create {}: {e}", out_dir.display()));
     }
 
     let project_file_name = project_path
         .file_name()
         .map(|f| f.to_string_lossy().into_owned())
         .unwrap_or_else(|| project_path.display().to_string());
-    let scaffold =
-        hdl_compose::toolchain::fpga_scaffold(&schematic, &library, family, &project_file_name);
+    let scaffold = hdl_compose::toolchain::fpga_scaffold(&schematic, family, &project_file_name);
 
     let makefile_path = out_dir.join("Makefile");
     if makefile_path.exists() && !force {
-        eprintln!(
-            "error: {} exists — pass --force to overwrite",
+        return fail(format!(
+            "{} exists — pass --force to overwrite",
             makefile_path.display()
-        );
-        return ExitCode::from(2);
+        ));
     }
-    let constraints_path = out_dir.join(&scaffold.constraints_name);
     if let Err(e) = std::fs::write(&makefile_path, &scaffold.makefile) {
-        eprintln!("error: {e}");
-        return ExitCode::from(2);
+        return fail(e.to_string());
     }
     println!("Written to {}", makefile_path.display());
-    if constraints_path.exists() && !force {
-        println!("Kept existing {}", constraints_path.display());
-    } else {
-        if let Err(e) = std::fs::write(&constraints_path, &scaffold.constraints) {
-            eprintln!("error: {e}");
-            return ExitCode::from(2);
+
+    // The user edits these two files. Keep the edits unless --force.
+    let board_path = out_dir.join(&scaffold.board_name);
+    let constraints_path = out_dir.join(&scaffold.constraints_name);
+    for (path, text) in [
+        (&board_path, &scaffold.board),
+        (&constraints_path, &scaffold.constraints),
+    ] {
+        if path.exists() && !force {
+            println!("Kept existing {}", path.display());
+        } else {
+            if let Err(e) = std::fs::write(path, text) {
+                return fail(e.to_string());
+            }
+            println!("Written to {}", path.display());
         }
-        println!("Written to {}", constraints_path.display());
+    }
+
+    // `hdlc build` reads the board from the toolchain config. A board that
+    // the user already selected stays.
+    use hdl_compose::toolchain::ToolchainConfig;
+    let config_path = project_path.with_extension("toolchain.json");
+    match ToolchainConfig::load_for(project_path) {
+        Err(msg) => return fail(msg),
+        Ok(config) if config.board.is_some() => {
+            println!("Kept the board in {}", config_path.display());
+        }
+        Ok(_) => {
+            if let Err(msg) = ToolchainConfig::set_board(project_path, &board_path) {
+                return fail(msg);
+            }
+            println!("Set the board in {}", config_path.display());
+        }
     }
     ExitCode::SUCCESS
 }
@@ -1167,6 +1193,50 @@ mod tests {
                 Cli::try_parse_from(["hdlc", verb, "demo.hdlc", "--board", "x.board.json"]).is_ok()
             );
         }
+    }
+
+    /// `ExitCode` has no `PartialEq`.
+    fn code(exit: ExitCode) -> String {
+        format!("{exit:?}")
+    }
+
+    #[test]
+    fn fpga_writes_the_scaffold_and_names_the_board_in_the_toolchain_config() {
+        use hdl_compose::toolchain::{FpgaFamily, ToolchainConfig};
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("demo.hdlc");
+        let schematic = Schematic::new("demo", Language::Vhdl);
+        hdl_compose::project::save_project(&schematic, &project).unwrap();
+        let board_file = dir.path().join("demo.board.json");
+
+        let exit = cmd_fpga(&project, FpgaFamily::Ecp5, None, false);
+        assert_eq!(code(exit), code(ExitCode::SUCCESS));
+        for file in ["Makefile", "demo.board.json", "demo.lpf"] {
+            assert!(dir.path().join(file).is_file(), "{file} is missing");
+        }
+        let config = ToolchainConfig::load_for(&project).unwrap();
+        assert_eq!(config.board, Some(PathBuf::from("demo.board.json")));
+        assert_eq!(config.board_path(dir.path()), Some(board_file.clone()));
+
+        // A second run without the overwrite flag stops at the Makefile and
+        // keeps the files that the user edited.
+        std::fs::write(&board_file, "edited").unwrap();
+        let exit = cmd_fpga(&project, FpgaFamily::Ecp5, None, false);
+        assert_eq!(code(exit), code(ExitCode::from(2)));
+        assert_eq!(std::fs::read_to_string(&board_file).unwrap(), "edited");
+
+        // With the overwrite flag the board file is the template again. The
+        // board in the toolchain config stays.
+        let exit = cmd_fpga(&project, FpgaFamily::Ice40, None, true);
+        assert_eq!(code(exit), code(ExitCode::SUCCESS));
+        assert!(
+            std::fs::read_to_string(&board_file)
+                .unwrap()
+                .contains("\"family\": \"ice40\"")
+        );
+        assert!(dir.path().join("demo.pcf").is_file());
+        let config = ToolchainConfig::load_for(&project).unwrap();
+        assert_eq!(config.board, Some(PathBuf::from("demo.board.json")));
     }
 
     #[test]

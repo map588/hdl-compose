@@ -6,12 +6,12 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::toolchain::FpgaFamily;
 use crate::types::{PortType, RangeExpr, Schematic};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Board {
     pub name: String,
     pub family: FpgaFamily,

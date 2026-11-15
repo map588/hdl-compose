@@ -122,6 +122,21 @@ impl ToolchainConfig {
         })
     }
 
+    /// The form of a board path in the config: relative to the project
+    /// directory when the board is below it, else as given.
+    fn stored_board(project_path: &Path, board: &Path) -> PathBuf {
+        let relative = project_path
+            .parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .and_then(|dir| board.strip_prefix(dir).ok())
+            .unwrap_or(board);
+        // `./x.board.json` and `x.board.json` are the same file.
+        relative
+            .components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir))
+            .collect()
+    }
+
     /// Set the `board` key in `<stem>.toolchain.json` of a project. This is
     /// the only function that writes that file. A board below the project
     /// directory is stored relative to it, so the project stays portable;
@@ -139,14 +154,13 @@ impl ToolchainConfig {
         let keys = config
             .as_object_mut()
             .ok_or_else(|| format!("invalid {}: not a JSON object", path.display()))?;
-        let stored = project_path
-            .parent()
-            .filter(|dir| !dir.as_os_str().is_empty())
-            .and_then(|dir| board.strip_prefix(dir).ok())
-            .unwrap_or(board);
         keys.insert(
             "board".to_string(),
-            serde_json::Value::String(stored.to_string_lossy().into_owned()),
+            serde_json::Value::String(
+                Self::stored_board(project_path, board)
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
         );
         let text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
         std::fs::write(&path, text + "\n")
@@ -1142,7 +1156,7 @@ pub fn open_wave_viewer(wave: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Clone, Copy, serde::Deserialize)]
+#[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FpgaFamily {
     Ice40,
@@ -1154,119 +1168,86 @@ pub struct FpgaScaffold {
     pub makefile: String,
     pub constraints_name: String,
     pub constraints: String,
+    /// The name of the board file: `<top>.board.json`.
+    pub board_name: String,
+    /// The board file as JSON text.
+    pub board: String,
 }
 
-/// Emit a Makefile (yosys → nextpnr → pack → openFPGALoader) plus a
-/// constraints placeholder listing the top-level ports. Everything a board
-/// needs to change sits in the variables at the top of the Makefile.
+/// The files that start a board for a project: a Makefile that calls
+/// `hdlc build` and `hdlc flash`, a board file with a usual part of the
+/// family, and a constraints placeholder with the top-level ports. The
+/// Makefile has no tool command of its own, so the flow has one definition.
 pub fn fpga_scaffold(
     schematic: &Schematic,
-    library: &[ModuleDef],
     family: FpgaFamily,
     project_file_name: &str,
 ) -> FpgaScaffold {
     let top = &schematic.top_name;
-    let (gen_ext, lang_vars, read_cmd) = match schematic.language {
-        Language::Vhdl => (
-            "vhd",
-            // The ghdl-yosys-plugin's embedded ghdl can't always find its
-            // std/ieee libraries; point it at the standalone ghdl's.
-            "GHDL_PREFIX ?= $(shell ghdl --disp-config 2>/dev/null | sed -n 's/^library directory: //p')\n\
-             GHDL_FLAGS  := $(if $(GHDL_PREFIX),--PREFIX=$(GHDL_PREFIX))\n",
-            "yosys -m ghdl -p \"ghdl --std=08 $(GHDL_FLAGS) $(SRCS) -e $(TOP); SYNTH -json $@\""
-                .to_string(),
-        ),
-        Language::SystemVerilog => (
-            "sv",
-            "",
-            "yosys -p \"read_verilog -sv $(SRCS); SYNTH -top $(TOP) -json $@\"".to_string(),
-        ),
-    };
-
-    let lib_srcs: Vec<String> = dependency_ordered_sources(library)
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect();
-    let gen_srcs: Vec<String> = schematic
-        .groups
-        .iter()
-        .map(|g| format!("$(BUILD)/{}.{gen_ext}", g.name))
-        .chain(std::iter::once(format!("$(BUILD)/$(TOP).{gen_ext}")))
-        .collect();
-
-    let (synth_cmd, device_line, cst_var, pnr, pack, bit) = match family {
+    let (extension, device, package, hint) = match family {
         FpgaFamily::Ice40 => (
-            "synth_ice40",
-            "# ice40 devices: lp1k hx1k hx8k up5k u4k ...\nDEVICE  := up5k\nPACKAGE := sg48",
-            ("PCF", "$(TOP).pcf"),
-            "$(BUILD)/$(TOP).asc: $(BUILD)/$(TOP).json $(PCF)\n\
-             \tnextpnr-ice40 --$(DEVICE) --package $(PACKAGE) --json $< --pcf $(PCF) --asc $@",
-            "$(BUILD)/$(TOP).bin: $(BUILD)/$(TOP).asc\n\ticepack $< $@",
-            "$(BUILD)/$(TOP).bin",
+            "pcf",
+            "up5k",
+            "sg48",
+            "ice40 devices: lp1k hx1k hx8k up5k u4k ...",
         ),
         FpgaFamily::Ecp5 => (
-            "synth_ecp5",
-            "# ecp5 devices: 12k 25k 45k 85k um5g-25k ...\nDEVICE  := 25k\nPACKAGE := CABGA256",
-            ("LPF", "$(TOP).lpf"),
-            "$(BUILD)/$(TOP).config: $(BUILD)/$(TOP).json $(LPF)\n\
-             \tnextpnr-ecp5 --$(DEVICE) --package $(PACKAGE) --json $< --lpf $(LPF) --textcfg $@",
-            "$(BUILD)/$(TOP).bit: $(BUILD)/$(TOP).config\n\tecppack $< $@",
-            "$(BUILD)/$(TOP).bit",
+            "lpf",
+            "25k",
+            "CABGA256",
+            "ecp5 devices: 12k 25k 45k 85k um5g-25k ...",
         ),
         FpgaFamily::Gowin => (
-            "synth_gowin",
-            "# gowin: DEVICE is the full part number, FAMILY the die family\nDEVICE  := GW1NR-LV9QN88PC6/I5\nFAMILY  := GW1N-9C",
-            ("CST", "$(TOP).cst"),
-            "$(BUILD)/$(TOP)_pnr.json: $(BUILD)/$(TOP).json $(CST)\n\
-             \tnextpnr-himbaechel --device $(DEVICE) --vopt family=$(FAMILY) --vopt cst=$(CST) --json $< --write $@",
-            "$(BUILD)/$(TOP).fs: $(BUILD)/$(TOP)_pnr.json\n\tgowin_pack -d $(FAMILY) -o $@ $<",
-            "$(BUILD)/$(TOP).fs",
+            "cst",
+            "GW1NR-LV9QN88PC6/I5",
+            "",
+            "gowin: \"device\" is the full part number; \"pnr_args\" and \"pack_args\" name the die family",
         ),
     };
-    let synth_line = read_cmd.replace("SYNTH", synth_cmd);
-    let (cst_name, cst_val) = cst_var;
+    let constraints_name = format!("{top}.{extension}");
+    let board_name = format!("{top}.board.json");
+
+    // nextpnr and gowin_pack both need the die family of a Gowin part.
+    let gowin_family = |option: &str, value: &str| -> Vec<String> {
+        match family {
+            FpgaFamily::Gowin => vec![option.to_string(), value.to_string()],
+            _ => Vec::new(),
+        }
+    };
+    let board = crate::board::Board {
+        name: top.clone(),
+        family,
+        device: device.to_string(),
+        package: package.to_string(),
+        constraints: PathBuf::from(&constraints_name),
+        pack_args: gowin_family("-d", "GW1N-9C"),
+        prog_args: Vec::new(),
+        pnr_args: gowin_family("--vopt", "family=GW1N-9C"),
+    };
+    let board = serde_json::to_string_pretty(&board).expect("a board serializes") + "\n";
 
     let makefile = format!(
-        "# FPGA build flow for {top} — generated by hdl-compose. Edit freely.\n\
+        "# Bitstream flow for {top} — generated by hdl-compose. Edit freely.\n\
          # Requires oss-cad-suite on PATH: source <oss-cad-suite>/environment\n\
-         # Set DEVICE/PACKAGE for your board and fill in the constraints file.\n\
+         #\n\
+         # `hdlc build` reads the board from {board_name}. Set \"device\" and\n\
+         # \"package\" there for your part, fill in {constraints_name}, and put the\n\
+         # flags of your programmer in \"prog_args\" (for example [\"-b\", \"<board>\"]).\n\
+         # {hint}\n\
+         # `hdlc build $(PROJECT) --dry-run` prints the tool commands.\n\
          \n\
-         TOP     := {top}\n\
          PROJECT := {project_file_name}\n\
-         BUILD   := build\n\
-         {device_line}\n\
-         {cst_name}     := {cst_val}\n\
-         # add board/cable flags, e.g. -b <board>\n\
-         PROG    := openFPGALoader\n\
-         {lang_vars}\
          \n\
-         LIB_SRCS := {lib_srcs}\n\
-         GEN_SRCS := {gen_srcs}\n\
-         SRCS     := $(LIB_SRCS) $(GEN_SRCS)\n\
+         all:\n\
+         \thdlc build $(PROJECT)\n\
          \n\
-         all: {bit}\n\
-         \n\
-         # codegen writes the group files alongside the top file\n\
-         $(BUILD)/$(TOP).{gen_ext}: $(PROJECT)\n\
-         \t@mkdir -p $(BUILD)\n\
-         \thdlc codegen $(PROJECT) -o $@\n\
-         \n\
-         $(BUILD)/$(TOP).json: $(BUILD)/$(TOP).{gen_ext} $(LIB_SRCS)\n\
-         \t{synth_line}\n\
-         \n\
-         {pnr}\n\
-         \n\
-         {pack}\n\
-         \n\
-         prog: {bit}\n\
-         \t$(PROG) $<\n\
+         prog: all\n\
+         \thdlc flash $(PROJECT)\n\
          \n\
          clean:\n\
-         \trm -rf $(BUILD)\n\
+         \trm -rf build\n\
          \n\
-         .PHONY: all prog clean\n",
-        lib_srcs = lib_srcs.join(" "),
-        gen_srcs = gen_srcs.join(" "),
+         .PHONY: all prog clean\n"
     );
 
     let mut constraints = String::new();
@@ -1295,8 +1276,10 @@ pub fn fpga_scaffold(
 
     FpgaScaffold {
         makefile,
-        constraints_name: cst_val.replace("$(TOP)", top),
+        constraints_name,
         constraints,
+        board_name,
+        board,
     }
 }
 
@@ -1499,28 +1482,64 @@ mod tests {
     fn ice40_scaffold_shape() {
         let mut s = Schematic::new("blinky", Language::Vhdl);
         s.top_ports = vec![port("clk", Direction::In), port("led", Direction::Out)];
-        let lib = vec![module("pulse", "pulse.vhd", &[])];
-        let sc = fpga_scaffold(&s, &lib, FpgaFamily::Ice40, "blinky.hdlc");
+        let sc = fpga_scaffold(&s, FpgaFamily::Ice40, "blinky.hdlc");
         assert_eq!(sc.constraints_name, "blinky.pcf");
-        assert!(sc.makefile.contains("synth_ice40"));
-        assert!(sc.makefile.contains("nextpnr-ice40"));
-        assert!(sc.makefile.contains("icepack"));
-        assert!(sc.makefile.contains("yosys -m ghdl"));
-        assert!(sc.makefile.contains("LIB_SRCS := pulse.vhd"));
-        assert!(sc.makefile.contains("hdlc codegen $(PROJECT)"));
         assert!(sc.constraints.contains("# set_io clk <pin>"));
         assert!(sc.constraints.contains("# set_io led <pin>"));
+        assert_eq!(sc.board_name, "blinky.board.json");
+        let board: crate::board::Board = serde_json::from_str(&sc.board).unwrap();
+        assert_eq!(board.name, "blinky");
+        assert!(matches!(board.family, FpgaFamily::Ice40));
+        assert_eq!(
+            (board.device.as_str(), board.package.as_str()),
+            ("up5k", "sg48")
+        );
+        assert_eq!(board.constraints, PathBuf::from("blinky.pcf"));
+    }
+
+    /// The Makefile calls hdlc. It must not hold a second copy of the flow.
+    #[test]
+    fn scaffold_makefile_calls_hdlc_and_runs_no_tool_itself() {
+        let s = Schematic::new("blinky", Language::SystemVerilog);
+        let sc = fpga_scaffold(&s, FpgaFamily::Ecp5, "blinky.hdlc");
+        assert!(sc.makefile.contains("PROJECT := blinky.hdlc"));
+        assert!(sc.makefile.contains("\thdlc build $(PROJECT)\n"));
+        assert!(sc.makefile.contains("\thdlc flash $(PROJECT)\n"));
+        assert!(sc.makefile.contains("--dry-run"));
+        for tool in ["yosys", "nextpnr", "ecppack", "ghdl", "openFPGALoader"] {
+            let runs_tool = sc
+                .makefile
+                .lines()
+                .any(|line| !line.starts_with('#') && line.contains(tool));
+            assert!(!runs_tool, "the Makefile runs {tool}");
+        }
     }
 
     #[test]
-    fn ecp5_sv_scaffold_shape() {
+    fn ecp5_scaffold_board() {
         let s = Schematic::new("blinky", Language::SystemVerilog);
-        let sc = fpga_scaffold(&s, &[], FpgaFamily::Ecp5, "blinky.hdlc");
+        let sc = fpga_scaffold(&s, FpgaFamily::Ecp5, "blinky.hdlc");
         assert_eq!(sc.constraints_name, "blinky.lpf");
-        assert!(sc.makefile.contains("synth_ecp5"));
-        assert!(sc.makefile.contains("read_verilog -sv"));
-        assert!(sc.makefile.contains("ecppack"));
-        assert!(!sc.makefile.contains("ghdl"));
+        let board: crate::board::Board = serde_json::from_str(&sc.board).unwrap();
+        assert!(matches!(board.family, FpgaFamily::Ecp5));
+        assert_eq!(
+            (board.device.as_str(), board.package.as_str()),
+            ("25k", "CABGA256")
+        );
+        assert_eq!(board.constraints, PathBuf::from("blinky.lpf"));
+        assert!(board.pnr_args.is_empty() && board.pack_args.is_empty());
+    }
+
+    /// nextpnr and gowin_pack both need the die family of a Gowin part.
+    #[test]
+    fn gowin_scaffold_board_names_the_die_family_for_nextpnr_and_pack() {
+        let s = Schematic::new("blinky", Language::Vhdl);
+        let sc = fpga_scaffold(&s, FpgaFamily::Gowin, "blinky.hdlc");
+        assert_eq!(sc.constraints_name, "blinky.cst");
+        let board: crate::board::Board = serde_json::from_str(&sc.board).unwrap();
+        assert_eq!(board.device, "GW1NR-LV9QN88PC6/I5");
+        assert_eq!(board.pnr_args, ["--vopt", "family=GW1N-9C"]);
+        assert_eq!(board.pack_args, ["-d", "GW1N-9C"]);
     }
 }
 
@@ -2360,6 +2379,31 @@ mod config_tests {
         assert_eq!(text, "{\n  \"board\": \"boards/x.board.json\"\n}\n");
         let config = ToolchainConfig::load_for(&hdlc).unwrap();
         assert_eq!(config.board_path(project.path()), Some(board));
+    }
+
+    #[test]
+    fn stored_board_is_relative_to_the_project_directory() {
+        let stored = |project: &str, board: &str| {
+            ToolchainConfig::stored_board(Path::new(project), Path::new(board))
+        };
+        assert_eq!(
+            stored("/p/demo.hdlc", "/p/b/x.board.json"),
+            Path::new("b/x.board.json")
+        );
+        assert_eq!(
+            stored("/p/demo.hdlc", "/q/x.board.json"),
+            Path::new("/q/x.board.json")
+        );
+        // A project in the working directory: the board path is already
+        // relative to the project directory.
+        assert_eq!(
+            stored("demo.hdlc", "./x.board.json"),
+            Path::new("x.board.json")
+        );
+        assert_eq!(
+            stored("demo.hdlc", "b/x.board.json"),
+            Path::new("b/x.board.json")
+        );
     }
 
     #[test]
