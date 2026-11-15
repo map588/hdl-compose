@@ -222,7 +222,16 @@ fn emit_instance(
     inst: &Instance,
     module: &ModuleDef,
 ) {
-    write!(out, "  {} : {}", inst.name, inst.module_ref).unwrap();
+    // `label : name;` with no map is also the form of a procedure call. A
+    // tool resolves it from the declaration of the name, but a parser that
+    // reads the syntax only does not see an instance. The word `component`
+    // removes the doubt.
+    let keyword = if module.ports.is_empty() && inst.generic_map.is_empty() {
+        "component "
+    } else {
+        ""
+    };
+    write!(out, "  {} : {keyword}{}", inst.name, inst.module_ref).unwrap();
 
     // Generic map
     if !inst.generic_map.is_empty() {
@@ -653,9 +662,10 @@ mod tests {
         let diags = s.validate(&lib);
         let output = generate_vhdl(&s, &lib, &diags).unwrap();
 
-        let a_pos = output.find("u_a : mod").unwrap();
-        let m_pos = output.find("u_m : mod").unwrap();
-        let z_pos = output.find("u_z : mod").unwrap();
+        // A module with no port: the instance has the word `component`.
+        let a_pos = output.find("u_a : component mod").unwrap();
+        let m_pos = output.find("u_m : component mod").unwrap();
+        let z_pos = output.find("u_z : component mod").unwrap();
         assert!(a_pos < m_pos);
         assert!(m_pos < z_pos);
     }
@@ -1031,10 +1041,19 @@ mod tests {
 
         let design = crate::codegen::generate_design(&s, &lib).unwrap();
         assert!(
-            design.top_code.contains("  u_g0 : g0;\n"),
+            design.top_code.contains("  u_g0 : component g0;\n"),
             "{}",
             design.top_code
         );
         assert!(!design.top_code.contains("port map"), "{}", design.top_code);
+
+        // Regression: the instance was `u_g0 : g0;`, which is also the form
+        // of a procedure call. The parser then gave no dependency on `g0`
+        // for the generated file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("top.vhd");
+        std::fs::write(&path, &design.top_code).unwrap();
+        let parsed = crate::vhdl::parse_vhdl(&path).unwrap();
+        assert_eq!(parsed[0].dependencies, ["g0"], "{}", design.top_code);
     }
 }

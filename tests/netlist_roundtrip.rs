@@ -12,6 +12,9 @@
 //! (SystemVerilog). When a tool is missing it prints a message and tests
 //! only the language that has its tools.
 
+mod common;
+
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use hdl_compose::codegen;
@@ -457,5 +460,45 @@ proptest! {
             matches!(outcome, Ok(Outcome::Same { unchecked: 0, .. })),
             "{outcome:#?}\n{project}"
         );
+    }
+}
+
+proptest! {
+    /// A parent design reads a child design as a module, from the generated
+    /// file of the child. The parser must thus give the interface of the
+    /// design back: the name, each top-level generic and each top-level
+    /// port. It must also give the modules that the top level instantiates,
+    /// because the rule against a design that contains itself follows them.
+    ///
+    /// This test needs no external tool.
+    #[test]
+    fn generated_top_file_parses_to_the_interface_of_the_design(
+        bytes in proptest::collection::vec(any::<u8>(), 96),
+        vhdl in any::<bool>(),
+    ) {
+        let language = if vhdl { Language::Vhdl } else { Language::SystemVerilog };
+        let dir = tempfile::tempdir().unwrap();
+        let mut choices = Choices { bytes: &bytes, at: 0 };
+        let (schematic, library) = design(&mut choices, language, dir.path());
+        let project = serde_json::to_string_pretty(&schematic).unwrap();
+
+        let generated = codegen::generate_design(&schematic, &library).unwrap();
+        let top_path = dir.path().join(&generated.top_filename);
+        generated.write_to(&top_path).unwrap();
+
+        let parsed = hdl_compose::parse_file(&top_path).unwrap();
+        prop_assert_eq!(parsed.len(), 1, "one module in the top file\n{}", project);
+        let module = &parsed[0];
+        prop_assert_eq!(&module.name, &schematic.top_name);
+        common::assert_generics_eq(&schematic.top_generics, &module.generics);
+        common::assert_shape_eq(&schematic.top_ports, &module.ports, &schematic.top_generics);
+
+        // The top level instantiates the instances that are in no group,
+        // and the groups that have no parent.
+        let plan = hdl_compose::groups::expand_hierarchy(&schematic, &library);
+        let expected: BTreeSet<&str> =
+            plan.top.instances.iter().map(|i| i.module_ref.as_str()).collect();
+        let actual: BTreeSet<&str> = module.dependencies.iter().map(String::as_str).collect();
+        prop_assert_eq!(actual, expected, "{}\n{}", project, generated.top_code);
     }
 }
