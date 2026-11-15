@@ -390,6 +390,9 @@ The files in the repository root that have an effect on the build:
 - The `.hdlc` file holds no module definition. The loader reads the modules
   from the library sources. It accepts format versions 2 to 5
   [`src/project.rs:load_project`].
+- The text of a `.hdlc` file is a function of the design: each map is
+  written with its keys in sorted order, so two saves of one design give
+  the same file [`src/types.rs:serialize_sorted`].
 - Decisions are in Rust; the C++ side draws and takes input. Placement and
   routing are in `src/routing.rs`, which has no Qt type
   [`src/routing.rs` module comment].
@@ -406,9 +409,12 @@ The files in the repository root that have an effect on the build:
   the generated `<top>.vhd` or `<top>.sv` and one file for each group, the
   directory `build/<top>/`, the bitstream, `<top>.floorplan.json`, the
   testbench `<top>_tb`, and the wave file of a simulation.
-- **Writes are not atomic:** the project file and the generated files are
-  replaced with `std::fs::write` [`src/project.rs:save_project`,
-  `src/codegen/mod.rs:GeneratedDesign::write_to`].
+- **Writes:** the project file and `<name>.toolchain.json` are replaced in
+  one step, so a failure during a save leaves the old file complete
+  [`src/lib.rs:replace_file`, `src/project.rs:save_project`,
+  `src/toolchain.rs:ToolchainConfig::set_board`]. The generated files are
+  written in place with `std::fs::write`; `hdlc` can make them again
+  [`src/codegen/mod.rs:GeneratedDesign::write_to`].
 - **External processes:** ghdl, slang, verilator, yosys, nextpnr, the pack
   tools, iverilog, surfer or gtkwave, and the editor command of the user.
   `hdlc flash` programs hardware with openFPGALoader.
@@ -423,6 +429,8 @@ The files in the repository root that have an effect on the build:
 - Run: `cargo test`
 - Run: `cargo fmt --check`
 - Run: `cargo clippy --all-targets -- -D warnings`
+- With no Qt: `cargo test --no-default-features` and
+  `cargo clippy --all-targets --no-default-features -- -D warnings`
 
 ## Known limitations
 

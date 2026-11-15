@@ -36,7 +36,8 @@ Entry:
 - **Signals:** `project_loaded`, `project_saved`, `instance_added`,
   `instance_removed`, `instance_moved`, `port_map_changed`,
   `port_map_changed_bulk`, `alias_changed`, `validation_changed`,
-  `selection_changed`, `library_changed`, `groups_changed`.
+  `selection_changed`, `library_changed`, `groups_changed`,
+  `history_changed`.
 - **Batch:** `begin_batch`, `end_batch`.
 - **Tests:** `new_app_state` makes an `AppState` in Rust with no window.
   The application makes its `AppState` in C++.
@@ -76,7 +77,7 @@ Entry:
   `group_expanded_visible`, `group_hull_items`.
 - **Data for the canvas:** the port, top-port and wire read methods
   (`instance_port_*`, `top_port_*`, `wire_count`, `wire_source`,
-  `wire_target`, `wire_width`), the validation read methods
+  `wire_target`, `wire_width`, `wire_net`), the validation read methods
   (`validation_error_count`, `validation_warning_count`,
   `validation_messages`, `pin_issue_level`, `pin_issue_message`), and the pin
   notes (`pin_exposed_note`, `pin_origin_note`, `pin_direction_code`).
@@ -118,7 +119,16 @@ C++ classes:
   Rust side the wire list uses the same form [`bridge.rs:AppStateRust`,
   field `wires`].
 - Each method that changes the schematic calls `push_snapshot` before the
-  change. A snapshot clears the redo stack [`bridge.rs:push_snapshot`].
+  change. The snapshot is pending first. It becomes an undo step, and
+  clears the redo stack, only when the model is different after the call;
+  a call that changes nothing leaves the history as it is. `undo`, `redo`,
+  `can_undo` and `can_redo` decide that before they read the history
+  [`bridge.rs:push_snapshot`, `bridge.rs:settle_snapshot`,
+  `bridge.rs:pending_changed`].
+- `AppState` sends `history_changed` when a method takes a snapshot, in
+  `undo` and `redo`, and when the stacks are cleared. The history is final
+  only when the method returns, so the window uses a queued connection
+  [`bridge.rs:push_snapshot`, `app.cpp:MainWindow` constructor].
 - While Rust sends `project_loaded` or `groups_changed`, no change takes a
   snapshot. The view puts each block on the grid in the handler of these
   signals, and those moves are a part of the change that sent the signal
@@ -140,6 +150,29 @@ C++ classes:
   [`bridge.rs:rebuild_library_and_validate`]. It also runs after an alias
   change [`bridge.rs:set_alias`]. It does not run after
   `set_instance_position` and `set_instance_locked`.
+- `rebuild_library_and_validate` is the one function that brings a library
+  in. It compares the ports of each module with the library of its last
+  call; for a changed port it removes the entries and sets the `dirty` flag
+  of the instance. `open_project` and `new_project` clear the library
+  first, so a project is not compared with the library of another project
+  [`bridge.rs:rebuild_library_and_validate`, `bridge.rs:open_project`].
+- `reload_library` takes a snapshot only when the comparison changes an
+  instance [`bridge.rs:reload_library`].
+- A wire is one `port_map` entry: its source is the pin that the entry
+  references, which is not always the driver. `wire_net` gives the net of
+  the wire from `nets::resolve_nets`: two wires have the same value when,
+  and only when, they are on one net. The canvas uses it for the color, the
+  highlight and the junction dots [`bridge.rs:net_key`,
+  `bridge.rs:rebuild_wires`, `items.h:WireItem`,
+  `canvas.h:CanvasLayer::setHoveredNet`].
+- A net has one alias. `set_alias` removes the alias of each other pin of
+  the net, and `net_alias` finds the alias on each pin of the net
+  [`bridge.rs:set_alias`, `bridge.rs:net_alias`].
+- The canvas refuses a connection that is an error (`connect_pins`). The
+  text editor accepts each line that it can parse. Validation reports each
+  connection that the canvas refuses
+  [`bridge.rs:connect_pins`, `bridge.rs:commit_instance_buffer`, test
+  `validation_reports_each_connection_that_the_canvas_refuses`].
 - The parse cache has one entry for each library path. An entry is valid
   while the modification time of the file is the same. A path that is no
   longer in the project leaves the cache [`bridge.rs:resolve_library_cached`].
@@ -161,8 +194,10 @@ C++ classes:
 ## Side Effects
 
 - `AppState::open_project` reads the project file and each library source
-  (`project::load_project`), clears the two undo stacks, and discards the
-  warnings of the loader [`bridge.rs:open_project`].
+  (`project::load_project`) and clears the two undo stacks. The warnings of
+  the loader go into the diagnostics with the prefix `load:` and stay
+  until the next save [`bridge.rs:open_project`,
+  `bridge.rs:rebuild_library_and_validate`, `bridge.rs:save_to`].
 - `AppState::save_project` and `save_project_as` write the project file
   (`project::save_project`) [`bridge.rs:save_to`].
 - `AppState::generate_code` writes the HDL files [`bridge.rs:generate_code`].
@@ -190,8 +225,13 @@ C++ classes:
 
 - Run: `cargo test`
 - The tests in `bridge.rs` and `editor.rs` cover the free functions. The
-  tests in `bridge.rs` also make an `AppState` with `new_app_state` and run
-  its undo, redo, batch and alias methods; a signal handler in the test
-  does the work of `CanvasLayer::settleAll`.
-- No test runs the C++ classes. The batch calls in `app.cpp` for the
-  library path commands are compiled but not run by a test.
+  tests in `bridge.rs` also make an `AppState` with `new_app_state`; a
+  signal handler in the test does the work of `CanvasLayer::settleAll`.
+- The property test `history_follows_the_model` in `bridge.rs` runs random
+  sequences of 26 kinds of edit, with batches, undo and redo. It compares
+  the history with the model after each call, and it calls the reads of
+  the canvas and the code generation on each final model.
+  `PROPTEST_CASES=4000 cargo test --lib history_follows_the_model` runs
+  more sequences.
+- No test runs the C++ classes. Their code is compiled and checked by
+  reading.

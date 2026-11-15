@@ -5,7 +5,8 @@
 `src` holds the one Rust package of hdl-compose. It builds a library crate
 (`hdl_compose`, root `lib.rs`) and one binary (`hdlc`, root `main.rs`). The
 binary is the CLI, and with no command or with `gui` it starts the Qt
-application.
+application. The module `gui` is in the build only with the cargo feature
+`gui`, which is on by default; with no `gui` feature the build needs no Qt.
 
 The modules have four roles:
 
@@ -47,6 +48,8 @@ Crate root (`lib.rs`):
   of one HDL source file. `.vhd` and `.vhdl` go to `vhdl::parse_vhdl`; `.v`
   and `.sv` go to `verilog::parse_verilog`.
 - `ParseError`
+- Crate only: `replace_file(path, contents)`: replaces a file in one step
+  (a temporary file in the same directory, then a rename).
 
 Model:
 
@@ -122,6 +125,12 @@ CLI (`main.rs`), the commands of `hdlc`: `parse`, `new`, `validate`,
 - The `.hdlc` file holds the schematic and a version number. The module
   definitions are not in it; the loader reads them from the library sources
   [`project.rs:ProjectFile`, `project.rs:load_project`].
+- The text of the `.hdlc` file is a function of the schematic: each map of
+  the model is written with its keys in sorted order
+  [`types.rs:serialize_sorted`, `types.rs:serialize_aliases`].
+- `replace_file` leaves the old file complete when the write fails. It
+  writes through a symbolic link, keeps the mode of the old file, and
+  refuses a read-only file [`lib.rs:replace_file`].
 - The loader accepts versions `MIN_SUPPORTED_VERSION` (2) to
   `CURRENT_VERSION` (5) and rejects each other version. `save_project`
   writes `CURRENT_VERSION` [`project.rs:load_project`,
@@ -166,8 +175,10 @@ CLI (`main.rs`), the commands of `hdlc`: `parse`, `new`, `validate`,
 ## Side Effects
 
 - **Project file:** `project::load_project` reads the `.hdlc` file and each
-  library source. `project::save_project` replaces the `.hdlc` file with
-  `std::fs::write`; the write is not atomic [`project.rs`].
+  library source. `project::save_project` replaces the `.hdlc` file in one
+  step with `replace_file`; during the save a temporary file
+  `.<name>.<process id>.tmp` is in the same directory [`project.rs`,
+  `lib.rs:replace_file`].
 - **HDL sources:** `vhdl::parse_vhdl` and `verilog::parse_verilog` read the
   source file [`vhdl.rs`, `verilog.rs`].
 - **Build directory:** `toolchain::stage` deletes and makes `build/<top>`,
@@ -189,8 +200,9 @@ CLI (`main.rs`), the commands of `hdlc`: `parse`, `new`, `validate`,
   [`toolchain.rs:run_flash`].
 - **Detached process:** `open_wave_viewer` starts surfer or gtkwave
   [`toolchain.rs:open_wave_viewer`].
-- **Settings file:** `ToolchainConfig::set_board` reads and replaces
-  `<project>.toolchain.json` [`toolchain.rs:ToolchainConfig::set_board`].
+- **Settings file:** `ToolchainConfig::set_board` reads
+  `<project>.toolchain.json` and replaces it in one step with
+  `replace_file` [`toolchain.rs:ToolchainConfig::set_board`].
 - **Board file:** `Board::load` reads a board file [`board.rs:Board::load`].
 - **Environment:** `find_on_path` reads `PATH`; `ghdl_prefix` reads an
   environment variable and asks ghdl [`toolchain.rs`].
@@ -202,5 +214,7 @@ CLI (`main.rs`), the commands of `hdlc`: `parse`, `new`, `validate`,
 
 - Run: `cargo test`
 - Lint: `cargo clippy --all-targets -- -D warnings`
+- With no Qt: `cargo test --no-default-features` (all tests but those of
+  `gui`)
 - The tests in `tests/toolchain_tools.rs` and `tests/netlist_roundtrip.rs`
   need the external tools. They skip with a message when a tool is missing.

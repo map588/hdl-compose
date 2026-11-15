@@ -48,8 +48,11 @@ The first design said that wiring happens in the text editor and that the
 canvas only shows topology. The product changed: the canvas is now the
 primary wiring surface (click pin to pin, drag, join a wire), and the editor
 panel is hidden by default. The text editor stays as the second view for
-bulk edits. The two views do not apply the same checks yet (see "Known
-weaknesses", item 1).
+bulk edits. The canvas refuses a connection that is an error. The text
+editor accepts each line that it can parse, and validation reports the
+error. Validation is thus the one check that holds for the two views and for
+a file from another source. A test keeps the rule that validation reports
+each connection that the canvas refuses.
 
 ## System map
 
@@ -148,6 +151,13 @@ use this one result.
 The model has no signal declaration. Codegen makes the signals from the
 nets.
 
+The canvas draws one wire for each `port_map` entry. The pin that an entry
+references is not always the driver, so a wire alone does not give its net.
+The canvas takes the net of each wire from the same result
+(`AppState::wire_net`): the colors and the highlights show the nets of the
+generated HDL. An alias belongs to the net: `set_alias` keeps one alias for
+each net, on whichever pin the user set it.
+
 ### Groups
 
 A group is a set of instances that codegen writes as its own module. A net
@@ -193,7 +203,7 @@ holds the widgets, the scene and the events.
 
 **Three channels** connect the two sides:
 
-1. **The `AppState` QObject.** More than 100 methods that C++ calls, and 12
+1. **The `AppState` QObject.** More than 100 methods that C++ calls, and 13
    signals that Rust sends. Most read methods return one field for one
    index. A method that can fail returns `false`, and `last_error()` gives
    the message.
@@ -218,8 +228,8 @@ Lists cross as strings, enums as integers.
 For a change from the canvas or from the editor:
 
 1. C++ calls a method of `AppState` (for example `connect_pins`).
-2. The method takes an undo snapshot (the schematic as JSON), then changes
-   the schematic.
+2. The method takes a snapshot of the schematic (JSON), then changes the
+   schematic. The snapshot becomes an undo step when the change is one.
 3. `rebuild_library_and_validate` runs: it gets the library through the
    parse cache, validates, and makes the pin notes and the wire list again.
 4. Rust sends a signal (`port_map_changed`, `instance_added`, ...).
@@ -231,47 +241,96 @@ For a change from the canvas or from the editor:
 validation and one signal.
 
 Everything recalculates on each change. This is a decision: the picture then
-depends only on the model, not on the history of edits. The design has no
-stated size limit for it.
+depends only on the model, not on the history of edits.
+
+**Size.** The cost of that decision, measured on 2026-11-15 (release build,
+Apple silicon, generated projects, one net for each block). The time of the
+Qt scene is not in these numbers.
+
+| Blocks | Edit (validation, wire list) | Reads of the canvas | Wire routes |
+|---|---|---|---|
+| 50 | 0.2 ms | 0.2 ms | 0.3 ms |
+| 200 | 1.0 ms | 1.6 ms | 7 ms |
+| 500 | 2.4 ms | 4.7 ms | 79 ms |
+| 1000 | 8.5 ms | 18 ms | 575 ms |
+
+The wire router is the limit: its time grows faster than the square of the
+number of blocks. A project of 200 blocks recalculates in about 10 ms. At
+500 blocks a user can see the time of each change. The design is not for
+1000 blocks.
 
 ## Library and module changes
 
 The library is the set of modules that the sources in `library_paths`
-define. Three paths bring a changed source into the program:
+define. `rebuild_library_and_validate` is the one function that brings a
+library in. It parses a source again when its modification time changed.
+Then it compares the ports of each module with the library of the last call.
+For an instance whose module changed a port (the port is gone, or has
+another direction or type), it removes the entries of those ports and sets
+`dirty`. Codegen stops on a `dirty` instance until the user confirms. The
+reason: to change a connection in silence when a port changes is a
+correctness hazard.
+
+Two events start that function:
 
 1. **Reload** (the file watcher, or Refresh Library): `reload_library`
-   compares the old and the new port list of each module. For an instance
-   whose module changed, it removes the entries of the changed or removed
-   ports and sets `dirty`. Codegen stops on a `dirty` instance until the
-   user confirms.
-2. **Any other change:** `rebuild_library_and_validate` parses a file again
-   when its modification time changed. It does no comparison and sets no
-   flag. Validation reports a connection to a port that no longer exists
-   and a width that no longer agrees.
-3. **Open** (GUI and CLI): the loader parses the sources. It has no earlier
-   library to compare with.
+   empties the parse cache first, so each source is parsed again. It takes
+   an undo snapshot only when the comparison changes an instance; the file
+   watcher calls it for each save of a source.
+2. **Each other change of the model.** The comparison is then a part of that
+   change and of its undo step. In this case the canvas keeps the old pins
+   of the changed module until its next full rebuild (see "Known
+   weaknesses", item 4).
 
-The reason for path 1: to change a connection in silence when a port changes
-is a correctness hazard. The three paths do not give the same result (see
-"Known weaknesses", item 3).
+**Open** (GUI and CLI) has no earlier library to compare with, because the
+project file holds no module definition. A connection that no longer agrees
+with its module stays in the model, and validation reports it. The same
+occurs after an undo that brings back a connection that a comparison
+removed. In the two cases `dirty` is not set; the error of validation stops
+codegen.
 
 ## Undo and redo
 
 Undo is a stack of snapshots, 100 entries at most. Each method that changes
-the schematic pushes a snapshot before the change (`push_snapshot`), and a
-new edit clears the redo stack. An instance move takes one snapshot for a
-completed drag. `open_project` and `new_project` clear the two stacks.
+the schematic calls `push_snapshot` before the change. `open_project` and
+`new_project` clear the two stacks.
 
-Two rules make one command of the user one undo step:
+Three rules make one command of the user one undo step, and nothing else:
 
+- **Pending snapshot.** A snapshot is pending first. It becomes an undo
+  step, and clears the redo stack, only when the model is different after
+  the call. A call that changes nothing (a name that is in use, a value
+  that is the same) leaves the history as it is. No method needs a check of
+  its own for that.
 - **Batch.** Between `begin_batch` and `end_batch`, only the first change
-  takes a snapshot. A batch with no change takes none.
+  takes a snapshot.
 - **View rebuild.** `project_loaded` and `groups_changed` make the canvas
   build its items again and put each block on the grid
   (`CanvasLayer::settleAll`). Rust sends these two signals through
   `rebuild_view`. While the handler runs, no change takes a snapshot: the
   moves are a part of the change that sent the signal. Without this rule,
   the settle after an undo clears the redo stack.
+
+`AppState` sends `history_changed` where the history can change. The window
+reads `can_undo` and `can_redo` on that signal, through a queued connection,
+because the history is final only when the method returns.
+
+## Files and failures
+
+- `project::save_project` and `ToolchainConfig::set_board` replace their
+  file in one step (`replace_file`: a temporary file in the same directory,
+  then a rename). A failure during the save leaves the old file complete.
+  These two files are the only copy of the work of the user.
+- The generated HDL files and the files of the build directory are written
+  in place. `hdlc` can make them again.
+- The text of a project file is a function of the design: each map is
+  written with its keys in sorted order. Two saves of one design give the
+  same file.
+- The GUI shows the warnings of the loader in the diagnostics (prefix
+  `load:`) until the next save. The loader can change the model: it removes
+  a reference to an instance that is not in the file.
+- A panic in a method of the bridge stops the application (see "Known
+  weaknesses", item 2).
 
 ## Tool flows
 
@@ -308,9 +367,17 @@ codegen or in the group collapse shows as a difference.
 - `tests/toolchain_tools.rs`: runs the real tools; skips when they are
   missing.
 - Tests in `bridge.rs` make an `AppState` with no window
-  (`new_app_state`) and run its undo, redo, batch and alias methods. A
-  signal handler in the test does the work of the C++ handler.
-- No test runs the C++ classes.
+  (`new_app_state`). A signal handler in the test does the work of the C++
+  handler.
+- A property test (`history_follows_the_model`) runs random sequences of 26
+  kinds of edit on such an `AppState`, with batches, undo and redo. For each
+  call it compares the history with the model: a change is one undo step
+  that undo and redo reverse exactly, and a call with no change leaves the
+  history. For each final model, the reads of the canvas and the code
+  generation must return.
+- `cargo test --no-default-features` runs all tests but those of the GUI,
+  on a machine with no Qt.
+- No test runs the C++ classes (see "Known weaknesses", item 3).
 
 ## Decisions that stay
 
@@ -328,33 +395,24 @@ codegen or in the group collapse shows as a difference.
 
 ## Known weaknesses
 
-A review on 2026-11-14 found these. Each item was read in the code; none was
-confirmed by a run of the GUI.
+A review on 2026-11-14 found eight weaknesses. The corrected ones are now in
+the sections above (undo and redo, the net of a wire, the library
+comparison, the build with no Qt, the save, the size). These stay:
 
-1. **Editing rules are in the bridge.** `src/gui/bridge.rs` (about 4,600
-   lines) holds wiring rules, the grammar of the top-level buffer, undo and
-   batching, as methods of the Qt object. Tests run only the undo, batch
-   and alias methods. `connect_pins` refuses a connection that the text
-   editor path accepts.
-2. **Two definitions of a net.** The canvas groups, colors and highlights
-   wires by the pin that a `port_map` entry references. Code generation
-   uses `resolve_nets`. A file whose references point from the driver to
-   the load, or in mixed directions, is one net for codegen and more than
-   one net for the canvas. The GUI itself always writes the reference on
-   the load.
-3. **Three library paths** (see "Library and module changes"). `dirty`
-   means that a comparison ran, not that the instance differs from its
-   module. A reload also takes an undo snapshot each time, and an undo
-   after a reload brings the old connections back with no flag.
-4. **No build without Qt.** `Cargo.toml` has no feature for the GUI, so the
-   CLI and `cargo test` need Qt 6.
-5. **Failure behavior.** The project file and the generated files are
-   replaced in place; an interrupted save can truncate the only copy. No
-   autosave or recovery file exists. `open_project` discards the warnings
-   of the loader. No code catches a panic.
-6. **No stated size limit.** Each change validates all, makes the wire list
-   again and sends `library_changed`; the read methods of the bridge make
-   the view list again for each call.
+1. **Editing rules are in the bridge.** `src/gui/bridge.rs` (about 4,200
+   lines of code and 1,100 lines of tests) holds wiring rules, the grammar
+   of the top-level buffer, undo and batching, as methods of the Qt object.
+   A test reaches them only through `AppState`.
+2. **No recovery after a stop of the program.** A panic in a method of the
+   bridge stops the application, and the changes after the last save are
+   lost. No autosave or recovery file exists. The property test found no
+   panic in 4,000 random sequences of edits; that is evidence, not proof.
+3. **The C++ side has no test.** About 6,000 lines (`app.cpp`, `canvas.*`,
+   `items.*`, `floorplan.h`) are checked by reading only.
+4. **A changed source that comes in with an edit** (not with a reload)
+   leaves the old pins of its module on the canvas until the next full
+   rebuild. The model, the wires and the diagnostics are correct at once.
+5. **The wire router limits the size** (see "How a change flows").
 
 ## Out of scope
 
@@ -366,8 +424,9 @@ confirmed by a run of the GUI.
 ## Stack
 
 - Rust 2024, one package.
-- Qt 6 (Widgets, Gui) through [cxx-qt](https://github.com/KDAB/cxx-qt) 0.8.
-  Each build needs Qt.
+- Qt 6 (Widgets, Gui) through [cxx-qt](https://github.com/KDAB/cxx-qt) 0.8,
+  only with the cargo feature `gui` (on by default). A build with
+  `--no-default-features` is the CLI only and needs no Qt.
 - `vhdl_lang` for VHDL and `sv-parser` for Verilog and SystemVerilog module
   headers.
 - `serde` / `serde_json` for the project file, `schemars` for its schema,
