@@ -1990,26 +1990,49 @@ class MainWindow : public QMainWindow {
         return QStringLiteral("toolchain/board/%1").arg(project_path);
     }
 
-    QString boardForProject() {
+    // The board that an earlier version stored for this project in QSettings.
+    QString legacyBoard() {
         QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
         return settings.value(board_settings_key(m_state->current_project_path())).toString();
     }
 
-    // Pick a *.board.json for this project; remembered in QSettings.
-    // Returns the chosen path, empty on cancel.
+    // The board of this project: the `board` key of its toolchain config,
+    // else the QSettings value of an earlier version. This reads only.
+    QString boardForProject() {
+        const QString board = m_state->project_board();
+        return board.isEmpty() ? legacyBoard() : board;
+    }
+
+    // Write the board into the toolchain config of the project. The config
+    // is then the one place that names the board, so remove the QSettings
+    // value of an earlier version.
+    bool storeBoard(const QString &board_path) {
+        if (!m_state->set_project_board(board_path)) {
+            show_state_error(this, m_state, QStringLiteral("Select Board"));
+            return false;
+        }
+        QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+        settings.remove(board_settings_key(m_state->current_project_path()));
+        updateBoardActionText(m_state->project_board());
+        return true;
+    }
+
+    // Pick a *.board.json for this project; the toolchain config of the
+    // project remembers it. Returns the chosen path, empty on cancel.
     QString selectBoard() {
+        // The config is a file next to the project file.
+        if (m_state->current_project_path().isEmpty() && !ensureSavedForTool()) {
+            return {};
+        }
         QString start = boardForProject();
         if (start.isEmpty()) {
             start = dialog_start_dir(m_state);
         }
         QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Select Board Definition"), start,
                                                     QStringLiteral("Board definition (*.board.json)"));
-        if (path.isEmpty()) {
+        if (path.isEmpty() || !storeBoard(path)) {
             return {};
         }
-        QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
-        settings.setValue(board_settings_key(m_state->current_project_path()), path);
-        updateBoardActionText(path);
         return path;
     }
 
@@ -2037,17 +2060,17 @@ class MainWindow : public QMainWindow {
             return;
         }
         const QString project = m_state->current_project_path();
-        QStringList args{verb, project};
-        if (needs_board) {
-            QString board = boardForProject();
-            if (board.isEmpty()) {
-                board = selectBoard();
-            }
-            if (board.isEmpty()) {
+        // The CLI reads the board from the toolchain config of the project.
+        // Put it there first: from the QSettings value of an earlier
+        // version, else from the file dialog.
+        if (needs_board && m_state->project_board().isEmpty()) {
+            const QString old_board = legacyBoard();
+            const bool stored = old_board.isEmpty() ? !selectBoard().isEmpty() : storeBoard(old_board);
+            if (!stored) {
                 return;
             }
-            args << QStringLiteral("--board") << board;
         }
+        QStringList args{verb, project};
         args << extra_args;
 
         m_tool_verb = verb;

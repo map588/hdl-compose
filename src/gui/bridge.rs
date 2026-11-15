@@ -365,6 +365,16 @@ pub mod qobject {
         #[qinvokable]
         fn current_project_path(self: &AppState) -> QString;
 
+        /// The board file in the toolchain config of the project. Empty
+        /// when the config names no board.
+        #[qinvokable]
+        fn project_board(self: &AppState) -> QString;
+
+        /// Store the board file in the toolchain config of the project.
+        /// On failure this returns false and `last_error` has the reason.
+        #[qinvokable]
+        fn set_project_board(self: Pin<&mut AppState>, board: &QString) -> bool;
+
         #[qinvokable]
         fn validation_error_count(self: &AppState) -> i32;
 
@@ -3146,6 +3156,35 @@ impl qobject::AppState {
             .as_ref()
             .map(|p| QString::from(&p.to_string_lossy().into_owned()))
             .unwrap_or_default()
+    }
+
+    pub fn project_board(&self) -> QString {
+        let Some(project) = self.rust().current_path.as_ref() else {
+            return QString::default();
+        };
+        let dir = project
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        crate::toolchain::ToolchainConfig::load_for(project)
+            .ok()
+            .and_then(|config| config.board_path(dir))
+            .map(|board| QString::from(&board.to_string_lossy().into_owned()))
+            .unwrap_or_default()
+    }
+
+    pub fn set_project_board(mut self: Pin<&mut Self>, board: &QString) -> bool {
+        let Some(project) = self.rust().current_path.clone() else {
+            self.as_mut().record_error("save the project first");
+            return false;
+        };
+        let board = PathBuf::from(board.to_string());
+        match crate::toolchain::ToolchainConfig::set_board(&project, &board) {
+            Ok(()) => true,
+            Err(msg) => {
+                self.as_mut().record_error(msg);
+                false
+            }
+        }
     }
 
     pub fn remove_library_path(mut self: Pin<&mut Self>, path: &QString) -> bool {

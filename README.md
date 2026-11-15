@@ -190,8 +190,10 @@ The window opens maximized with the canvas front and center.
   `Delete` removes the selection. Pinch on a trackpad zooms.
 - **Toolchain menu:** Check, Synth, Build Bitstream, and Flash run the CLI
   commands above against the saved project and stream their output into a
-  dock at the bottom. Select Board picks a `.board.json` and remembers it per
-  project.
+  dock at the bottom. Select Board picks a `.board.json` and writes it as
+  the `board` key into the toolchain config of the project, so the CLI uses
+  the same board. This rewrites `<name>.toolchain.json` in the standard
+  layout of the JSON writer (sorted keys); each other key keeps its value.
 - **Toolchain > Chip View** shows the device after place and route. Free
   bels are grey outlines. Each tile that holds cells of the design has a
   colored square: logic, register, I/O, DSP, memory, or clock. Select an
