@@ -323,27 +323,37 @@ fn assign_lanes(
 }
 
 /// The Y nearest to `preferred` that lies in none of the `blocked` closed
-/// intervals.
+/// intervals. The candidates are the Ys one unit below and one unit above
+/// each interval. When two free candidates are equally near, the candidate
+/// of the earlier interval wins, and the low side wins over the high side.
 fn nearest_free_y(preferred: f64, blocked: &[(f64, f64)]) -> f64 {
-    let is_blocked = |y: f64| blocked.iter().any(|b| y >= b.0 && y <= b.1);
-    if !is_blocked(preferred) {
+    if !blocked.iter().any(|b| preferred >= b.0 && preferred <= b.1) {
         return preferred;
     }
-    let mut candidates: Vec<f64> = Vec::new();
-    for b in blocked {
-        candidates.push(b.0 - 1.0);
-        candidates.push(b.1 + 1.0);
-    }
-    candidates.sort_by(|a, b| {
-        (a - preferred)
-            .abs()
-            .partial_cmp(&(b - preferred).abs())
-            .unwrap()
+    // The union of the intervals, as sorted intervals that do not touch. A
+    // search in the union is fast. A scan of `blocked` for each candidate
+    // made the time grow with the square of the number of intervals.
+    let mut union: Vec<(f64, f64)> = blocked.iter().copied().filter(|b| b.0 <= b.1).collect();
+    union.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    union.dedup_by(|next, last| {
+        let joined = next.0 <= last.1;
+        if joined {
+            last.1 = last.1.max(next.1);
+        }
+        joined
     });
-    // The candidate above the highest interval is always free.
-    candidates
-        .into_iter()
-        .find(|&y| !is_blocked(y))
+    let is_blocked = |y: f64| {
+        let after = union.partition_point(|b| b.0 <= y);
+        after > 0 && y <= union[after - 1].1
+    };
+    let distance = |y: f64| (y - preferred).abs();
+    // The candidate above the highest interval is always free. `min_by`
+    // returns the first of the equally near candidates.
+    blocked
+        .iter()
+        .flat_map(|b| [b.0 - 1.0, b.1 + 1.0])
+        .filter(|&y| !is_blocked(y))
+        .min_by(|a, b| distance(*a).partial_cmp(&distance(*b)).unwrap())
         .unwrap_or(preferred)
 }
 
@@ -1431,6 +1441,49 @@ mod tests {
                 }
             }
         }
+
+        /// `nearest_free_y` gives the Y that the slow reference gives. The
+        /// values are on a small grid of 0.5, so equally near candidates
+        /// and intervals that touch are frequent. A negative length gives
+        /// an interval that contains no Y.
+        #[test]
+        fn nearest_free_y_matches_the_reference(
+            preferred in -16i32..16,
+            intervals in prop::collection::vec((-16i32..16, -2i32..12), 0..12),
+        ) {
+            let half = |v: i32| f64::from(v) / 2.0;
+            let blocked: Vec<(f64, f64)> = intervals
+                .iter()
+                .map(|&(lo, len)| (half(lo), half(lo + len)))
+                .collect();
+            let y = nearest_free_y(half(preferred), &blocked);
+            prop_assert_eq!(y, nearest_free_y_reference(half(preferred), &blocked));
+            prop_assert!(!blocked.iter().any(|b| y >= b.0 && y <= b.1), "{y} is blocked");
+        }
+    }
+
+    /// The first `nearest_free_y`: a scan of all intervals for each
+    /// candidate. Slow, and easy to read.
+    fn nearest_free_y_reference(preferred: f64, blocked: &[(f64, f64)]) -> f64 {
+        let is_blocked = |y: f64| blocked.iter().any(|b| y >= b.0 && y <= b.1);
+        if !is_blocked(preferred) {
+            return preferred;
+        }
+        let mut candidates: Vec<f64> = Vec::new();
+        for b in blocked {
+            candidates.push(b.0 - 1.0);
+            candidates.push(b.1 + 1.0);
+        }
+        candidates.sort_by(|a, b| {
+            (a - preferred)
+                .abs()
+                .partial_cmp(&(b - preferred).abs())
+                .unwrap()
+        });
+        candidates
+            .into_iter()
+            .find(|&y| !is_blocked(y))
+            .unwrap_or(preferred)
     }
 
     fn ci(id: i32, top: f64, height: f64, fixed: bool) -> ColItem {
