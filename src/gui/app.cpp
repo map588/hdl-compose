@@ -94,6 +94,23 @@ namespace {
 
 using namespace hdlc;
 
+// --- Settings ----------------------------------------------------------------
+//
+// Each read and each write of the settings uses AppSettings. With the native
+// format it is the same as QSettings("hdl-compose", "hdl-compose"). The tests
+// change the format to a file in a temporary directory
+// (hdlc_test_keep_settings_in). QSettings(organization, application) always
+// uses the native format and ignores QSettings::setDefaultFormat; with that
+// constructor the tests wrote the recent designs and the window geometry
+// into the settings of the user.
+QSettings::Format g_settings_format = QSettings::NativeFormat;
+
+struct AppSettings : QSettings {
+    AppSettings()
+        : QSettings(g_settings_format, QSettings::UserScope, QStringLiteral("hdl-compose"),
+                    QStringLiteral("hdl-compose")) {}
+};
+
 void apply_material_dark_theme(QApplication &app) {
     QPalette palette;
     palette.setColor(QPalette::Window, QColor(24, 26, 28));
@@ -344,7 +361,7 @@ void rebuild_library_model(QStandardItemModel *model, AppState *state) {
 }
 
 static QString default_open_dir() {
-    QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+    AppSettings settings;
     QString dir = settings.value(QStringLiteral("default_open_dir")).toString().trimmed();
     if (dir.isEmpty()) {
         dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
@@ -376,12 +393,12 @@ constexpr int kMaxRecentProjects = 8;
 constexpr int kAutosaveDelayMs = 12000;
 
 QStringList recent_projects() {
-    QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+    AppSettings settings;
     return settings.value(QStringLiteral("recent_projects")).toStringList();
 }
 
 void add_recent_project(const QString &path) {
-    QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+    AppSettings settings;
     QStringList list = settings.value(QStringLiteral("recent_projects")).toStringList();
     list.removeAll(path);
     list.prepend(path);
@@ -408,7 +425,7 @@ void launch_goto_source(QWidget *parent, const QString &source_path) {
         QMessageBox::information(parent, QStringLiteral("Goto Source"), QStringLiteral("Source path unavailable."));
         return;
     }
-    QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+    AppSettings settings;
     QString cmd = settings.value(QStringLiteral("editor_command")).toString().trimmed();
     if (cmd.isEmpty()) {
         QMessageBox::information(
@@ -482,7 +499,7 @@ bool prompt_new_project(QWidget *parent, QString &out_name, int &out_lang) {
 }
 
 void prompt_preferences(QWidget *parent) {
-    QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+    AppSettings settings;
 
     QDialog dlg(parent);
     dlg.setWindowTitle(QStringLiteral("Preferences"));
@@ -1346,14 +1363,14 @@ class MainWindow : public QMainWindow {
     // --- Window layout persistence --------------------------------------------
 
     void saveWindowState() {
-        QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+        AppSettings settings;
         settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
         settings.setValue(QStringLiteral("window/splitter"), m_root_splitter->saveState());
         settings.setValue(QStringLiteral("window/editor_visible"), m_show_editor_act->isChecked());
     }
 
     void restoreWindowState() {
-        QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+        AppSettings settings;
         const QByteArray geometry = settings.value(QStringLiteral("window/geometry")).toByteArray();
         m_has_stored_geometry = !geometry.isEmpty() && restoreGeometry(geometry);
         // The toggle resets the splitter to its default shares, so restore
@@ -1656,7 +1673,7 @@ class MainWindow : public QMainWindow {
         m_recent_menu->addSeparator();
         QAction *clearAct = m_recent_menu->addAction(QStringLiteral("Clear Menu"));
         connect(clearAct, &QAction::triggered, this, []() {
-            QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+            AppSettings settings;
             settings.remove(QStringLiteral("recent_projects"));
         });
     }
@@ -2166,7 +2183,7 @@ class MainWindow : public QMainWindow {
 
     // The board that an earlier version stored for this project in QSettings.
     QString legacyBoard() {
-        QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+        AppSettings settings;
         return settings.value(board_settings_key(m_state->current_project_path())).toString();
     }
 
@@ -2185,7 +2202,7 @@ class MainWindow : public QMainWindow {
             show_state_error(this, m_state, QStringLiteral("Select Board"));
             return false;
         }
-        QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
+        AppSettings settings;
         settings.remove(board_settings_key(m_state->current_project_path()));
         updateBoardActionText(m_state->project_board());
         return true;
@@ -2357,6 +2374,13 @@ QMainWindow *hdlc_test_new_window() {
 
 void hdlc_test_open_project(QMainWindow *window, const QString &path) {
     static_cast<MainWindow *>(window)->openFromSystem(path);
+}
+
+// From here the window keeps its settings in a file below `dir`, and does
+// not read or change the settings of the user.
+void hdlc_test_keep_settings_in(const QString &dir) {
+    g_settings_format = QSettings::IniFormat;
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir);
 }
 #endif
 

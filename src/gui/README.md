@@ -229,8 +229,13 @@ C++ classes:
   `app.cpp:MainWindow` constructor].
 - The tests of the C++ side run only on the Qt `offscreen` platform. The
   entry point sets the platform itself and stops when Qt uses another one.
-  It also puts `QSettings` into a temporary directory, so a test does not
-  read or change the settings of the user [`gui_tests.cpp:run_gui_tests`].
+  It also puts the settings into a file in a temporary directory, so a
+  test does not read or change the settings of the user. For this, each
+  read and write of the settings in `app.cpp` uses `AppSettings`, and the
+  tests change its format. `QSettings(organization, application)` must not
+  be used in `app.cpp`: it always uses the native format, and with it the
+  tests wrote into the settings of the user [`gui_tests.cpp:run_gui_tests`,
+  `app.cpp:AppSettings`, `app.cpp:hdlc_test_keep_settings_in`].
 - A wire is one `port_map` entry: its source is the pin that the entry
   references, which is not always the driver. `wire_net` gives the net of
   the wire from `nets::resolve_nets`: two wires have the same value when,
@@ -327,7 +332,8 @@ C++ classes:
   the Qt `offscreen` platform; no window comes on the screen. `GuiTests`
   sends clicks, drags and keys with Qt Test and answers each menu and
   message box from a timer. A run stops after 120 seconds at most.
-- The 21 tests of `GuiTests` cover: a wire from clicks on two pins, undo
+- The 22 tests of `GuiTests` cover: the settings file of the tests, a
+  wire from clicks on two pins, undo
   and redo from the menu, the drag of a block (the undo step, the free
   move and the placement at the release, a click with a small move, a drag
   on the row of a port group, a drag of a selection), the Delete key, the

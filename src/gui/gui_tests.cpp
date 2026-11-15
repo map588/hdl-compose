@@ -49,6 +49,7 @@
 // Defined in app.cpp.
 QMainWindow *hdlc_test_new_window();
 void hdlc_test_open_project(QMainWindow *window, const QString &path);
+void hdlc_test_keep_settings_in(const QString &dir);
 
 using namespace hdlc;
 
@@ -434,6 +435,21 @@ void GuiTests::windowHasNoPresenceOnTheScreen() {
     // must not know it as an application with windows.
     if (qEnvironmentVariableIsSet("HDLC_GUI_TESTS_LINGER_MS"))
         QTest::qWait(qEnvironmentVariableIntValue("HDLC_GUI_TESTS_LINGER_MS"));
+}
+
+// `init` opened a design, and an open writes the list of recent designs.
+// That write must go to the settings file of the tests. Before the
+// correction it went to the settings of the user: the window made its
+// QSettings with a constructor that ignores QSettings::setDefaultFormat.
+void GuiTests::settingsOfTheWindowAreNotTheSettingsOfTheUser() {
+    const QString key = QStringLiteral("recent_projects");
+    const QString org = QStringLiteral("hdl-compose");
+    // This only reads the settings of the user.
+    const QSettings of_the_user(org, org);
+    QVERIFY(!of_the_user.value(key).toStringList().contains(g->project));
+
+    const QSettings of_the_tests(QSettings::IniFormat, QSettings::UserScope, org, org);
+    QVERIFY(of_the_tests.value(key).toStringList().contains(g->project));
 }
 
 void GuiTests::clicksOnTwoPinsMakeAWire() {
@@ -1102,8 +1118,7 @@ extern "C" int run_gui_tests() {
     // The window keeps its settings with QSettings. The tests must not
     // read or change the settings of the user.
     QTemporaryDir settings_dir;
-    QSettings::setDefaultFormat(QSettings::IniFormat);
-    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings_dir.path());
+    hdlc_test_keep_settings_in(settings_dir.path());
 
     // A dialog that no test answers must not stop the run for ever.
     QTimer::singleShot(120000, &app, []() { qFatal("the GUI tests did not end in 120 s"); });

@@ -12,6 +12,7 @@ class GuiTests : public QObject {
     void cleanup();
 
     void windowHasNoPresenceOnTheScreen();
+    void settingsOfTheWindowAreNotTheSettingsOfTheUser();
     void clicksOnTwoPinsMakeAWire();
     void undoAndRedoFromTheMenuGoThroughEachEdit();
     void dragOfABlockIsOneUndoStep();
