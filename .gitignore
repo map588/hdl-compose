@@ -26,3 +26,6 @@ target
 
 # Build directories that hdlc makes next to a project
 build/
+
+# Recovery file of a project with changes that are not saved (GUI autosave)
+.*.hdlc.autosave

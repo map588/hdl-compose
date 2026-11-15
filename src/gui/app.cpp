@@ -340,6 +340,11 @@ static QString dialog_start_dir(AppState *state) {
 
 constexpr int kMaxRecentProjects = 8;
 
+// The time from a change of the project to the write of its recovery file.
+// The timer does not start again while it runs, so a series of changes
+// gives one write, and a stop of the program loses 12 seconds at most.
+constexpr int kAutosaveDelayMs = 12000;
+
 QStringList recent_projects() {
     QSettings settings(QStringLiteral("hdl-compose"), QStringLiteral("hdl-compose"));
     return settings.value(QStringLiteral("recent_projects")).toStringList();
@@ -1025,6 +1030,25 @@ class MainWindow : public QMainWindow {
         connect(m_state, &AppState::history_changed, this, &MainWindow::refreshUndoActions,
                 Qt::QueuedConnection);
 
+        // Recovery file. Only a save of the user changes the project file.
+        // history_changed comes with each change, so it starts the timer;
+        // autosave() writes nothing when the project has no new change.
+        m_autosave_timer = new QTimer(this);
+        m_autosave_timer->setObjectName(QStringLiteral("autosave_timer"));
+        m_autosave_timer->setSingleShot(true);
+        m_autosave_timer->setInterval(kAutosaveDelayMs);
+        connect(m_autosave_timer, &QTimer::timeout, this, [this]() {
+            if (!m_state->autosave() && m_state->getDirty() && m_state->recovery_path().isEmpty()) {
+                // The write failed (a directory with no write permission).
+                statusBar()->showMessage(
+                    QStringLiteral("Recovery file not written: %1").arg(m_state->last_error()), 6000);
+            }
+        });
+        connect(m_state, &AppState::history_changed, this, [this]() {
+            if (!m_autosave_timer->isActive())
+                m_autosave_timer->start();
+        });
+
         // Sidebar + canvas reactive.
         connect(m_state, &AppState::project_loaded, this, [this]() {
             refreshSidebar();
@@ -1406,6 +1430,9 @@ class MainWindow : public QMainWindow {
             return false;
         }
         if (btn == QMessageBox::Discard) {
+            // The user gave up the changes: the recovery file must not
+            // offer them again.
+            m_state->discard_recovery();
             return true;
         }
         // Save: fall back to Save As when there's no path yet (or save failed).
@@ -1452,10 +1479,42 @@ class MainWindow : public QMainWindow {
             return;
         }
         add_recent_project(path);
+        offerRecovery();
         // A freshly opened design can lie outside the default viewport.
         if (m_canvas)
             m_canvas->zoomToFit();
         statusBar()->showMessage(QStringLiteral("Opened %1").arg(path), 3000);
+    }
+
+    // A save and a discard remove the recovery file. So when the file is
+    // there after an open, the program stopped with changes that were not
+    // saved. Only a click on Discard removes the file; a box that the user
+    // closes in another way keeps it for the next open.
+    void offerRecovery() {
+        const QString recovery = m_state->recovery_path();
+        if (recovery.isEmpty()) {
+            return;
+        }
+        QMessageBox box(QMessageBox::Question, QStringLiteral("Recover Unsaved Changes"),
+                        QStringLiteral("Project \"%1\" was not closed correctly.")
+                            .arg(m_state->getProject_name()),
+                        QMessageBox::NoButton, this);
+        box.setInformativeText(
+            QStringLiteral("A recovery file from %1 has changes that were not saved. Recover them?")
+                .arg(QFileInfo(recovery).lastModified().toString(QStringLiteral("yyyy-MM-dd HH:mm"))));
+        QPushButton *recover = box.addButton(QStringLiteral("Recover"), QMessageBox::AcceptRole);
+        QPushButton *discard = box.addButton(QStringLiteral("Discard"), QMessageBox::DestructiveRole);
+        box.setDefaultButton(recover);
+        box.exec();
+        if (box.clickedButton() == recover) {
+            if (m_state->recover()) {
+                statusBar()->showMessage(QStringLiteral("Recovered the changes; save to keep them"), 6000);
+            } else {
+                show_state_error(this, m_state, QStringLiteral("Recover Unsaved Changes"));
+            }
+        } else if (box.clickedButton() == discard) {
+            m_state->discard_recovery();
+        }
     }
 
     void onOpenProject() {
@@ -2125,6 +2184,7 @@ class MainWindow : public QMainWindow {
     QStringListModel *m_completer_model = nullptr;
     QCompleter *m_completer = nullptr;
     QTimer *m_parse_timer = nullptr;
+    QTimer *m_autosave_timer = nullptr;
     QFileSystemWatcher *m_fs_watcher = nullptr;
     QAction *m_undo_act = nullptr;
     QAction *m_redo_act = nullptr;

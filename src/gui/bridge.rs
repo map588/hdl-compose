@@ -31,6 +31,31 @@ pub mod qobject {
         #[qinvokable]
         fn save_project_as(self: Pin<&mut AppState>, path: &QString) -> bool;
 
+        /// Write the recovery file of the project, when the project has
+        /// changes that are not saved and the file does not have them yet.
+        /// The recovery file is `.<project file name>.autosave` next to
+        /// the project file. The project file does not change. Returns
+        /// true when the function wrote the file.
+        #[qinvokable]
+        fn autosave(self: Pin<&mut AppState>) -> bool;
+
+        /// The recovery file of the open project, when one is on the disk.
+        /// Else the empty text. A save and a discard remove the file, so
+        /// the file is there after an open only when the program stopped
+        /// with changes that were not saved.
+        #[qinvokable]
+        fn recovery_path(self: &AppState) -> QString;
+
+        /// Replace the model with the content of the recovery file. The
+        /// project then has changes that are not saved. The file stays
+        /// until the next save or discard.
+        #[qinvokable]
+        fn recover(self: Pin<&mut AppState>) -> bool;
+
+        /// Remove the recovery file of the open project.
+        #[qinvokable]
+        fn discard_recovery(self: Pin<&mut AppState>);
+
         #[qinvokable]
         fn generate_code(self: Pin<&mut AppState>, path: &QString) -> bool;
 
@@ -739,6 +764,8 @@ pub struct AppStateRust {
     // once. The first change in a batch takes the one snapshot of the batch.
     batch_depth: u32,
     batch_changed: bool,
+    // The model text that the recovery file has. See `autosave`.
+    autosaved: Option<String>,
     // The model from before the last change, until it is known that the
     // change is one. See `push_snapshot`.
     pending_snapshot: Option<String>,
@@ -775,6 +802,17 @@ fn net_key(net: &crate::nets::Net) -> String {
         [driver] => driver.to_key(),
         _ => net.members.first().map(NetRef::to_key).unwrap_or_default(),
     }
+}
+
+/// The recovery file of a project: `.<project file name>.autosave` in the
+/// directory of the project file. It is in the same directory so that it
+/// has the same relative library paths as the project file, and so that
+/// it moves with the project.
+fn recovery_file(project: &Path) -> Option<PathBuf> {
+    let mut name = std::ffi::OsString::from(".");
+    name.push(project.file_name()?);
+    name.push(".autosave");
+    Some(project.with_file_name(name))
 }
 
 struct ParseCacheEntry {
@@ -1381,6 +1419,13 @@ impl qobject::AppState {
         };
         match project::save_project(&schematic, path) {
             Ok(()) => {
+                // The project file has each change now. Remove the recovery
+                // file of this name, and that of the old name after a save
+                // with a new name.
+                self.as_mut().discard_recovery();
+                if let Some(other) = recovery_file(path) {
+                    let _ = std::fs::remove_file(other);
+                }
                 let m = self.as_mut().rust_mut().get_mut();
                 m.dirty = false;
                 m.last_error.clear();
@@ -1411,6 +1456,7 @@ impl qobject::AppState {
                 {
                     let m = self.as_mut().rust_mut().get_mut();
                     m.load_warnings = warnings;
+                    m.autosaved = None;
                     m.schematic = Some(schematic);
                     m.current_path = Some(path_buf);
                     m.dirty = false;
@@ -1451,6 +1497,97 @@ impl qobject::AppState {
         } else {
             false
         }
+    }
+
+    // === Recovery file ===
+    //
+    // Only a save of the user changes the project file. Between two saves,
+    // `autosave` keeps a copy of the model in a recovery file. A save and a
+    // discard remove that file. So after an open the file is there only
+    // when the program stopped with changes that were not saved, and
+    // `recover` brings them back.
+
+    /// The recovery file of the open project.
+    fn recovery_file_path(&self) -> Option<PathBuf> {
+        self.rust().current_path.as_deref().and_then(recovery_file)
+    }
+
+    pub fn autosave(mut self: Pin<&mut Self>) -> bool {
+        // A project with no change after its last save needs no copy.
+        if !self.as_ref().rust().dirty {
+            return false;
+        }
+        let (Some(path), Some(text)) = (self.recovery_file_path(), self.snapshot_text()) else {
+            return false;
+        };
+        // The file has this model already: no write.
+        if self.as_ref().rust().autosaved.as_ref() == Some(&text) {
+            return false;
+        }
+        let saved = match self.as_ref().rust().schematic.as_ref() {
+            Some(s) => project::save_project(s, &path),
+            None => return false,
+        };
+        match saved {
+            Ok(()) => {
+                self.as_mut().rust_mut().get_mut().autosaved = Some(text);
+                true
+            }
+            Err(e) => {
+                self.as_mut()
+                    .record_error(format!("autosave to {}: {e}", path.display()));
+                false
+            }
+        }
+    }
+
+    pub fn recovery_path(&self) -> QString {
+        self.recovery_file_path()
+            .filter(|path| path.exists())
+            .map(|path| QString::from(&path.to_string_lossy().into_owned()))
+            .unwrap_or_default()
+    }
+
+    pub fn recover(mut self: Pin<&mut Self>) -> bool {
+        let Some(path) = self.recovery_file_path() else {
+            self.as_mut().record_error("no project path set");
+            return false;
+        };
+        match project::load_project(&path) {
+            Ok((schematic, warnings)) => {
+                {
+                    let m = self.as_mut().rust_mut().get_mut();
+                    m.schematic = Some(schematic);
+                    m.load_warnings = warnings;
+                    // The project file does not have these changes.
+                    m.dirty = true;
+                    m.last_error.clear();
+                    m.library.clear();
+                }
+                self.as_mut().set_dirty(true);
+                // The recovery file has this model.
+                let text = self.snapshot_text();
+                self.as_mut().rust_mut().get_mut().autosaved = text;
+                self.as_mut().clear_undo_stacks();
+                self.as_mut().refresh_project_display();
+                self.as_mut().rebuild_library_and_validate();
+                self.as_mut().rebuild_view(|state| state.project_loaded());
+                true
+            }
+            Err(e) => {
+                self.as_mut()
+                    .record_error(format!("recover from {}: {e}", path.display()));
+                false
+            }
+        }
+    }
+
+    pub fn discard_recovery(mut self: Pin<&mut Self>) {
+        if let Some(path) = self.recovery_file_path() {
+            // A file that is not there is the wanted result.
+            let _ = std::fs::remove_file(path);
+        }
+        self.as_mut().rust_mut().get_mut().autosaved = None;
     }
 
     pub fn generate_code(mut self: Pin<&mut Self>, path: &QString) -> bool {
@@ -1643,6 +1780,7 @@ impl qobject::AppState {
             m.dirty = true;
             m.last_error.clear();
             m.load_warnings.clear();
+            m.autosaved = None;
             m.library.clear();
             m.diagnostics.clear();
         }
@@ -4680,6 +4818,139 @@ mod tests {
                 state.validation_messages()
             );
         }
+    }
+
+    // --- Recovery file ------------------------------------------------------
+
+    fn recovery_file(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path().join(".top.hdlc.autosave")
+    }
+
+    fn project_file(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path().join("top.hdlc")
+    }
+
+    /// The autosave writes only the recovery file, and only when the
+    /// project has changes that the file does not have. The project stays
+    /// "not saved": only a save of the user changes the project file.
+    #[test]
+    fn autosave_writes_the_recovery_file_and_not_the_project_file() {
+        let (dir, mut state) = state_with_library();
+        let saved = std::fs::read_to_string(project_file(&dir)).unwrap();
+
+        // No change: no file.
+        assert!(!state.pin_mut().autosave());
+        assert!(!recovery_file(&dir).exists());
+
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().autosave());
+        let first = std::fs::read_to_string(recovery_file(&dir)).unwrap();
+        assert!(first.contains("u_a"));
+        assert_eq!(std::fs::read_to_string(project_file(&dir)).unwrap(), saved);
+        assert!(*state.dirty());
+        assert_eq!(
+            state.recovery_path().to_string(),
+            recovery_file(&dir).to_str().unwrap()
+        );
+
+        // No change after the last write: no second write.
+        assert!(!state.pin_mut().autosave());
+        assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+        assert!(state.pin_mut().autosave());
+        assert!(
+            std::fs::read_to_string(recovery_file(&dir))
+                .unwrap()
+                .contains("u_b")
+        );
+    }
+
+    #[test]
+    fn save_removes_the_recovery_file() {
+        let (dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().autosave());
+
+        assert!(state.pin_mut().save_project());
+        assert!(!recovery_file(&dir).exists());
+        assert_eq!(state.recovery_path().to_string(), "");
+
+        // A save with a new name removes the recovery file of the old name.
+        assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+        assert!(state.pin_mut().autosave());
+        let other = dir.path().join("other.hdlc");
+        assert!(state.pin_mut().save_project_as(&q(other.to_str().unwrap())));
+        assert!(!recovery_file(&dir).exists());
+        // The next autosave is for the new name.
+        assert!(state.pin_mut().add_instance(&q("u_c"), &q("sink")));
+        assert!(state.pin_mut().autosave());
+        assert!(dir.path().join(".other.hdlc.autosave").exists());
+    }
+
+    /// The program stops with changes that are not saved. The next open
+    /// finds the recovery file, and `recover` brings the changes back.
+    #[test]
+    fn recovery_brings_back_the_changes_after_a_stop_of_the_program() {
+        let (dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+        assert!(
+            state
+                .pin_mut()
+                .set_port_map_entry(&q("u_b"), &q("d"), &q("u_a.q"))
+        );
+        assert!(state.pin_mut().autosave());
+        drop(state);
+
+        let mut state = qobject::new_app_state();
+        let project = q(project_file(&dir).to_str().unwrap());
+        assert!(state.pin_mut().open_project(&project));
+        assert_eq!(state.instance_count(), 0);
+        assert!(!*state.dirty());
+        assert_ne!(state.recovery_path().to_string(), "");
+
+        assert!(state.pin_mut().recover());
+        assert_eq!(state.instance_count(), 2);
+        assert_eq!(entry(&state, "u_b", "d"), "u_a.q");
+        assert!(*state.dirty(), "the recovered changes are not saved");
+        assert!(!state.can_undo());
+        // The file stays until the user saves: a second stop loses nothing.
+        assert!(recovery_file(&dir).exists());
+        assert!(
+            !state.pin_mut().autosave(),
+            "the file has the model already"
+        );
+
+        assert!(state.pin_mut().save_project());
+        assert!(!recovery_file(&dir).exists());
+        assert!(state.pin_mut().open_project(&project));
+        assert_eq!(state.instance_count(), 2);
+    }
+
+    #[test]
+    fn discard_removes_the_recovery_file_and_keeps_the_model() {
+        let (dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().autosave());
+
+        state.pin_mut().discard_recovery();
+
+        assert!(!recovery_file(&dir).exists());
+        assert_eq!(state.instance_count(), 1);
+        // The project still has changes that are not saved, so the next
+        // autosave writes the file again.
+        assert!(state.pin_mut().autosave());
+        assert!(recovery_file(&dir).exists());
+    }
+
+    /// The recovery file is not a part of the history.
+    #[test]
+    fn autosave_leaves_the_history() {
+        let (_dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+        assert!(state.pin_mut().undo());
+        assert!(state.pin_mut().autosave());
+        assert!(state.can_undo() && state.can_redo());
     }
 
     /// A commit of the editor buffer clears the dirty flag of its instance.

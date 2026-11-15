@@ -78,6 +78,10 @@ QList<InstanceItem *> blocks() {
     return out;
 }
 
+int blocks_on_canvas() {
+    return static_cast<int>(blocks().size());
+}
+
 InstanceItem *block(const QString &name) {
     for (InstanceItem *b : blocks())
         if (b->instanceName() == name)
@@ -193,6 +197,42 @@ void chooseFromNextMenu(const QString &text, int *answered) {
             return false;
         },
         answered);
+}
+
+// Click the button with the text `text` of the next message box that opens.
+void clickTextInNextMessageBox(const QString &text, int *answered) {
+    answerNext(
+        [text](QWidget *open) {
+            auto *box = qobject_cast<QMessageBox *>(open);
+            if (!box)
+                return false;
+            for (QAbstractButton *b : box->buttons()) {
+                if (b->text().remove(QLatin1Char('&')) == text) {
+                    b->click();
+                    return true;
+                }
+            }
+            return false;
+        },
+        answered);
+}
+
+QByteArray content(const QString &path) {
+    QFile f(path);
+    return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+}
+
+QString recoveryFile() {
+    return g->file(QStringLiteral(".top.hdlc.autosave"));
+}
+
+// The window writes the recovery file 12 s after a change. The tests use
+// a short time.
+void useAShortAutosaveTime() {
+    auto *timer = g->window->findChild<QTimer *>(QStringLiteral("autosave_timer"));
+    QVERIFY(timer);
+    QCOMPARE(timer->interval(), 12000);
+    timer->setInterval(20);
 }
 
 // Click `button` of the next message box that opens.
@@ -429,6 +469,122 @@ void GuiTests::wiresOfOneNetHaveOneColorAndOneHighlight() {
     hover(tip(p) + QPoint(0, 200), Qt::ShiftModifier);
     QCOMPARE(first->pen().widthF(), normal);
     QCOMPARE(other->pen().color().alpha(), 255);
+}
+
+// --- Recovery file -----------------------------------------------------------
+
+void GuiTests::autosaveWritesTheRecoveryFileAndSaveRemovesIt() {
+    useAShortAutosaveTime();
+    const QByteArray saved = content(g->project);
+    QVERIFY(!QFile::exists(recoveryFile()));
+
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(0, 0)));
+    QTRY_VERIFY(QFile::exists(recoveryFile()));
+    QVERIFY(content(recoveryFile()).contains("source_0"));
+    // Only a save of the user changes the project file.
+    QCOMPARE(content(g->project), saved);
+    QVERIFY(g->state->getDirty());
+
+    // File > Save.
+    action(QStringLiteral("Save"))->trigger();
+    QVERIFY(!g->state->getDirty());
+    QVERIFY(!QFile::exists(recoveryFile()));
+    QVERIFY(content(g->project).contains("source_0"));
+    // No change after the save: the timer writes no new file.
+    QTest::qWait(100);
+    QVERIFY(!QFile::exists(recoveryFile()));
+}
+
+// Cmd+S on macOS, Ctrl+S elsewhere: Qt gives the two the same name.
+void GuiTests::saveKeySavesTheProject() {
+    useAShortAutosaveTime();
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(0, 0)));
+    QTRY_VERIFY(QFile::exists(recoveryFile()));
+    QVERIFY(g->state->getDirty());
+
+    g->window->activateWindow();
+    g->view->setFocus();
+    QTest::keyClick(g->view, Qt::Key_S, Qt::ControlModifier);
+
+    QVERIFY(!g->state->getDirty());
+    QVERIFY(content(g->project).contains("source_0"));
+    QVERIFY(!QFile::exists(recoveryFile()));
+}
+
+void GuiTests::closeAsksAndDiscardRemovesTheRecoveryFile() {
+    useAShortAutosaveTime();
+    const QByteArray saved = content(g->project);
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(0, 0)));
+    QTRY_VERIFY(QFile::exists(recoveryFile()));
+
+    // Cancel: the window stays, and the changes and the file stay.
+    int answered = 0;
+    clickInNextMessageBox(QMessageBox::Cancel, &answered);
+    QVERIFY(!g->window->close());
+    QCOMPARE(answered, 1);
+    QVERIFY(g->window->isVisible());
+    QVERIFY(QFile::exists(recoveryFile()));
+
+    // Discard: the window closes with no save, and the file goes away.
+    clickInNextMessageBox(QMessageBox::Discard, &answered);
+    QVERIFY(g->window->close());
+    QCOMPARE(answered, 2);
+    QVERIFY(!g->window->isVisible());
+    QVERIFY(!QFile::exists(recoveryFile()));
+    QCOMPARE(content(g->project), saved);
+}
+
+void GuiTests::closeWithSaveWritesTheProject() {
+    useAShortAutosaveTime();
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(0, 0)));
+    QTRY_VERIFY(QFile::exists(recoveryFile()));
+
+    int answered = 0;
+    clickInNextMessageBox(QMessageBox::Save, &answered);
+    QVERIFY(g->window->close());
+    QCOMPARE(answered, 1);
+    QVERIFY(content(g->project).contains("source_0"));
+    QVERIFY(!QFile::exists(recoveryFile()));
+}
+
+void GuiTests::openAfterAStopOffersTheChanges_data() {
+    QTest::addColumn<QString>("button");
+    QTest::addColumn<int>("blocks");
+    QTest::addColumn<bool>("file_stays");
+    QTest::newRow("recover") << QStringLiteral("Recover") << 1 << true;
+    QTest::newRow("discard") << QStringLiteral("Discard") << 0 << false;
+}
+
+void GuiTests::openAfterAStopOffersTheChanges() {
+    QFETCH(QString, button);
+    QFETCH(int, blocks);
+    QFETCH(bool, file_stays);
+
+    useAShortAutosaveTime();
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(0, 0)));
+    QTRY_VERIFY(QFile::exists(recoveryFile()));
+    // The program stops: the window goes away with no close event, as it
+    // does when the process ends.
+    g->window.reset();
+
+    g->window.reset(hdlc_test_new_window());
+    g->window->show();
+    g->state = g->window->findChild<AppState *>();
+    for (QGraphicsView *v : g->window->findChildren<QGraphicsView *>())
+        if (auto *canvas = dynamic_cast<CanvasView *>(v))
+            g->view = canvas;
+    int answered = 0;
+    clickTextInNextMessageBox(button, &answered);
+    hdlc_test_open_project(g->window.get(), g->project);
+    settle();
+
+    QCOMPARE(answered, 1);
+    QCOMPARE(g->state->instance_count(), blocks);
+    QCOMPARE(blocks_on_canvas(), blocks);
+    // Recovered changes are not saved yet; with Discard the project is as
+    // the file has it.
+    QCOMPARE(g->state->getDirty(), blocks > 0);
+    QCOMPARE(QFile::exists(recoveryFile()), file_stays);
 }
 
 // --- Entry point -------------------------------------------------------------
