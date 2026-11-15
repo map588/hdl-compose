@@ -299,10 +299,15 @@ pub fn expand_hierarchy(schematic: &Schematic, library: &[ModuleDef]) -> Hierarc
             let mut inst = inst.clone();
             for entry in inst.port_map.values_mut() {
                 let Some(r) = entry else { continue };
-                if matches!(r, NetRef::Constant(_)) || is_inside(&r.base()) {
+                if matches!(r, NetRef::Constant(_)) {
                     continue;
                 }
-                // Outside pin → the boundary port carrying that net.
+                // A reference to a pin on a boundary net becomes a reference
+                // to the boundary port that carries the net. This is also
+                // necessary when the pin is in the group: two pins in the
+                // group can reference each other (the pin of a collapsed
+                // group and its `outside_ref`), and then no reference would
+                // connect them to the port.
                 if let Some(port_name) = port_for_pin.get(&r.base()) {
                     *entry = Some(match on_port(r, port_name) {
                         Some(slice) => NetRef::TopPortSlice(port_name.clone(), slice),
@@ -934,6 +939,56 @@ mod tests {
                 .unwrap();
         });
         assert_connected(&design);
+    }
+
+    fn group(name: &str, members: &[&str], parent: Option<&str>) -> Group {
+        Group {
+            name: name.into(),
+            members: members.iter().map(|m| m.to_string()).collect(),
+            parent: parent.map(String::from),
+            collapsed: false,
+            position: (0.0, 0.0),
+        }
+    }
+
+    /// Regression: `u0` is in `g1`, and `g1` is in `g0`. The output of `u0`
+    /// goes to `u2` (in `g0`) and to `u3` (outside `g0`). When `g1`
+    /// collapsed, its pin got a reference to `u2.i1`. In `g0` the two pins
+    /// then referenced each other and no pin referenced the port of `g0`.
+    /// The module `g0` declared a port and a signal with one name.
+    #[test]
+    fn output_of_an_inner_group_reaches_the_port_of_the_outer_group() {
+        let lib = vec![
+            module("m0", vec![("o0", Direction::Out)]),
+            module("m1", vec![("i1", Direction::In), ("o0", Direction::Out)]),
+        ];
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.add_instance("u0", "m0").unwrap();
+        s.add_instance("u2", "m1").unwrap();
+        s.add_instance("u3", "m1").unwrap();
+        for consumer in ["u2", "u3"] {
+            s.set_port_map_entry(consumer, "i1", Some(pin("u0", "o0")))
+                .unwrap();
+        }
+        s.groups.push(group("g0", &["u2"], None));
+        s.groups.push(group("g1", &["u0"], Some("g0")));
+
+        let plan = expand_hierarchy(&s, &lib);
+        let (_, outer) = plan.groups.iter().find(|(name, _)| name == "g0").unwrap();
+        let nets = resolve_nets(outer, &plan.library);
+        let port = nets.name_for(&NetRef::TopPort("u_g1_u0_o0".into()));
+        assert!(port.is_some(), "the port of g0 is on no net");
+        assert_eq!(nets.name_for(&pin("u_g1", "u0_o0")), port);
+        assert_eq!(nets.name_for(&pin("u2", "i1")), port);
+
+        let design = crate::codegen::generate_design(&s, &lib).unwrap();
+        let (_, outer) = design
+            .files
+            .iter()
+            .find(|(name, _)| name == "g0.vhd")
+            .unwrap();
+        assert!(outer.contains("u_g1_u0_o0 <= u_g1_u0_o0_s;"), "{outer}");
+        assert!(!outer.contains("signal u_g1_u0_o0 :"), "{outer}");
     }
 
     /// The consumer is in the group, and the driver outside holds no
