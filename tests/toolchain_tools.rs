@@ -271,6 +271,34 @@ fn netlist_of_the_generated_files_connects_what_the_schematic_connects() {
     }
 }
 
+/// `lo` has no output in use. yosys knows the port directions of a
+/// SystemVerilog black box, and `opt_clean` removed such an instance from
+/// the netlist. The check then reported that `lo.d` had no connection.
+#[test]
+fn netlist_check_keeps_an_instance_whose_outputs_have_no_connection() {
+    for language in [Language::Vhdl, Language::SystemVerilog] {
+        if !netlist_tools(&language) {
+            continue;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (mut schematic, library) = netlist_design(dir.path(), language.clone());
+        schematic
+            .set_port_map_entry("lo", "ok".to_string(), None)
+            .unwrap();
+        schematic.top_ports.retain(|port| port.name != "ok2");
+        let json = netlist_of(dir.path(), &schematic, &library);
+        // clk, eight bits of q, ok.
+        assert_eq!(
+            netcheck::compare(&schematic, &library, &json),
+            Ok(Outcome::Same {
+                wires: 10,
+                unchecked: 0
+            }),
+            "{language:?}"
+        );
+    }
+}
+
 /// The netlist of one design, compared with a schematic that differs in one
 /// connection: `lo.d` on bits 7 to 4 of the net, not on bits 3 to 0. This
 /// is the result of a codegen that connects the wrong slice.

@@ -873,10 +873,17 @@ const NETLIST_DIR: &str = "netcheck";
 /// The file in `NETLIST_DIR` with the netlist of the generated files.
 const NETLIST_FILE: &str = "netlist.json";
 
+/// The yosys command that sets `keep` on each cell that is not a cell of
+/// yosys (`$buf` and others): these are the instances of the design.
+const KEEP_INSTANCES: &str = "setattr -set keep 1 c:* t:$* %d";
+
 /// The yosys run that gives the connections of the generated files (see
 /// `netcheck`). Each library module is a black box, so the run does not
 /// depend on the content of the library. `flatten` puts the instances of
-/// the group modules into the top module. The step runs in `NETLIST_DIR`.
+/// the group modules into the top module. `opt_clean` removes the buffer
+/// cells of yosys. It also removes an instance that has no output in use,
+/// so each instance gets the `keep` attribute first. The step runs in
+/// `NETLIST_DIR`.
 pub fn netlist_stages(staged: &StagedBuild, env: &FlowEnv) -> Vec<Stage> {
     let from_build_dir = |name: &String| format!("../{name}");
     let (plugin, read) = match staged.language {
@@ -912,7 +919,9 @@ pub fn netlist_stages(staged: &StagedBuild, env: &FlowEnv) -> Vec<Stage> {
             ("slang", read)
         }
     };
-    let script = format!("{read}; flatten -noscopeinfo; opt_clean; write_json {NETLIST_FILE}");
+    let script = format!(
+        "{read}; flatten -noscopeinfo; {KEEP_INSTANCES}; opt_clean; write_json {NETLIST_FILE}"
+    );
     vec![Stage::single(
         "netlist",
         vec![Step::new(
@@ -2389,7 +2398,7 @@ mod flow_tests {
                         "ghdl",
                         "-p",
                         "ghdl --std=08 --PREFIX=/ghdl/lib -P.. -Wno-binding ../core.vhd ../top.vhd -e top; \
-                         flatten -noscopeinfo; opt_clean; write_json netlist.json"
+                         flatten -noscopeinfo; setattr -set keep 1 c:* t:$* %d; opt_clean; write_json netlist.json"
                     ]
                 )]
             )]
@@ -2408,7 +2417,7 @@ mod flow_tests {
         assert_eq!(
             script,
             "read_slang --top top --blackboxed-module fifo --blackboxed-module leaf \
-             ../leaf.sv ../top.sv; flatten -noscopeinfo; opt_clean; write_json netlist.json"
+             ../leaf.sv ../top.sv; flatten -noscopeinfo; setattr -set keep 1 c:* t:$* %d; opt_clean; write_json netlist.json"
         );
     }
 
