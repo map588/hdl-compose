@@ -83,6 +83,16 @@ pub mod qobject {
         #[qinvokable]
         fn new_project_at(self: Pin<&mut AppState>, path: &QString, language: i32) -> bool;
 
+        /// The number of designs (`.hdlc` files) in the folder of the open
+        /// design. The open design is one of them.
+        #[qinvokable]
+        fn design_count(self: &AppState) -> i32;
+
+        /// The file of design `index`. The designs are in the order of
+        /// their file names.
+        #[qinvokable]
+        fn design_path(self: &AppState, index: i32) -> QString;
+
         #[qinvokable]
         fn has_project(self: &AppState) -> bool;
 
@@ -553,6 +563,12 @@ pub mod qobject {
         /// and `can_redo` later (a queued connection).
         #[qsignal]
         fn history_changed(self: Pin<&mut AppState>);
+
+        /// The list of the designs in the folder of the open design is
+        /// different. `AppState` reads the folder when it opens a design,
+        /// after a save with a new name, and at a reload of the library.
+        #[qsignal]
+        fn designs_changed(self: Pin<&mut AppState>);
     }
 
     // --- Wire routing FFI ----------------------------------------------
@@ -787,6 +803,9 @@ pub struct AppStateRust {
     library_baseline: bool,
     // True from `modules_changed` to the next full rebuild of the view.
     canvas_stale: bool,
+    // The designs in the folder of the open design, from the last read of
+    // the folder.
+    designs: Vec<crate::designs::FolderDesign>,
     // The model text that the recovery file has. See `autosave`.
     autosaved: Option<String>,
     // The model from before the last change, until it is known that the
@@ -1523,6 +1542,7 @@ impl qobject::AppState {
                 self.as_mut().refresh_project_display();
                 self.as_mut().rebuild_library_and_validate();
                 self.as_mut().rebuild_view(|state| state.project_loaded());
+                self.as_mut().refresh_designs();
                 true
             }
             Err(e) => {
@@ -1585,6 +1605,8 @@ impl qobject::AppState {
             self.as_mut().clear_undo_stacks();
             self.as_mut().rebuild_library_and_validate();
         }
+        // The folder has a new design, or the design is in another folder.
+        self.as_mut().refresh_designs();
         true
     }
 
@@ -1896,6 +1918,36 @@ impl qobject::AppState {
             return false;
         }
         self.open_project(path)
+    }
+
+    // === The designs of the folder ===
+
+    /// Read the folder of the open design again.
+    fn refresh_designs(mut self: Pin<&mut Self>) {
+        let designs = self
+            .as_ref()
+            .rust()
+            .current_path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(crate::designs::folder_designs)
+            .unwrap_or_default();
+        if designs != self.as_ref().rust().designs {
+            self.as_mut().rust_mut().get_mut().designs = designs;
+            self.as_mut().designs_changed();
+        }
+    }
+
+    pub fn design_count(&self) -> i32 {
+        self.rust().designs.len() as i32
+    }
+
+    pub fn design_path(&self, index: i32) -> QString {
+        self.rust()
+            .designs
+            .get(index as usize)
+            .map(|d| QString::from(&d.path.to_string_lossy().into_owned()))
+            .unwrap_or_default()
     }
 
     pub fn has_project(&self) -> bool {
@@ -3010,6 +3062,7 @@ impl qobject::AppState {
         self.as_mut().rebuild_library_and_validate();
         // Full canvas rebuild so updated widths / generics / port lists reflect.
         self.as_mut().rebuild_view(|state| state.project_loaded());
+        self.as_mut().refresh_designs();
         true
     }
 
@@ -5076,6 +5129,71 @@ mod tests {
         assert_eq!(state.current_project_path(), file_in(&dir, "uart.hdlc"));
         assert!(!*state.dirty() && !state.can_undo());
         assert!(dir.path().join("uart.hdlc").exists());
+    }
+
+    fn design_files(state: &UniquePtr<AppState>) -> Vec<String> {
+        (0..state.design_count())
+            .map(|i| {
+                let path = PathBuf::from(state.design_path(i).to_string());
+                path.file_name().unwrap().to_string_lossy().into_owned()
+            })
+            .collect()
+    }
+
+    /// The list of the designs is the `.hdlc` files of the folder of the
+    /// open design. It follows an open, a new design, a save with a new
+    /// name and a reload, and the signal comes only when the list changed.
+    #[test]
+    fn designs_of_the_folder_follow_open_new_save_as_and_reload() {
+        let (dir, mut state) = state_with_library();
+        assert_eq!(design_files(&state), ["top.hdlc"]);
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let changes = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = changes.clone();
+        state
+            .pin_mut()
+            .on_designs_changed(move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            })
+            .release();
+        let changed = |expected: usize, when: &str| {
+            assert_eq!(changes.swap(0, Ordering::SeqCst), expected, "{when}");
+        };
+
+        assert!(
+            state
+                .pin_mut()
+                .new_project_at(&file_in(&dir, "uart.hdlc"), 0)
+        );
+        assert_eq!(design_files(&state), ["top.hdlc", "uart.hdlc"]);
+        changed(1, "new");
+
+        assert!(state.pin_mut().save_project_as(&file_in(&dir, "copy.hdlc")));
+        assert_eq!(design_files(&state), ["copy.hdlc", "top.hdlc", "uart.hdlc"]);
+        changed(1, "save with a new name");
+
+        assert!(state.pin_mut().save_project());
+        assert!(state.pin_mut().reload_library());
+        changed(0, "a save and a reload with no change of the folder");
+
+        // A design that another program made.
+        std::fs::copy(dir.path().join("uart.hdlc"), dir.path().join("zz.hdlc")).unwrap();
+        assert!(state.pin_mut().reload_library());
+        assert_eq!(
+            design_files(&state),
+            ["copy.hdlc", "top.hdlc", "uart.hdlc", "zz.hdlc"]
+        );
+        changed(1, "reload");
+
+        // A design in another folder.
+        let other = tempfile::tempdir().unwrap();
+        assert!(
+            state
+                .pin_mut()
+                .save_project_as(&file_in(&other, "copy.hdlc"))
+        );
+        assert_eq!(design_files(&state), ["copy.hdlc"]);
+        changed(1, "save into another folder");
     }
 
     /// A save with a new file name gives the design that name: two designs

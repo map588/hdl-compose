@@ -36,6 +36,7 @@
 #include <QLineEdit>
 #include <QListView>
 #include <QListWidget>
+#include <QListWidget>
 #include <QMainWindow>
 #include <QMap>
 #include <QMenu>
@@ -698,9 +699,25 @@ class MainWindow : public QMainWindow {
         lib_layout->addWidget(library_label);
         lib_layout->addWidget(library_view);
 
+        // The designs of the folder of the open design. A click opens one.
+        auto *designs_label = new QLabel(QStringLiteral("Designs"));
+        designs_label->setContentsMargins(4, 4, 4, 0);
+        m_designs_list = new QListWidget;
+        m_designs_list->setObjectName(QStringLiteral("designs_list"));
+        m_designs_list->setSelectionMode(QAbstractItemView::NoSelection);
+        m_designs_list->setFocusPolicy(Qt::NoFocus);
+        m_designs_list->setTextElideMode(Qt::ElideRight);
+        auto *designs_container = new QWidget(sidebar_splitter);
+        auto *designs_layout = new QVBoxLayout(designs_container);
+        designs_layout->setContentsMargins(0, 0, 0, 0);
+        designs_layout->setSpacing(0);
+        designs_layout->addWidget(designs_label);
+        designs_layout->addWidget(m_designs_list);
+
+        sidebar_splitter->addWidget(designs_container);
         sidebar_splitter->addWidget(m_tree_view);
         sidebar_splitter->addWidget(library_container);
-        sidebar_splitter->setSizes({600, 200});
+        sidebar_splitter->setSizes({120, 480, 200});
 
         // Canvas.
         auto *scene = new QGraphicsScene(m_root_splitter);
@@ -1099,6 +1116,25 @@ class MainWindow : public QMainWindow {
                 [this](const QString &) { m_canvas_layer->rebuildWires(); });
         connect(m_state, &AppState::library_changed, this, &MainWindow::refreshSidebar);
 
+        // The list of designs changes with the folder, and its mark for the
+        // open design changes with each open. Queued: an open can come from
+        // a click in this list, and the list must not change in that click.
+        connect(m_state, &AppState::designs_changed, this, &MainWindow::refreshDesigns, Qt::QueuedConnection);
+        connect(m_state, &AppState::project_loaded, this, &MainWindow::refreshDesigns, Qt::QueuedConnection);
+        connect(m_designs_list, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+            const QString path = item->data(Qt::UserRole).toString();
+            if (QFileInfo(path) == QFileInfo(m_state->current_project_path())) {
+                return;
+            }
+            // A switch is an open: the same question about changes that are
+            // not saved. It starts after the click is complete.
+            QTimer::singleShot(0, this, [this, path]() {
+                if (maybeSaveDirty()) {
+                    openProjectPath(path);
+                }
+            });
+        });
+
         // Module re-parse: watch every library path and auto-reload when the
         // underlying file changes. The reload drops stale port_map entries
         // and flags affected instances dirty; the user reviews and either
@@ -1300,6 +1336,23 @@ class MainWindow : public QMainWindow {
     }
 
     // --- Reactive helpers ---------------------------------------------------
+
+    void refreshDesigns() {
+        m_designs_list->clear();
+        const QFileInfo open(m_state->current_project_path());
+        const int count = m_state->design_count();
+        for (int i = 0; i < count; ++i) {
+            const QString path = m_state->design_path(i);
+            auto *item = new QListWidgetItem(QFileInfo(path).completeBaseName(), m_designs_list);
+            item->setData(Qt::UserRole, path);
+            item->setToolTip(path);
+            if (QFileInfo(path) == open) {
+                QFont font = item->font();
+                font.setBold(true);
+                item->setFont(font);
+            }
+        }
+    }
 
     void refreshSidebar() {
         rebuild_tree_model(m_tree_model, m_state, m_dirty_icon);
@@ -2188,6 +2241,7 @@ class MainWindow : public QMainWindow {
     QStandardItemModel *m_tree_model = nullptr;
     QTreeView *m_tree_view = nullptr;
     QStringListModel *m_library_model = nullptr;
+    QListWidget *m_designs_list = nullptr;
     CanvasView *m_canvas = nullptr;
     QMenu *m_recent_menu = nullptr;
     std::unique_ptr<CanvasLayer> m_canvas_layer;

@@ -33,6 +33,7 @@
 #include <QGraphicsView>
 #include <QGuiApplication>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMessageBox>
@@ -296,6 +297,28 @@ NewDialogs newDesignFromTheMenu(const QString &name) {
     watcher.stop();
     settle();
     return seen;
+}
+
+QListWidget *designsList() {
+    return g->window->findChild<QListWidget *>(QStringLiteral("designs_list"));
+}
+
+// The names in the list of designs. The open design has the mark `*`.
+QStringList designNames() {
+    QStringList names;
+    QListWidget *list = designsList();
+    for (int i = 0; i < list->count(); ++i) {
+        const QListWidgetItem *item = list->item(i);
+        names << item->text() + (item->font().bold() ? QStringLiteral("*") : QString());
+    }
+    return names;
+}
+
+void clickDesign(const QString &name) {
+    QListWidget *list = designsList();
+    const QList<QListWidgetItem *> found = list->findItems(name, Qt::MatchExactly);
+    QCOMPARE(found.size(), 1);
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, {}, list->visualItemRect(found.first()).center());
 }
 
 } // namespace
@@ -694,6 +717,42 @@ void GuiTests::newDesignGoesIntoTheFolderOfTheOpenDesignWithNoFileDialog() {
     QVERIFY2(seen.messages.first().contains(QStringLiteral("is there already")),
              qPrintable(seen.messages.first()));
     QCOMPARE(g->state->getProject_name(), QStringLiteral("child"));
+}
+
+// The sidebar lists the designs of the folder. A click on one opens it,
+// with the question about changes that are not saved.
+void GuiTests::clickInTheListOfDesignsOpensThatDesign() {
+    QCOMPARE(designNames(), QStringList{QStringLiteral("top*")});
+    NewDialogs seen = newDesignFromTheMenu(QStringLiteral("child"));
+    QCOMPARE(seen.messages, QStringList());
+    QCOMPARE(designNames(), (QStringList{QStringLiteral("child*"), QStringLiteral("top")}));
+
+    clickDesign(QStringLiteral("top"));
+    QTRY_COMPARE(g->state->getProject_name(), QStringLiteral("top"));
+    QTRY_COMPARE(designNames(), (QStringList{QStringLiteral("child"), QStringLiteral("top*")}));
+
+    // A click on the open design does nothing.
+    clickDesign(QStringLiteral("top"));
+    settle();
+    QCOMPARE(g->state->getProject_name(), QStringLiteral("top"));
+
+    // With a change that is not saved, the switch asks. Cancel stays.
+    QVERIFY(g->state->add_instance(QStringLiteral("u_a"), QStringLiteral("source")));
+    int answered = 0;
+    clickInNextMessageBox(QMessageBox::Cancel, &answered);
+    clickDesign(QStringLiteral("child"));
+    QTRY_COMPARE(answered, 1);
+    settle();
+    QCOMPARE(g->state->getProject_name(), QStringLiteral("top"));
+    QVERIFY(g->state->getDirty());
+
+    // Discard opens the other design.
+    clickInNextMessageBox(QMessageBox::Discard, &answered);
+    clickDesign(QStringLiteral("child"));
+    QTRY_COMPARE(answered, 2);
+    QTRY_COMPARE(g->state->getProject_name(), QStringLiteral("child"));
+    QVERIFY(!g->state->getDirty());
+    QTRY_COMPARE(designNames(), (QStringList{QStringLiteral("child*"), QStringLiteral("top")}));
 }
 
 extern "C" int run_gui_tests() {
