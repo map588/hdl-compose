@@ -176,13 +176,24 @@ pub fn stage(
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
 
+    // A path in the config is relative to the project directory. A library
+    // source is not: `load_project` already resolved it.
+    let from_project = |path: &Path| {
+        if path.is_relative() {
+            project_dir.join(path)
+        } else {
+            path.to_path_buf()
+        }
+    };
+    // `./rtl/a.vhd` and `rtl/a.vhd` are the same file.
+    let plain = |path: &Path| -> PathBuf {
+        path.components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir))
+            .collect()
+    };
+
     let mut used: Vec<String> = Vec::new();
     let mut copy_in = |src: &Path| -> Result<String, String> {
-        let src = if src.is_relative() {
-            project_dir.join(src)
-        } else {
-            src.to_path_buf()
-        };
         let mut fname = src
             .file_name()
             .and_then(|f| f.to_str())
@@ -192,7 +203,7 @@ pub fn stage(
         while used.contains(&fname) {
             fname = format!("_{fname}");
         }
-        std::fs::copy(&src, dir.join(&fname))
+        std::fs::copy(src, dir.join(&fname))
             .map_err(|e| format!("cannot copy {}: {e}", src.display()))?;
         used.push(fname.clone());
         Ok(fname)
@@ -202,17 +213,22 @@ pub fn stage(
     for lib in &config.vhdl_libraries {
         let mut files = Vec::new();
         for f in &lib.files {
-            files.push(copy_in(f)?);
+            files.push(copy_in(&from_project(f))?);
         }
         libraries.push((lib.name.clone(), files));
     }
 
     let mut sources = Vec::new();
     for src in &config.extra_sources {
-        sources.push(copy_in(src)?);
+        sources.push(copy_in(&from_project(src))?);
     }
+    let excluded: Vec<PathBuf> = config
+        .exclude_sources
+        .iter()
+        .map(|e| plain(&from_project(e)))
+        .collect();
     for src in dependency_ordered_sources(library) {
-        if config.exclude_sources.iter().any(|e| e == &src) {
+        if excluded.contains(&plain(&src)) {
             continue;
         }
         sources.push(copy_in(&src)?);
@@ -1644,8 +1660,13 @@ mod config_tests {
     use super::*;
     use crate::codegen::GeneratedDesign;
 
+    /// `stage` gives each call in one process the same directory. The tests
+    /// that call it must not run at the same time.
+    static STAGE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn stage_honors_config_order_libraries_and_excludes() {
+        let _stage = STAGE.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("hdlc-cfgtest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("rtl")).unwrap();
@@ -1659,12 +1680,13 @@ mod config_tests {
         }
 
         let schematic = Schematic::new("top", Language::Vhdl);
+        // `load_project` gives each library path with the project directory.
         let library = vec![
             ModuleDef {
                 name: "mod_a".into(),
                 generics: vec![],
                 ports: vec![],
-                source_path: "rtl/mod_a.vhd".into(),
+                source_path: tmp.join("rtl/mod_a.vhd"),
                 source_hash: 0,
                 dependencies: vec![],
             },
@@ -1672,7 +1694,7 @@ mod config_tests {
                 name: "vendor".into(),
                 generics: vec![],
                 ports: vec![],
-                source_path: "rtl/vendor.v".into(),
+                source_path: tmp.join("rtl/vendor.v"),
                 source_hash: 0,
                 dependencies: vec![],
             },
@@ -1698,6 +1720,60 @@ mod config_tests {
         );
         assert_eq!(staged.sources, vec!["leaf.vhd", "mod_a.vhd", "top.vhd"]);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Regression: `hdlc check tests/projects/hdlc/voice_chain.hdlc` from
+    /// the repository root stopped with "cannot copy
+    /// tests/projects/hdlc/tests/projects/hdlc/rtl/...". `load_project`
+    /// resolves a library path against the directory of the project, and
+    /// `stage` added that directory a second time.
+    #[test]
+    fn stage_takes_library_sources_as_the_loader_resolved_them() {
+        let _stage = STAGE.lock().unwrap_or_else(|e| e.into_inner());
+        // The working directory of a test is the package root. `tempfile`
+        // gives an absolute path; the defect needs a relative one.
+        let project = tempfile::Builder::new()
+            .prefix("hdlc-stage-")
+            .tempdir_in(".")
+            .unwrap();
+        let project_dir = PathBuf::from(project.path().file_name().unwrap());
+        let project_dir = project_dir.as_path();
+        assert!(project_dir.is_relative() && project_dir.is_dir());
+        std::fs::create_dir_all(project_dir.join("rtl")).unwrap();
+        for f in ["rtl/mod_a.vhd", "rtl/vendor.v"] {
+            std::fs::write(project_dir.join(f), "-- test").unwrap();
+        }
+
+        let module = |name: &str, file: &str| ModuleDef {
+            name: name.into(),
+            generics: vec![],
+            ports: vec![],
+            source_path: project_dir.join(file),
+            source_hash: 0,
+            dependencies: vec![],
+        };
+        let library = vec![
+            module("mod_a", "rtl/mod_a.vhd"),
+            module("vendor", "rtl/vendor.v"),
+        ];
+        let design = GeneratedDesign {
+            files: vec![],
+            top_filename: "top.vhd".into(),
+            top_code: "-- top".into(),
+        };
+        let config: ToolchainConfig =
+            serde_json::from_str(r#"{"exclude_sources": ["rtl/vendor.v"]}"#).unwrap();
+
+        let staged = stage(
+            &Schematic::new("top", Language::Vhdl),
+            &library,
+            &design,
+            &config,
+            project_dir,
+        )
+        .unwrap();
+        assert_eq!(staged.sources, vec!["mod_a.vhd", "top.vhd"]);
+        let _ = std::fs::remove_dir_all(&staged.dir);
     }
 
     #[test]
