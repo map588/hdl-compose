@@ -1,4 +1,4 @@
-# The `.hdlc` project format
+# The `.hdlc` design format
 
 A `.hdlc` file is JSON: a `version` field plus the schematic, flattened into
 one object. The authoritative machine-readable schema is
@@ -88,4 +88,4 @@ emit first. With `-o <top file>`, group files are written next to it as
 ## CLI exit codes
 
 `hdlc validate` exits 0 when clean, 1 with warnings only, 2 with
-errors (or when the project fails to load/parse).
+errors (or when the design fails to load/parse).

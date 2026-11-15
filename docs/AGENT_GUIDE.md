@@ -1,4 +1,4 @@
-# Write an `hdlc` project: a guide for agents
+# Write an `hdlc` design: a guide for agents
 
 `hdlc guide` prints this guide, then the `.hdlc` format reference.
 
@@ -9,7 +9,7 @@
   their ports.
 - `hdlc codegen` writes one structural top-level module from the `.hdlc` file.
 - Do not edit the generated file. Edit the `.hdlc` file, then generate again.
-- A project has one language. Write the leaf modules in that language.
+- A design has one language. Write the leaf modules in that language.
 
 ## Procedure
 
@@ -23,8 +23,10 @@
    current directory.
 4. Run `hdlc validate <top>.hdlc`. It reports a name that does not exist (a
    module, a port, a generic, an instance, a top-level port), a name that is
-   a reserved word of the project language, a width mismatch, a net with
-   more than one driver, and a port with no connection.
+   a reserved word of the design language, a width mismatch, a net with
+   more than one driver, a port with no connection, a module name that two
+   library sources define, and an instance of a module that contains the
+   design itself.
    Exit code 0 is clean, 1 is warnings only, 2 is errors. Correct the file
    until no error stays, and until each warning that stays is for an output
    that you do not use.
@@ -33,7 +35,7 @@
    leaf modules with ghdl (VHDL) or slang (SystemVerilog; verilator when
    slang is not installed). It finds what only the HDL tool can know, such
    as an error in a leaf module. Then it compares the connections of the
-   generated HDL, as yosys reads it, with the nets of the project
+   generated HDL, as yosys reads it, with the nets of the design
    ("netlist check"). A difference there is a defect of hdlc, not of your
    file: report it. Exit code 0 is clean, 1 is tool errors or a netlist
    difference, 2 is a missing tool or a codegen failure. The files of the
@@ -52,7 +54,7 @@ yosys, `hdlc sim` runs `<top>_tb`, and `hdlc schema` prints the JSON Schema.
 ## Complete example
 
 The leaf modules are in `pulse_gen.vhd` and `led_driver.vhd`, in the same
-directory as the project file. `hdlc parse` shows these interfaces:
+directory as the design file. `hdlc parse` shows these interfaces:
 
 ```text
 module pulse_gen
@@ -71,8 +73,8 @@ module led_driver
     led : out std_logic
 ```
 
-This project connects them. `hdlc new demo -l vhdl --example` writes the same
-project and the two source files.
+This design connects them. `hdlc new demo -l vhdl --example` writes the same
+design and the two source files.
 
 ```json
 {
@@ -166,6 +168,10 @@ Each instance has these fields:
 - An instance output can drive a slice of a wider net (`TopPortSlice`,
   `InstancePortSlice`). A reference to that output from a different instance
   connects to the same bits.
-- To use a generated module as a leaf module of a different project, write it
+- To use a generated module as a leaf module of a different design, write it
   to a file with `hdlc codegen -o`, then put that file in the `library_paths`
-  of the parent project.
+  of the parent design, with each library source of the child. `hdlc codegen
+  -o` replaces only a file that hdlc generated.
+- A tool run of a parent takes `vhdl_libraries`, `extra_sources` and
+  `exclude_sources` from `<child>.toolchain.json` of each design in the
+  same folder whose module the parent uses.

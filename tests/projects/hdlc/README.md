@@ -1,4 +1,4 @@
-# synth_top — hdl-compose project
+# synth_top — hdl-compose design
 
 Standalone extract of the 2-voice synth's actually-used sources from the
 Vivado project, restructured for hdl-compose + GHDL. No Vivado boilerplate.
@@ -35,7 +35,7 @@ hdlc codegen synth_top.hdlc   -o rtl/gen/synth_top.vhd
 ```
 
 `library_paths` in the .hdlc files are relative to this directory. The
-commands here use paths relative to it, but `hdlc` also takes a project
+commands here use paths relative to it, but `hdlc` also takes a design
 path from another directory.
 
 Toolchain checks (oss-cad-suite on PATH):

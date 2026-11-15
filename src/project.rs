@@ -61,8 +61,10 @@ pub fn save_project(schematic: &Schematic, path: &Path) -> Result<(), ProjectErr
     Ok(())
 }
 
-/// Load a schematic from a .hdlc project file.
-/// Re-parses library paths to rebuild the module library.
+/// Load a schematic from a .hdlc project file. The function makes each
+/// library path absolute and checks that the file is there. It does not
+/// parse a library source: `Schematic::resolve_modules` (CLI) and the
+/// bridge (GUI) do that.
 /// Returns (schematic, warnings) where warnings include missing library files.
 pub fn load_project(path: &Path) -> Result<(Schematic, Vec<String>), ProjectError> {
     let content = std::fs::read_to_string(path)?;

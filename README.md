@@ -4,12 +4,13 @@ A block editor for structural HDL. Drop instances of your VHDL or
 SystemVerilog modules onto a canvas, wire them together, and generate the
 top-level entity/module that instantiates them. The generated file is plain
 structural HDL: use it as your top level, or as a submodule in a larger
-design.
+design. A design that you generate is a module for each other design in its
+folder, so you build a hierarchy of designs with no file dialog.
 
 The goal is narrow: make top-level wrapper authoring faster than hand-typing
 port maps. It is not a synthesis tool, not IP-XACT, and not a waveform
 viewer. It does integrate with the open-source toolchain (ghdl, verilator,
-yosys, nextpnr, openFPGALoader) so a project can go from schematic to
+yosys, nextpnr, openFPGALoader) so a design can go from schematic to
 elaboration check, simulation, or a flashed FPGA without leaving the tool.
 
 ## Status
@@ -56,7 +57,7 @@ starts from Finder and opens `.hdlc` files on double-click.
 ## Quick start
 
 ```sh
-hdlc new demo -l vhdl --example   # working two-module example project
+hdlc new demo -l vhdl --example   # working two-module example design
 hdlc codegen demo.hdlc            # print the generated top level
 hdlc check demo.hdlc              # elaborate it with ghdl (needs oss-cad-suite)
 hdlc demo.hdlc                    # open it in the GUI
@@ -65,15 +66,15 @@ hdlc demo.hdlc                    # open it in the GUI
 ## CLI
 
 ```sh
-hdlc [project.hdlc]               # launch GUI; no path reopens the most recent project
+hdlc [design.hdlc]                # launch GUI; no path reopens the most recent design
 hdlc parse <file.vhd|.sv|.v>      # print a file's module ports + generics
-hdlc new <name> -l vhdl|sv        # create a project (--example adds demo modules)
-hdlc validate <project.hdlc>      # report diagnostics (exit 0/1/2)
-hdlc codegen <project.hdlc> [-o out.vhd]
-hdlc inspect <project.hdlc>       # summary + library status
-hdlc migrate <a.hdlc> [b.hdlc ..] # rewrite older projects at the current version
+hdlc new <name> -l vhdl|sv        # create a design (--example adds demo modules)
+hdlc validate <design.hdlc>       # report diagnostics (exit 0/1/2)
+hdlc codegen <design.hdlc> [-o out.vhd]
+hdlc inspect <design.hdlc>        # summary + library status
+hdlc migrate <a.hdlc> [b.hdlc ..] # rewrite older designs at the current version
 hdlc schema                       # JSON Schema for the .hdlc format
-hdlc guide                        # what an agent must know to write a project by hand
+hdlc guide                        # what an agent must know to write a design by hand
 ```
 
 ## Toolchain commands
@@ -85,17 +86,17 @@ first (or have the individual tools installed).
 
 ```sh
 hdlc doctor                       # which tools are on PATH, their versions, the commands that run them
-hdlc check <project.hdlc>         # elaborate: ghdl (VHDL) / slang (SV)
-hdlc synth <project.hdlc>         # generic yosys synthesis + cell stats
-hdlc sim <project.hdlc> [--wave]  # run <top>_tb via ghdl / iverilog; --wave opens surfer or gtkwave
-hdlc fpga <project.hdlc> --family ice40|ecp5|gowin   # start a board: Makefile, board file, constraints skeleton
-hdlc build <project.hdlc> [--board <x.board.json>]   # bitstream: yosys, nextpnr, pack
-hdlc flash <project.hdlc> [--board <x.board.json>]   # program via openFPGALoader (SRAM; --flash writes config flash)
+hdlc check <design.hdlc>          # elaborate: ghdl (VHDL) / slang (SV)
+hdlc synth <design.hdlc>          # generic yosys synthesis + cell stats
+hdlc sim <design.hdlc> [--wave]   # run <top>_tb via ghdl / iverilog; --wave opens surfer or gtkwave
+hdlc fpga <design.hdlc> --family ice40|ecp5|gowin    # start a board: Makefile, board file, constraints skeleton
+hdlc build <design.hdlc> [--board <x.board.json>]    # bitstream: yosys, nextpnr, pack
+hdlc flash <design.hdlc> [--board <x.board.json>]    # program via openFPGALoader (SRAM; --flash writes config flash)
 ```
 
 Notes:
 
-- The tool commands copy the sources to `build/<top>/` next to the project
+- The tool commands copy the sources to `build/<top>/` next to the design
   and run the tools there. The directory keeps the intermediate files until
   the next run: the netlist (`design.json`), the nextpnr output (`pnr.json`,
   `report.json`), `yosys.log`, `nextpnr.log`, and `steps.log` (each command
@@ -109,12 +110,12 @@ Notes:
 - `check` has a second part, the netlist check. yosys reads only the
   generated files, with each library module as a black box, and writes the
   netlist. `hdlc` compares its connections, bit for bit, with the nets of
-  the project, with the groups flattened. A difference fails `check` (exit
-  code 1) and is a defect of hdlc, not of your project. The part is skipped,
+  the design, with the groups flattened. A difference fails `check` (exit
+  code 1) and is a defect of hdlc, not of your design. The part is skipped,
   with a message, when yosys or its plugin is missing, or when the generated
   files do not elaborate alone (a port with a type from your own package).
   Constant ties, and nets with a pin of no known width, are not compared.
-- `sim` generates an editable `<top>_tb` skeleton next to the project on
+- `sim` generates an editable `<top>_tb` skeleton next to the design on
   first run and never overwrites an existing one.
 - For VHDL synthesis the ghdl-yosys-plugin is tried first; if it fails on a
   construct it does not support, the tool falls back to `ghdl synth
@@ -122,14 +123,14 @@ Notes:
 - For SystemVerilog synthesis the yosys slang plugin (`read_slang`) is tried
   first. It reads packages, structs and interfaces. If it fails, the tool
   falls back to `read_verilog -sv`, with a note in the output.
-- `check` on a SystemVerilog project runs `slang` when it is on PATH, with a
+- `check` on a SystemVerilog design runs `slang` when it is on PATH, with a
   port connection of the wrong width as an error. Without `slang` it runs
   `verilator --lint-only`. slang is stricter about the language than
   verilator; verilator reports more style warnings inside your modules.
 - `build` also writes `<top>.floorplan.json` next to the bitstream. It
   records where nextpnr placed each cell, the device utilization, and the
   maximum clock frequency. The GUI Chip View reads it.
-- `fpga` starts a board for a project. It writes `<top>.board.json` with a
+- `fpga` starts a board for a design. It writes `<top>.board.json` with a
   usual part of the family, a constraints placeholder with one line for
   each top-level port, and a Makefile: `make` runs `hdlc build`, `make prog`
   runs `hdlc flash`. It also sets the `board` key of the toolchain config
@@ -144,7 +145,7 @@ Notes:
 `build` and `flash` take a board definition file: plain JSON you keep
 wherever you like, typically next to the board's own repository. Name the
 file with `--board`, or one time with the `board` key of the
-[toolchain config](#per-project-toolchain-config) of the project. The flag
+[toolchain config](#per-design-toolchain-config) of the design. The flag
 has priority.
 
 ```json
@@ -170,9 +171,9 @@ example for the [Icepi Zero](https://github.com/cheyao/icepi-zero) is at
 unmodified copy from that repository (`gateware/icepi-zero.lpf`, revision
 `f3da0ad`); its license is in `tests/hardware/icepi-zero.lpf.LICENSE`.
 
-### Per-project toolchain config
+### Per-design toolchain config
 
-The `.hdlc` file lists module sources; some projects need more than that for
+The `.hdlc` file lists module sources; some designs need more than that for
 the tools to work. Add `<name>.toolchain.json` next to `<name>.hdlc`:
 
 ```json
@@ -189,7 +190,7 @@ the tools to work. Add `<name>.toolchain.json` next to `<name>.hdlc`:
 }
 ```
 
-Each key is optional. Paths are relative to the project directory.
+Each key is optional. Paths are relative to the folder of the design.
 
 - `vhdl_libraries`: sources analyzed into a named library (`--work=<name>`),
   for packages and vendor stubs.
@@ -210,17 +211,39 @@ Each key is optional. Paths are relative to the project directory.
   board.
 - `vhdl_std`: the VHDL standard for ghdl (`--std=<value>`). Default `08`.
 
+A design that uses other designs of its folder does not repeat their
+entries. A tool run takes `vhdl_libraries`, `extra_sources` and
+`exclude_sources` from the config of each design of the folder whose module
+the design uses. The other keys (the flags, `vhdl_std`, the board, the
+clocks) come from the config of the design itself only.
+
 `tests/projects/hdlc/` is a complete example: a two-voice synthesizer with a
-named library, mixed leaf dependencies, and both `.hdlc` projects checked and
-synthesized by the tools above.
+named library, mixed leaf dependencies, and both `.hdlc` designs checked and
+synthesized by the tools above. `synth_top` uses the design `voice_chain`.
 
 ## GUI
 
 The window opens maximized with the canvas front and center.
 
-- **Left sidebar:** project tree (instances) above the module library. Drag a
-  module from the library onto the canvas to add an instance, or double-click
-  it. **File > Add HDL Folder** adds every HDL source below a directory.
+- **Left sidebar:** the designs of the folder, the instance tree, and the
+  module library. Drag a module from the library onto the canvas to add an
+  instance, or double-click it. **File > Add HDL Folder** adds every HDL
+  source below a directory.
+- **Designs:** the list shows each `.hdlc` file in the folder of the open
+  design, with the open design in bold. Click another design to open it;
+  the GUI asks first when the open design has changes that are not saved.
+  **Generate HDL** makes the open design a module of the folder. A design
+  that has generated HDL and the same language is then in the library list
+  of each other design, with the mark "(design)". Place it as any module:
+  the block has the top-level ports of that design, and its generated files
+  and its library sources go into the library of the open design, in the
+  same undo step. A note in the list says why a design is not in the
+  library: "not generated", "other language", or "contains this design".
+- **A child that changed:** a parent reads the generated HDL of a child, so
+  it shows the child as of its last Generate. When a port of the child is
+  gone, the next open of the parent reports each connection to that port,
+  and Generate HDL stops. Right-click the block and choose **Remove Stale
+  Connections** to remove them.
 - **Canvas:** instances as boxes, top-level ports on the edges, wires routed
   through gutters between columns. Click a pin, then click another pin to
   connect, or drag pin to pin. While a pin is armed (dashed cyan ring,
@@ -231,9 +254,9 @@ The window opens maximized with the canvas front and center.
   `Ctrl+L` tidies the layout (including top-port placement), `Esc` cancels,
   `Delete` removes the selection. Pinch on a trackpad zooms.
 - **Toolchain menu:** Check, Synth, Build Bitstream, and Flash run the CLI
-  commands above against the saved project and stream their output into a
+  commands above against the saved design and stream their output into a
   dock at the bottom. Select Board picks a `.board.json` and writes it as
-  the `board` key into the toolchain config of the project, so the CLI uses
+  the `board` key into the toolchain config of the design, so the CLI uses
   the same board. This rewrites `<name>.toolchain.json` in the standard
   layout of the JSON writer (sorted keys); each other key keeps its value.
 - **Toolchain > Chip View** shows the device after place and route. Free
@@ -254,22 +277,29 @@ The window opens maximized with the canvas front and center.
   buffer. Commits on Ctrl+Return or focus-out, Tab completes signal names.
   The Top Level toggle edits the top entity's ports and generics the same
   way.
-- **File > New** asks for the project name, the language, and where to save
-  the `.hdlc` file. A project always has a file, so source paths stay
-  relative to it.
+- **File > New** asks for the design name and the language. With a design
+  open, the new design goes into the same folder, with no dialog for the
+  place; with no design open, a dialog asks where to save. The name of a
+  design is the name of its `.hdlc` file and of its module, so it must be a
+  name of the language, and no other design of the folder can have it. A
+  design always has a file, so source paths stay relative to it.
 - **Save and recovery:** only **File > Save** (Cmd+S) and **Save As...**
-  (Cmd+Shift+S) change the `.hdlc` file. While a project has changes that
+  (Cmd+Shift+S) change the `.hdlc` file. While a design has changes that
   are not saved, the GUI keeps them in a recovery file,
-  `.<name>.hdlc.autosave` next to the project. It writes that file 12
+  `.<name>.hdlc.autosave` next to the design. It writes that file 12
   seconds after a change, and one time for all changes in those 12
-  seconds. A save removes the recovery file. When you close a project with
+  seconds. A save removes the recovery file. When you close a design with
   changes that are not saved, the GUI asks: Save, Discard or Cancel. When
   the program stopped with changes that were not saved, the next open of
-  the project offers to recover them.
+  the design offers to recover them. **Save As...** with a new file name
+  gives the design that name, and the undo history starts again.
 - **File > Generate HDL** (Cmd+G) writes the structural wrapper to
-  `<top>.vhd` / `<top>.sv` next to the project file, plus one file for each
+  `<top>.vhd` / `<top>.sv` next to the design file, plus one file for each
   group. It does not ask for a path. **Generate HDL As...** (Cmd+Shift+G)
-  lets you choose one.
+  lets you choose one; that file is an export, and only the file at the
+  default place makes the design a module of its folder. Generate replaces
+  only a file that hdl-compose generated: a hand-written source with the
+  name of the design or of a group stays, and Generate reports it.
 - **Goto Source** (right-click an instance) opens the module's source file
   with a command you configure in Preferences. The command runs through your
   shell exactly as typed in a terminal; `{file}` is replaced with the source
@@ -296,7 +326,7 @@ end entity my_top;
 Lines with `in`/`out`/`inout` after `:` are ports; everything else with `:`
 is a generic. Slice notation `[high:low]` matches SV; `std_logic_vector(7
 downto 0)` and `slv(7:0)` parse too. The top entity name comes from the
-project and is not editable from this view. Removing a port from the buffer
+design and is not editable from this view. Removing a port from the buffer
 also clears any instance `port_map` entries that referenced it.
 
 ## Codegen model
@@ -315,7 +345,7 @@ Component declarations stay symbolic so child parameterization survives.
 Instances can be grouped (right-click a selection); each group becomes its
 own generated module file, and the top level instantiates it.
 
-## Project file (`.hdlc`)
+## Design file (`.hdlc`)
 
 JSON via serde. Current schema version is 5 (adds hierarchical groups);
 versions 2 through 4 load with defaults and `hdlc migrate` rewrites
@@ -336,7 +366,7 @@ from source on every load so the tool notices when a source file changed.
 }
 ```
 
-`library_paths` are relative to the project file's directory; run the CLI
+`library_paths` are relative to the design file's directory; run the CLI
 from there.
 
 ## Stack
@@ -345,7 +375,7 @@ from there.
 - Qt 6 via [cxx-qt](https://github.com/KDAB/cxx-qt)
 - [vhdl_lang](https://crates.io/crates/vhdl_lang) for VHDL parsing
 - [sv-parser](https://crates.io/crates/sv-parser) for Verilog/SV parsing
-- serde + serde_json (project file), clap (CLI), tracing (logging)
+- serde + serde_json (design file), clap (CLI), tracing (logging)
 
 ## Architecture
 
@@ -382,7 +412,7 @@ The files in the repository root that have an effect on the build:
   [src/codegen/README.md](./src/codegen/README.md) and
   [src/gui/README.md](./src/gui/README.md).
 - tests: integration and round-trip tests, fixtures, and the example
-  project `tests/projects/hdlc/` (no contract file).
+  folder `tests/projects/hdlc/` with two designs (no contract file).
 - docs: `AGENT_GUIDE.md`, `FORMAT.md` and `hdlc.schema.json`; `hdlc guide`
   and `hdlc schema` print them (no contract file).
 - packaging: the macOS `Info.plist` of the application bundle (no contract
@@ -402,8 +432,17 @@ The files in the repository root that have an effect on the build:
   same for random designs [`src/netcheck.rs:compare`].
 - A group must not change what is connected [`src/netcheck.rs:expected`,
   `src/groups.rs:expand_hierarchy`].
-- A project has one language, VHDL or SystemVerilog
+- A design has one language, VHDL or SystemVerilog
   [`src/types.rs:Language`, field `Schematic.language`].
+- A design is one `.hdlc` file, and its name is the name of that file. Its
+  generated top file at `<folder>/<name>.<ext>` is a module for each other
+  design of the folder. No file holds the list of the designs: the folder
+  is the list [`src/designs.rs:folder_designs`,
+  `src/designs.rs:FolderDesign::module_file`].
+- A design never contains itself, and one module name has one source
+  [`src/schematic.rs:Schematic::validate`].
+- Generate replaces only a file that hdlc generated
+  [`src/codegen/mod.rs:GeneratedDesign::write_to`].
 - The `.hdlc` file holds no module definition. The loader reads the modules
   from the library sources. It accepts format versions 2 to 5
   [`src/project.rs:load_project`].
@@ -422,12 +461,13 @@ The files in the repository root that have an effect on the build:
 
 ## Global Side Effects
 
-- **Files next to a project:** the `.hdlc` file, `<name>.toolchain.json`,
+- **Files next to a design:** the `.hdlc` file, `<name>.toolchain.json`,
   the recovery file `.<name>.hdlc.autosave` (only while the GUI has changes
-  that are not saved) [`src/gui/bridge.rs:autosave`], the generated `<top>.vhd` or `<top>.sv` and one file for each group, the
-  directory `build/<top>/`, the bitstream, `<top>.floorplan.json`, the
+  that are not saved) [`src/gui/bridge.rs:autosave`], the generated
+  `<top>.vhd` or `<top>.sv` and one file for each group, the directory
+  `build/<top>/`, the bitstream, `<top>.floorplan.json`, the
   testbench `<top>_tb`, and the wave file of a simulation.
-- **Writes:** the project file and `<name>.toolchain.json` are replaced in
+- **Writes:** the design file and `<name>.toolchain.json` are replaced in
   one step, so a failure during a save leaves the old file complete
   [`src/lib.rs:replace_file`, `src/project.rs:save_project`,
   `src/toolchain.rs:ToolchainConfig::set_board`]. The generated files are
@@ -436,7 +476,7 @@ The files in the repository root that have an effect on the build:
 - **External processes:** ghdl, slang, verilator, yosys, nextpnr, the pack
   tools, iverilog, surfer or gtkwave, and the editor command of the user.
   `hdlc flash` programs hardware with openFPGALoader.
-- **User settings:** the GUI keeps the recent projects, the window layout
+- **User settings:** the GUI keeps the recent designs, the window layout
   and the preferences with `QSettings` [`src/gui/app.cpp`].
 - **`make app`, `app-debug`, `app-release`:** copy the binary into
   `/Applications/hdl-compose.app`, stop each running `hdlc` process, and
@@ -453,15 +493,23 @@ The files in the repository root that have an effect on the build:
 
 ## Known limitations
 
-- One language per project: VHDL or SystemVerilog, never both. A Verilog
-  file can sit in a VHDL project's library for a vendor flow, but the
+- One language per design: VHDL or SystemVerilog, never both. A Verilog
+  file can sit in a VHDL design's library for a vendor flow, but the
   open-source tool commands need a `toolchain.json` exclusion for it.
-- The `sim` command expects `<top>_tb` next to the project file; projects
+- The `sim` command expects `<top>_tb` next to the design file; designs
   that keep testbenches elsewhere run them outside the tool for now.
 - Tool discovery is PATH-only. The GUI runs toolchain commands through your
   login shell, so the tools must be on the PATH that your shell profile sets
   (for example, source the oss-cad-suite `environment` file there).
 - No bus rippers or slice adapters beyond inline `[h:l]` / `(h downto l)`.
+- A parent design uses the HDL that a child design generated last. Nothing
+  shows that the child was changed after that; generate the child again.
+- The window holds one design. A switch to another design of the folder is
+  an open: it asks about changes that are not saved, and the undo history
+  of the design that you leave is lost.
+- A parent holds the paths of the files of a child from the time that you
+  placed it. When the child gets a new library source or a new group, place
+  an instance of the child again; that adds the new paths.
 
 ## License
 

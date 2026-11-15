@@ -2,9 +2,9 @@
 
 ## Overview
 
-`codegen` writes the structural HDL of a project. It takes a `Schematic` and
+`codegen` writes the structural HDL of a design. It takes a `Schematic` and
 the module library and returns the text of each output file. It has one entry
-point, `generate_design`, for flat projects and for projects with groups. The
+point, `generate_design`, for flat designs and for designs with groups. The
 CLI commands (`codegen`, `check`, `synth`, `sim`, `build`) and the GUI all use
 this entry point.
 
@@ -22,7 +22,7 @@ The emitters do not calculate connectivity. They read the nets from
 Entry points:
 
 - `generate_design(schematic, library) -> Result<GeneratedDesign, DesignError>`
-  (`mod.rs`): generates each output file of a project.
+  (`mod.rs`): generates each output file of a design.
 - `GeneratedDesign` (`mod.rs`): `files` (file name and text of each group
   module), `top_filename`, `top_code`.
 - `GeneratedDesign::write_to(top_path)` (`mod.rs`): writes the files to disk.
@@ -61,7 +61,16 @@ Helpers that other modules use:
   has the `dirty` flag [`mod.rs:check_errors`,
   `mod.rs:check_no_dirty_instances`; called first in
   `vhdl.rs:generate_vhdl` and `sv.rs:generate_sv`].
-- For a project with groups, `generate_design` stops on an error of
+- `GeneratedDesign::write_to` replaces only a file that hdlc generated
+  (`is_generated` reads the first line). It writes no file when it refuses
+  one. A design or a group with the name of a hand-written source thus does
+  not replace that source [`mod.rs:GeneratedDesign::write_to`,
+  `mod.rs:is_generated`].
+- A VHDL instance with no port and no generic value has the word
+  `component` (`u : component m;`). Without it the text is also the form
+  of a procedure call, and a parser that reads the syntax only sees no
+  instance [`vhdl.rs:emit_instance`].
+- For a design with groups, `generate_design` stops on an error of
   `groups::validate_groups` before it calls `groups::expand_hierarchy`
   [`mod.rs:generate_design`].
 - `GeneratedDesign.files` has the module of a child group before the module

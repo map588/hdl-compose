@@ -17,7 +17,7 @@ the rest:
 |---|---|
 | How to build and use the tool; the CLI; the GUI | [README.md](README.md) |
 | The `.hdlc` file format | [docs/FORMAT.md](docs/FORMAT.md) |
-| How an agent writes a project | [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) |
+| How an agent writes a design | [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) |
 | Contract of the Rust package | [src/README.md](src/README.md) |
 | Contract of code generation | [src/codegen/README.md](src/codegen/README.md) |
 | Contract of the Qt application and the bridge | [src/gui/README.md](src/gui/README.md) |
@@ -35,7 +35,7 @@ Non-goals:
   runs external tools (ghdl, slang, verilator, yosys, nextpnr, iverilog,
   openFPGALoader) and shows their results. It has no such engine of its own.
 - Not IP-XACT. The only metadata is what the HDL source holds.
-- Not a mixed-language editor. A project is VHDL or SystemVerilog.
+- Not a mixed-language editor. A design is VHDL or SystemVerilog.
 
 ## The central decision: one model, two views
 
@@ -88,7 +88,7 @@ modules.
 ```rust
 pub struct Schematic {
     top_name: String,
-    language: Language,            // Vhdl | SystemVerilog, one for a project
+    language: Language,            // Vhdl | SystemVerilog, one for a design
     top_generics: Vec<GenericDef>,
     top_ports: Vec<PortDef>,
     instances: Vec<Instance>,
@@ -172,7 +172,7 @@ schematic with groups give the same connections between the leaf pins.
 `codegen::generate_design` is the one entry point, for the CLI and for the
 GUI. It returns the text of each file and writes nothing.
 
-- A project with no group gives one file. A project with groups gives one
+- A design with no group gives one file. A design with groups gives one
   file for each group and the top-level file.
 - Codegen stops when validation reports an error, and when an instance is
   `dirty`.
@@ -183,6 +183,9 @@ GUI. It returns the text of each file and writes nothing.
   the bound.
 - The output is deterministic: instances in the order of their names, no
   metadata of the tool.
+- `GeneratedDesign::write_to` replaces only a file that hdlc generated (the
+  first line says so), and writes no file when it refuses one. A design or
+  a group can have the name of a hand-written source; that source stays.
 
 [src/codegen/README.md](src/codegen/README.md) has the contract.
 
@@ -203,7 +206,7 @@ holds the widgets, the scene and the events.
 
 **Three channels** connect the two sides:
 
-1. **The `AppState` QObject.** More than 100 methods that C++ calls, and 14
+1. **The `AppState` QObject.** More than 100 methods that C++ calls, and 15
    signals that Rust sends. Most read methods return one field for one
    index. A method that can fail returns `false`, and `last_error()` gives
    the message.
@@ -244,7 +247,7 @@ Everything recalculates on each change. This is a decision: the picture then
 depends only on the model, not on the history of edits.
 
 **Size.** The cost of that decision, measured on 2026-11-15 (release build,
-Apple silicon, generated projects, one net for each block). The time of the
+Apple silicon, generated designs, one net for each block). The time of the
 Qt scene is not in these numbers.
 
 | Blocks | Edit (validation, wire list) | Reads of the canvas | Wire routes |
@@ -254,7 +257,7 @@ Qt scene is not in these numbers.
 | 500 | 3.2 ms | 4.3 ms | 8.4 ms |
 | 1000 | 12 ms | 17 ms | 29 ms |
 
-A project of 500 blocks recalculates in about 16 ms, and a project of 1000
+A design of 500 blocks recalculates in about 16 ms, and a design of 1000
 blocks in about 60 ms. The wire routes are the part that grows fastest:
 their time grows almost with the square of the number of blocks (103 ms for
 2000 blocks). The router compares each bridge with the pins and the bridges
@@ -289,17 +292,69 @@ queued connection, and the canvas builds its items again. A reload builds
 the canvas again itself; `refresh_canvas` then does nothing.
 
 **Open** (GUI and CLI) has no earlier library to compare with, because the
-project file holds no module definition. A connection that no longer agrees
+design file holds no module definition. A connection that no longer agrees
 with its module stays in the model, and validation reports it. The same
 occurs after an undo that brings back a connection that a comparison
 removed. In the two cases `dirty` is not set; the error of validation stops
-codegen.
+codegen. The block has no pin for a port that is gone, so the context menu
+of the block has "Remove Stale Connections"
+(`Schematic::remove_stale_connections`): it removes each connection that
+names such a port, as one undo step.
+
+## Designs of a folder
+
+A design is one `.hdlc` file. Its name is the name of the file and the name
+of the module that it generates. The generated top file at its default
+place, `<folder>/<name>.<ext>`, makes the design a module for each other
+design of the folder. A user thus builds a hierarchy of designs and opens
+no file dialog. `src/designs.rs` reads these facts from the folder; no file
+holds them.
+
+- **The list.** `folder_designs` gives each `.hdlc` file of the folder, not
+  below it (a build directory holds copies). `AppState` reads the folder at
+  an open, after a save with a new name, after Generate, and at a reload of
+  the library. The sidebar shows the list; a click opens a design.
+- **The offer.** The open design can place a design of the folder when that
+  design has the same language, has generated HDL at the default place,
+  and does not contain the open design (`FolderDesign::obstacle`). The
+  library list shows such a design with the mark "(design)".
+- **The placement.** `add_instance` with the module of such a design puts
+  the generated top file, the generated group files and the library sources
+  of the child into the `library_paths` of the parent, in the undo step of
+  the instance. From then on the child is a module as each other module.
+  The parent file holds each path itself. Thus a `.hdlc` file is complete
+  alone, and the loader, the CLI and the build do not know the folder.
+- **Names.** New and Save As give the design the name of its file. They
+  refuse a name that is not a module name of the language and a name that
+  another design of the folder has (`design_name`, `check_name_is_free`).
+  File > New with a design open writes into the folder of that design. An
+  older file whose module name is not its file name loads as before.
+- **Guards.** `Schematic::validate` reports an instance of the design
+  itself, an instance of a module that contains the design, and a module
+  name that two sources define. Generate replaces only its own files (see
+  "Code generation").
+- **A child that changes.** The parent reads the generated HDL of the
+  child, as it reads each library source. The window holds one design, so
+  the parent is closed while the user changes the child. The parent thus
+  gets the handling of an open (see "Library and module changes"): the
+  connections stay, validation reports them, and the user removes them
+  with "Remove Stale Connections".
+- **The build.** A tool run of a parent takes `vhdl_libraries`,
+  `extra_sources` and `exclude_sources` from the toolchain config of each
+  design of the folder whose module the parent uses
+  (`ToolchainConfig::load_with_children`). The flags, the VHDL standard,
+  the board and the clocks come from the config of the parent only.
+
+A group and a design are two things. A group is a fold in one design: it
+has one use, and it has no `.hdlc` file of its own. A design has its file,
+and other designs can use it many times.
 
 ## Undo and redo
 
 Undo is a stack of snapshots, 100 entries at most. Each method that changes
-the schematic calls `push_snapshot` before the change. `open_project` and
-`new_project` clear the two stacks.
+the schematic calls `push_snapshot` before the change. `open_project`,
+`recover`, and a save that gives the design a new name clear the two
+stacks. A new design is an open of its new file.
 
 Three rules make one command of the user one undo step, and nothing else:
 
@@ -328,16 +383,17 @@ because the history is final only when the method returns.
   then a rename). A failure during the save leaves the old file complete.
   These two files are the only copy of the work of the user.
 - The generated HDL files and the files of the build directory are written
-  in place. `hdlc` can make them again.
-- The text of a project file is a function of the design: each map is
+  in place. `hdlc` can make them again. A generated top file at its default
+  place is also an input: each design that places the design reads it.
+- The text of a design file is a function of the design: each map is
   written with its keys in sorted order. Two saves of one design give the
   same file.
 - The GUI shows the warnings of the loader in the diagnostics (prefix
   `load:`) until the next save. The loader can change the model: it removes
   a reference to an instance that is not in the file.
-- Only a save of the user changes the project file. Between two saves, the
+- Only a save of the user changes the design file. Between two saves, the
   GUI keeps a copy of the model in a recovery file,
-  `.<project file name>.autosave` next to the project. A change starts a
+  `.<design file name>.autosave` next to the design. A change starts a
   timer of 12 seconds. When the timer ends, `autosave` writes the file,
   and only when the model is different from the file. Many changes in that
   time give one write.
@@ -354,7 +410,7 @@ because the history is final only when the method returns.
 A tool command (`check`, `synth`, `sim`, `build`, `flash`) has three steps:
 
 1. **Stage.** `toolchain::stage` generates the HDL and puts it, with the
-   library sources, into `build/<top>/` next to the project. `hdlc` deletes
+   library sources, into `build/<top>/` next to the design. `hdlc` deletes
    that directory only when it made it (marker file `.hdlc-build`).
 2. **Step table.** A pure function makes the list of commands for the
    language and the board (`check_stages`, `synth_stages`, `build_stages`,
@@ -364,7 +420,7 @@ A tool command (`check`, `synth`, `sim`, `build`, `flash`) has three steps:
 3. **Run.** `run_stages` runs the commands, prints each one, and records it
    with its exit status in `steps.log`.
 
-The settings of a project for the tools are in `<project>.toolchain.json`
+The settings of a design for the tools are in `<design>.toolchain.json`
 (board, clocks, extra sources, tool options). The CLI and the GUI read the
 same file.
 
@@ -380,7 +436,9 @@ codegen or in the group collapse shows as a difference.
 - Property tests for the net model, routing and code generation.
 - `tests/netlist_roundtrip.rs`: for random valid schematics, the netlist of
   the generated HDL must equal the nets of the schematic (VHDL and
-  SystemVerilog, with nested groups).
+  SystemVerilog, with nested groups). For the same schematics, the parser
+  must give the interface of the design back from the generated top file:
+  a parent design reads a child design from that file.
 - `tests/toolchain_tools.rs`: runs the real tools; skips when they are
   missing.
 - Tests in `bridge.rs` make an `AppState` with no window
@@ -398,11 +456,13 @@ codegen or in the group collapse shows as a difference.
   `tests/gui_offscreen.rs`: the real `MainWindow` on the Qt `offscreen`
   platform, with clicks, drags and keys from Qt Test
   (`src/gui/gui_tests.cpp`). No window comes on the screen, and the
-  settings of the test are in a temporary directory. The 13 tests cover a
+  settings of the test are in a temporary directory. The 17 tests cover a
   wire from two clicks, undo and redo from the menu, the drag of a block,
   the Delete key, the context menu, the color of a net, the pins of a
-  changed source, the recovery file, the save key, and the questions on
-  close and on open (see "Known weaknesses", item 3).
+  changed source, the recovery file, the save key, the questions on close
+  and on open, a new design in the folder, the list of designs, the
+  placement of a design, and the removal of stale connections (see "Known
+  weaknesses", item 3).
 
 ## Decisions that stay
 
@@ -412,6 +472,8 @@ codegen or in the group collapse shows as a difference.
 | Text and canvas are views of one model | No state to keep in step between views |
 | A reference is connectivity only; nets by union-find | A hand-written file and the GUI can write a connection from either end |
 | Module definitions are never saved | A changed source is always seen |
+| A parent holds the paths of the files of a child | A `.hdlc` file is complete alone; the loader, the CLI and the build need no rule for the folder |
+| The name of a design is the name of its file | Two designs of one folder never generate one file |
 | One `generate_design` for the CLI and the GUI | The two cannot give different files |
 | Snapshot undo | Simple and correct for a model of this size |
 | Global route calculation on each change | The picture depends only on the model |
@@ -441,13 +503,23 @@ These stay:
 4. **Routing is global.** Each change calculates all wire routes again, and
    that time grows almost with the square of the number of blocks (see
    "How a change flows").
+5. **A design is a module through its generated file only.** A parent uses
+   the HDL that a child generated last, and nothing shows that the child
+   changed after that. The paths that a parent got at the placement do not
+   follow a new library source or a new group of the child; a new instance
+   of the child adds them. A switch between two designs is an open: it
+   asks about changes that are not saved, and the undo history of the
+   design that the user leaves is lost.
 
 ## Out of scope
 
-- Mixed-language projects.
+- Mixed-language designs.
 - Bus rippers and slice adapters beyond the inline slice forms.
 - Manual positions for wire segments.
-- Editing the inside of a library module.
+- Editing the inside of a library module that is an HDL source. (A module
+  that is a design of the folder is edited as that design.)
+- One stored library for a folder, several designs in memory, and a build
+  of a parent that generates its children.
 
 ## Stack
 
@@ -457,7 +529,7 @@ These stay:
   `--no-default-features` is the CLI only and needs no Qt.
 - `vhdl_lang` for VHDL and `sv-parser` for Verilog and SystemVerilog module
   headers.
-- `serde` / `serde_json` for the project file, `schemars` for its schema,
+- `serde` / `serde_json` for the design file, `schemars` for its schema,
   `clap` for the CLI, `tracing` for logs.
 - `proptest` and `tempfile` for tests. Qt Test for the tests of the window,
   only with the cargo feature `gui-tests` (off by default).
