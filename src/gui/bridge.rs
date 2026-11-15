@@ -3126,6 +3126,13 @@ impl qobject::AppState {
         }
         self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
+        // An alias can make an error (one name on two nets). Validate
+        // before the signal; in a batch `end_batch` validates.
+        if self.as_ref().rust().batch_depth > 0 {
+            self.as_mut().rust_mut().get_mut().batch_changed = true;
+        } else {
+            self.as_mut().rebuild_library_and_validate();
+        }
         self.as_mut().alias_changed(QString::from(&key_s));
         true
     }
@@ -4254,6 +4261,31 @@ mod tests {
                 .port_map_entry(&q("u_b"), &q("d"))
                 .to_string()
                 .is_empty()
+        );
+    }
+
+    /// Regression: `set_alias` did not run validation, so the diagnostics
+    /// were those from before the change. One alias on two nets is an error.
+    #[test]
+    fn alias_change_runs_validation() {
+        let (_dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().add_instance(&q("u_c"), &q("source")));
+        assert!(state.pin_mut().set_alias(&q("u_a.q"), &q("data_net")));
+        assert_eq!(
+            state.validation_error_count(),
+            0,
+            "{:?}",
+            state.validation_messages()
+        );
+
+        assert!(state.pin_mut().set_alias(&q("u_c.q"), &q("data_net")));
+        let messages = state.validation_messages();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("alias 'data_net' is used for 2 different nets")),
+            "{messages:?}"
         );
     }
 
