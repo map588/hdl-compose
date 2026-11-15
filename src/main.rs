@@ -21,8 +21,8 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
-    /// Project to open in the GUI (.hdlc). Without it, the GUI reopens the
-    /// most recent project.
+    /// Design to open in the GUI (.hdlc). Without it, the GUI reopens the
+    /// most recent design.
     project: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -37,32 +37,32 @@ enum Command {
         file: PathBuf,
     },
 
-    /// Create a new empty .hdlc project file
+    /// Create a new empty .hdlc design file
     New {
-        /// Project name (creates <name>.hdlc)
+        /// Design name (creates <name>.hdlc)
         name: String,
 
         /// Target HDL language
         #[arg(short, long)]
         language: LangArg,
 
-        /// Populate the project with a working example: two wired modules
+        /// Populate the design with a working example: two wired modules
         /// (with HDL sources written alongside), a constant tie, a net
         /// alias, and a top-generic passthrough
         #[arg(long)]
         example: bool,
     },
 
-    /// Validate a .hdlc project and report diagnostics.
+    /// Validate a .hdlc design and report diagnostics.
     /// Exit code: 0 = clean, 1 = warnings only, 2 = errors.
     Validate {
-        /// Path to .hdlc project file
+        /// Path to .hdlc design file
         project: PathBuf,
     },
 
-    /// Generate structural HDL from a .hdlc project
+    /// Generate structural HDL from a .hdlc design
     Codegen {
-        /// Path to .hdlc project file
+        /// Path to .hdlc design file
         project: PathBuf,
 
         /// Output file (default: stdout)
@@ -70,26 +70,26 @@ enum Command {
         output: Option<PathBuf>,
     },
 
-    /// Print a summary of a .hdlc project
+    /// Print a summary of a .hdlc design
     Inspect {
-        /// Path to .hdlc project file
+        /// Path to .hdlc design file
         project: PathBuf,
     },
 
-    /// Migrate .hdlc project files to the current format version (in place)
+    /// Migrate .hdlc design files to the current format version (in place)
     Migrate {
-        /// Paths to .hdlc project files
+        /// Paths to .hdlc design files
         projects: Vec<PathBuf>,
     },
 
-    /// Print the JSON Schema for the .hdlc project file format
+    /// Print the JSON Schema for the .hdlc design file format
     Schema {
         /// Output file (default: stdout)
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
 
-    /// Print the guide that an agent needs to write a .hdlc project:
+    /// Print the guide that an agent needs to write a .hdlc design:
     /// the procedure, a complete example, and the format reference
     Guide,
 
@@ -97,21 +97,21 @@ enum Command {
     /// Requires oss-cad-suite (or the tools) on PATH.
     /// Exit code: 0 = clean, 1 = tool reported errors, 2 = tool missing or codegen failed.
     Check {
-        /// Path to .hdlc project file
+        /// Path to .hdlc design file
         project: PathBuf,
     },
 
     /// Run a generic yosys synthesis of the generated design and print stats.
     /// Requires oss-cad-suite (yosys, plus ghdl plugin for VHDL) on PATH.
     Synth {
-        /// Path to .hdlc project file
+        /// Path to .hdlc design file
         project: PathBuf,
     },
 
     /// Simulate the design via <top>_tb (a skeleton is generated next to the
-    /// project if missing) using ghdl / iverilog. Requires oss-cad-suite on PATH.
+    /// design if missing) using ghdl / iverilog. Requires oss-cad-suite on PATH.
     Sim {
-        /// Path to .hdlc project file
+        /// Path to .hdlc design file
         project: PathBuf,
 
         /// Open the wave file in surfer/gtkwave after the run
@@ -122,15 +122,15 @@ enum Command {
     /// Build a bitstream for a specific board (yosys → nextpnr → pack).
     /// Requires oss-cad-suite on PATH.
     Build {
-        /// Path to .hdlc project file
+        /// Path to .hdlc design file
         project: PathBuf,
 
         /// Path to a .board.json file (family, device, package, constraints).
-        /// Default: the `board` key of <project>.toolchain.json
+        /// Default: the `board` key of <design>.toolchain.json
         #[arg(long)]
         board: Option<PathBuf>,
 
-        /// Output bitstream (default: <projectdir>/<top>.bit)
+        /// Output bitstream (default: <folder>/<top>.bit)
         #[arg(short, long)]
         output: Option<PathBuf>,
 
@@ -140,14 +140,14 @@ enum Command {
         dry_run: bool,
     },
 
-    /// Program a board with the project's bitstream via openFPGALoader
+    /// Program a board with the design's bitstream via openFPGALoader
     /// (builds it first if missing). SRAM load by default.
     Flash {
-        /// Path to .hdlc project file
+        /// Path to .hdlc design file
         project: PathBuf,
 
         /// Path to a .board.json file. Default: the `board` key of
-        /// <project>.toolchain.json
+        /// <design>.toolchain.json
         #[arg(long)]
         board: Option<PathBuf>,
 
@@ -156,19 +156,19 @@ enum Command {
         flash: bool,
     },
 
-    /// Start a board for a project: write a Makefile that calls `hdlc
+    /// Start a board for a design: write a Makefile that calls `hdlc
     /// build` and `hdlc flash`, a board file template and a constraints
-    /// skeleton next to the project, and name the board in the toolchain
-    /// config of the project
+    /// skeleton next to the design, and name the board in the toolchain
+    /// config of the design
     Fpga {
-        /// Path to .hdlc project file
+        /// Path to .hdlc design file
         project: PathBuf,
 
         /// Target FPGA family
         #[arg(long)]
         family: FamilyArg,
 
-        /// Output directory (default: the project's directory)
+        /// Output directory (default: the folder of the design)
         #[arg(short, long)]
         output: Option<PathBuf>,
 
@@ -183,7 +183,7 @@ enum Command {
 
     /// Launch the Qt GUI (default when no subcommand is given)
     Gui {
-        /// Project to open (.hdlc)
+        /// Design to open (.hdlc)
         project: Option<PathBuf>,
     },
 }
@@ -600,8 +600,8 @@ fn cmd_new(name: &str, language: Language, example: bool) -> ExitCode {
 
     match project::save_project(&schematic, &path) {
         Ok(()) => {
-            info!("Created project: {filename}");
-            println!("Created {lang_str} project: {filename}");
+            info!("Created design: {filename}");
+            println!("Created {lang_str} design: {filename}");
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -1191,7 +1191,7 @@ fn cmd_inspect(project_path: &std::path::Path) -> ExitCode {
         Language::SystemVerilog => "SystemVerilog",
     };
 
-    println!("Project: {}", schematic.top_name);
+    println!("Design: {}", schematic.top_name);
     println!("Language: {lang_str}");
     println!("Instances: {}", schematic.instances.len());
 

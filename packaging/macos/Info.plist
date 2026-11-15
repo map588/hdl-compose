@@ -14,7 +14,7 @@
   <array>
     <dict>
       <key>UTTypeIdentifier</key><string>com.hdlcompose.project</string>
-      <key>UTTypeDescription</key><string>HDL Compose Project</string>
+      <key>UTTypeDescription</key><string>HDL Compose Design</string>
       <key>UTTypeConformsTo</key>
       <array><string>public.json</string></array>
       <key>UTTypeTagSpecification</key>
@@ -27,7 +27,7 @@
   <key>CFBundleDocumentTypes</key>
   <array>
     <dict>
-      <key>CFBundleTypeName</key><string>HDL Compose Project</string>
+      <key>CFBundleTypeName</key><string>HDL Compose Design</string>
       <key>CFBundleTypeRole</key><string>Editor</string>
       <key>LSHandlerRank</key><string>Owner</string>
       <key>LSItemContentTypes</key>

@@ -331,7 +331,7 @@ class CanvasView : public QGraphicsView {
         QGraphicsView::drawForeground(painter, rect);
         QString hint;
         if (!m_state->has_project()) {
-            hint = QStringLiteral("Create a project (File \u2192 New) or open one (File \u2192 Open)");
+            hint = QStringLiteral("Create a design (File \u2192 New) or open one (File \u2192 Open)");
         } else if (m_state->instance_count() > 0) {
             return;
         } else if (m_state->library_module_count() == 0) {

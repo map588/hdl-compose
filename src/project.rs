@@ -16,7 +16,7 @@ pub enum ProjectError {
     Json(#[from] serde_json::Error),
 
     #[error(
-        "unsupported project version: {0} (supported: {MIN_SUPPORTED_VERSION}..={CURRENT_VERSION})"
+        "unsupported version of the design file: {0} (supported: {MIN_SUPPORTED_VERSION}..={CURRENT_VERSION})"
     )]
     UnsupportedVersion(u32),
 

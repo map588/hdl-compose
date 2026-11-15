@@ -447,7 +447,7 @@ void launch_goto_source(QWidget *parent, const QString &source_path) {
 
 bool prompt_new_project(QWidget *parent, QString &out_name, int &out_lang) {
     QDialog dlg(parent);
-    dlg.setWindowTitle(QStringLiteral("New Project"));
+    dlg.setWindowTitle(QStringLiteral("New Design"));
 
     auto *name_edit = new QLineEdit(&dlg);
     name_edit->setPlaceholderText(QStringLiteral("top_level"));
@@ -821,7 +821,7 @@ class MainWindow : public QMainWindow {
         auto *addFolderAct = fileMenu->addAction(QStringLiteral("Add HDL &Folder..."));
         auto *reloadAct = fileMenu->addAction(QStringLiteral("&Refresh Library"));
         reloadAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
-        auto *copySourcesAct = fileMenu->addAction(QStringLiteral("&Copy Sources to Project Dir"));
+        auto *copySourcesAct = fileMenu->addAction(QStringLiteral("&Copy Sources to Design Folder"));
         fileMenu->addSeparator();
         auto *saveAct = fileMenu->addAction(QStringLiteral("&Save"));
         saveAct->setShortcut(QKeySequence::Save);
@@ -830,7 +830,7 @@ class MainWindow : public QMainWindow {
         fileMenu->addSeparator();
         auto *generateAct = fileMenu->addAction(QStringLiteral("&Generate HDL"));
         generateAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
-        generateAct->setToolTip(QStringLiteral("Write the generated HDL next to the project file"));
+        generateAct->setToolTip(QStringLiteral("Write the generated HDL next to the design file"));
         auto *generateAsAct = fileMenu->addAction(QStringLiteral("Generate HDL &As..."));
         generateAsAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G));
         fileMenu->addSeparator();
@@ -1528,7 +1528,7 @@ class MainWindow : public QMainWindow {
         }
         auto btn = QMessageBox::warning(
             this, QStringLiteral("Unsaved Changes"),
-            QStringLiteral("Project \"%1\" has unsaved changes.").arg(m_state->getProject_name()),
+            QStringLiteral("Design \"%1\" has unsaved changes.").arg(m_state->getProject_name()),
             QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
         if (btn == QMessageBox::Cancel) {
             return false;
@@ -1563,9 +1563,9 @@ class MainWindow : public QMainWindow {
             path = QFileInfo(open_design).absoluteDir().filePath(name + QStringLiteral(".hdlc"));
         } else {
             path = QFileDialog::getSaveFileName(
-                this, QStringLiteral("Save New Project"),
+                this, QStringLiteral("Save New Design"),
                 QDir(default_open_dir()).filePath(name + QStringLiteral(".hdlc")),
-                QStringLiteral("HDL Compose Projects (*.hdlc)"));
+                QStringLiteral("HDL Compose Designs (*.hdlc)"));
             if (path.isEmpty()) {
                 return;
             }
@@ -1575,7 +1575,7 @@ class MainWindow : public QMainWindow {
         }
         // The open design stays when the new one is refused.
         if (!m_state->new_project_at(path, lang)) {
-            show_state_error(this, m_state, QStringLiteral("New Project"));
+            show_state_error(this, m_state, QStringLiteral("New Design"));
             return;
         }
         add_recent_project(path);
@@ -1584,7 +1584,7 @@ class MainWindow : public QMainWindow {
 
     void openProjectPath(const QString &path) {
         if (!m_state->open_project(path)) {
-            show_state_error(this, m_state, QStringLiteral("Open Project"));
+            show_state_error(this, m_state, QStringLiteral("Open Design"));
             return;
         }
         add_recent_project(path);
@@ -1605,7 +1605,7 @@ class MainWindow : public QMainWindow {
             return;
         }
         QMessageBox box(QMessageBox::Question, QStringLiteral("Recover Unsaved Changes"),
-                        QStringLiteral("Project \"%1\" was not closed correctly.")
+                        QStringLiteral("Design \"%1\" was not closed correctly.")
                             .arg(m_state->getProject_name()),
                         QMessageBox::NoButton, this);
         box.setInformativeText(
@@ -1630,8 +1630,8 @@ class MainWindow : public QMainWindow {
         if (!maybeSaveDirty()) {
             return;
         }
-        QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Open Project"), dialog_start_dir(m_state),
-                                                    QStringLiteral("HDL Compose Projects (*.hdlc)"));
+        QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Open Design"), dialog_start_dir(m_state),
+                                                    QStringLiteral("HDL Compose Designs (*.hdlc)"));
         if (path.isEmpty()) {
             return;
         }
@@ -1664,7 +1664,7 @@ class MainWindow : public QMainWindow {
     void onAddSource() {
         if (!m_state->has_project()) {
             QMessageBox::information(this, QStringLiteral("Add HDL Source"),
-                                     QStringLiteral("Create or open a project first."));
+                                     QStringLiteral("Create or open a design first."));
             return;
         }
         QStringList paths =
@@ -1677,7 +1677,7 @@ class MainWindow : public QMainWindow {
     void onAddFolder() {
         if (!m_state->has_project()) {
             QMessageBox::information(this, QStringLiteral("Add HDL Folder"),
-                                     QStringLiteral("Create or open a project first."));
+                                     QStringLiteral("Create or open a design first."));
             return;
         }
         QString dir = QFileDialog::getExistingDirectory(this, QStringLiteral("Add HDL Folder"),
@@ -1731,8 +1731,8 @@ class MainWindow : public QMainWindow {
     }
 
     bool saveAsProject() {
-        QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save Project As"), dialog_start_dir(m_state),
-                                                    QStringLiteral("HDL Compose Projects (*.hdlc)"));
+        QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save Design As"), dialog_start_dir(m_state),
+                                                    QStringLiteral("HDL Compose Designs (*.hdlc)"));
         if (path.isEmpty()) {
             return false;
         }
@@ -1740,7 +1740,7 @@ class MainWindow : public QMainWindow {
             path += QStringLiteral(".hdlc");
         }
         if (!m_state->save_project_as(path)) {
-            show_state_error(this, m_state, QStringLiteral("Save Project"));
+            show_state_error(this, m_state, QStringLiteral("Save Design"));
             return false;
         }
         add_recent_project(path);
@@ -1750,7 +1750,7 @@ class MainWindow : public QMainWindow {
 
     void onSaveProject() {
         if (!m_state->has_project()) {
-            QMessageBox::information(this, QStringLiteral("Save"), QStringLiteral("No project to save."));
+            QMessageBox::information(this, QStringLiteral("Save"), QStringLiteral("No design to save."));
             return;
         }
         if (m_state->save_project()) {
@@ -1766,7 +1766,7 @@ class MainWindow : public QMainWindow {
     // file dialog instead.
     void onGenerate(bool ask) {
         if (!m_state->has_project()) {
-            QMessageBox::information(this, QStringLiteral("Generate HDL"), QStringLiteral("No project loaded."));
+            QMessageBox::information(this, QStringLiteral("Generate HDL"), QStringLiteral("No design loaded."));
             return;
         }
         int lang = m_state->project_language();
@@ -1782,7 +1782,7 @@ class MainWindow : public QMainWindow {
             lang_label = QStringLiteral("SystemVerilog");
             break;
         default:
-            QMessageBox::warning(this, QStringLiteral("Generate HDL"), QStringLiteral("Unknown project language."));
+            QMessageBox::warning(this, QStringLiteral("Generate HDL"), QStringLiteral("Unknown design language."));
             return;
         }
         QString path = m_state->suggest_codegen_path();
@@ -1801,7 +1801,7 @@ class MainWindow : public QMainWindow {
 
     void onReloadLibrary() {
         if (!m_state->has_project()) {
-            QMessageBox::information(this, QStringLiteral("Refresh Library"), QStringLiteral("No project loaded."));
+            QMessageBox::information(this, QStringLiteral("Refresh Library"), QStringLiteral("No design loaded."));
             return;
         }
         if (m_state->reload_library()) {
@@ -1815,7 +1815,7 @@ class MainWindow : public QMainWindow {
         QString proj_path = m_state->current_project_path();
         if (proj_path.isEmpty()) {
             QMessageBox::information(this, QStringLiteral("Copy Sources"),
-                                     QStringLiteral("Save the project first so we know where to copy to."));
+                                     QStringLiteral("Save the design first so we know where to copy to."));
             return;
         }
         QDir proj_dir = QFileInfo(proj_path).absoluteDir();
@@ -2075,7 +2075,7 @@ class MainWindow : public QMainWindow {
     // Right dock with the device and the placed design. Created on first use.
     void showChipView() {
         if (!m_state->has_project() || m_state->current_project_path().isEmpty()) {
-            statusBar()->showMessage(QStringLiteral("Chip View needs a saved project"), 4000);
+            statusBar()->showMessage(QStringLiteral("Chip View needs a saved design"), 4000);
             return;
         }
         if (!m_chip_dock) {
@@ -2139,18 +2139,18 @@ class MainWindow : public QMainWindow {
     // run against stale state, so force a save first.
     bool ensureSavedForTool() {
         if (!m_state->has_project()) {
-            QMessageBox::information(this, QStringLiteral("Toolchain"), QStringLiteral("No project loaded."));
+            QMessageBox::information(this, QStringLiteral("Toolchain"), QStringLiteral("No design loaded."));
             return false;
         }
         if (m_state->current_project_path().isEmpty()) {
             QMessageBox::information(this, QStringLiteral("Toolchain"),
-                                     QStringLiteral("Save the project first — toolchain runs read it from disk."));
+                                     QStringLiteral("Save the design first — toolchain runs read it from disk."));
             return saveAsProject();
         }
         if (m_state->getDirty()) {
             auto btn = QMessageBox::question(
                 this, QStringLiteral("Toolchain"),
-                QStringLiteral("The project has unsaved changes. Save and run?"),
+                QStringLiteral("The design has unsaved changes. Save and run?"),
                 QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Save);
             if (btn != QMessageBox::Save) {
                 return false;

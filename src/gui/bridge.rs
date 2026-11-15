@@ -1508,7 +1508,7 @@ impl qobject::AppState {
         let schematic = match self.as_ref().rust().schematic.clone() {
             Some(s) => s,
             None => {
-                self.as_mut().record_error("no project loaded");
+                self.as_mut().record_error("no design loaded");
                 return false;
             }
         };
@@ -1579,7 +1579,7 @@ impl qobject::AppState {
         let path = match self.as_ref().rust().current_path.clone() {
             Some(p) => p,
             None => {
-                self.as_mut().record_error("no project path set");
+                self.as_mut().record_error("the design has no file");
                 return false;
             }
         };
@@ -1595,7 +1595,7 @@ impl qobject::AppState {
             .as_ref()
             .map(|s| (s.language.clone(), s.top_name.clone()))
         else {
-            self.as_mut().record_error("no project loaded");
+            self.as_mut().record_error("no design loaded");
             return false;
         };
         // The name of a design is the name of its file: a save with a new
@@ -1693,7 +1693,7 @@ impl qobject::AppState {
 
     pub fn recover(mut self: Pin<&mut Self>) -> bool {
         let Some(path) = self.recovery_file_path() else {
-            self.as_mut().record_error("no project path set");
+            self.as_mut().record_error("the design has no file");
             return false;
         };
         match project::load_project(&path) {
@@ -1738,7 +1738,7 @@ impl qobject::AppState {
         let schematic = match self.as_ref().rust().schematic.clone() {
             Some(s) => s,
             None => {
-                self.as_mut().record_error("no project loaded");
+                self.as_mut().record_error("no design loaded");
                 return false;
             }
         };
@@ -1885,7 +1885,7 @@ impl qobject::AppState {
 
     pub fn commit_top_level_buffer(mut self: Pin<&mut Self>, buffer: &QString) -> bool {
         if self.as_ref().rust().schematic.is_none() {
-            self.as_mut().record_error("no project loaded");
+            self.as_mut().record_error("no design loaded");
             return false;
         }
         let parsed = match parse_top_level_buffer(&buffer.to_string()) {
@@ -2076,7 +2076,7 @@ impl qobject::AppState {
                     .map(|_| new_sources)
             }
             None => {
-                self.as_mut().record_error("no project loaded");
+                self.as_mut().record_error("no design loaded");
                 return false;
             }
         };
@@ -2121,7 +2121,7 @@ impl qobject::AppState {
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s.rename_instance(&old_s, &new_s),
             None => {
-                self.as_mut().record_error("no project loaded");
+                self.as_mut().record_error("no design loaded");
                 return false;
             }
         };
@@ -2263,7 +2263,7 @@ impl qobject::AppState {
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s.remove_instance(&name_s).map(|_| ()),
             None => {
-                self.as_mut().record_error("no project loaded");
+                self.as_mut().record_error("no design loaded");
                 return false;
             }
         };
@@ -2605,7 +2605,7 @@ impl qobject::AppState {
                 .set_port_map_entry(&inst, port_s.clone(), parsed)
                 .map(|_| ()),
             None => {
-                self.as_mut().record_error("no project loaded");
+                self.as_mut().record_error("no design loaded");
                 return false;
             }
         };
@@ -2659,7 +2659,7 @@ impl qobject::AppState {
                 .set_port_map_entry(&inst, port_s.clone(), Some(net_ref))
                 .map(|_| ()),
             None => {
-                self.as_mut().record_error("no project loaded");
+                self.as_mut().record_error("no design loaded");
                 return false;
             }
         };
@@ -2776,7 +2776,7 @@ impl qobject::AppState {
             let this = self.as_ref();
             let r = this.rust();
             match r.schematic.as_ref() {
-                None => Err("no project loaded".to_string()),
+                None => Err("no design loaded".to_string()),
                 Some(schematic) => match schematic.instances.iter().find(|i| i.name == inst_s) {
                     None => Err(format!("instance not found: {inst_s}")),
                     Some(inst) => match r.library.iter().find(|m| m.name == inst.module_ref) {
@@ -3426,7 +3426,7 @@ impl qobject::AppState {
                 .set_port_map_entry(&inst, port_s.clone(), None)
                 .map(|_| ()),
             None => {
-                self.as_mut().record_error("no project loaded");
+                self.as_mut().record_error("no design loaded");
                 return false;
             }
         };
@@ -3483,7 +3483,7 @@ impl qobject::AppState {
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s.set_generic_map_entry(&inst, gen_s, expr_s).map(|_| ()),
             None => {
-                self.as_mut().record_error("no project loaded");
+                self.as_mut().record_error("no design loaded");
                 return false;
             }
         };
@@ -3671,7 +3671,7 @@ impl qobject::AppState {
             None => false,
         };
         if !ok {
-            self.as_mut().record_error("no project loaded");
+            self.as_mut().record_error("no design loaded");
             return false;
         }
         self.as_mut().rust_mut().get_mut().dirty = true;
@@ -3734,7 +3734,7 @@ impl qobject::AppState {
             Some(s) if s.library_paths.contains(&path_buf) => return false,
             Some(_) => {}
             None => {
-                self.as_mut().record_error("no project loaded");
+                self.as_mut().record_error("no design loaded");
                 return false;
             }
         }
@@ -3789,7 +3789,7 @@ impl qobject::AppState {
 
     pub fn set_project_board(mut self: Pin<&mut Self>, board: &QString) -> bool {
         let Some(project) = self.rust().current_path.clone() else {
-            self.as_mut().record_error("save the project first");
+            self.as_mut().record_error("save the design first");
             return false;
         };
         let board = PathBuf::from(board.to_string());
@@ -3907,7 +3907,7 @@ impl qobject::AppState {
             let this = self.as_ref();
             let r = this.rust();
             match r.schematic.as_ref() {
-                None => Some("no project loaded".to_string()),
+                None => Some("no design loaded".to_string()),
                 Some(s) => {
                     if s.groups.iter().any(|g| g.name == name_s)
                         || s.instances.iter().any(|i| i.name == name_s)
