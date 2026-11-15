@@ -475,6 +475,30 @@ impl Schematic {
             }
         }
 
+        // A module name that two sources define. The lookups of a module by
+        // name do not all take the same definition, so the canvas and the
+        // generated HDL could show different modules.
+        {
+            let mut first: HashMap<&str, &ModuleDef> = HashMap::new();
+            let mut reported: HashSet<&str> = HashSet::new();
+            for module in library {
+                match first.get(module.name.as_str()) {
+                    Some(other) if reported.insert(module.name.as_str()) => {
+                        diags.push(Diagnostic::error(format!(
+                            "module '{}' is defined in two sources: {} and {}",
+                            module.name,
+                            other.source_path.display(),
+                            module.source_path.display()
+                        )));
+                    }
+                    Some(_) => {}
+                    None => {
+                        first.insert(module.name.as_str(), module);
+                    }
+                }
+            }
+        }
+
         // Duplicate instance names
         {
             let mut seen = HashSet::new();
@@ -493,6 +517,26 @@ impl Schematic {
             self.instances.iter().map(|i| i.name.as_str()).collect();
 
         for inst in &self.instances {
+            // A design is a module for other designs. A design that
+            // contains itself has no end.
+            if inst.module_ref == self.top_name {
+                diags.push(
+                    Diagnostic::error(format!(
+                        "instance '{}' uses the design '{}' itself",
+                        inst.name, self.top_name
+                    ))
+                    .with_instance(&inst.name),
+                );
+            } else if module_contains(&lib_map, &inst.module_ref, &self.top_name) {
+                diags.push(
+                    Diagnostic::error(format!(
+                        "module '{}' of instance '{}' contains the design '{}'",
+                        inst.module_ref, inst.name, self.top_name
+                    ))
+                    .with_instance(&inst.name),
+                );
+            }
+
             // Unresolved module reference
             let module_def = match lib_map.get(inst.module_ref.as_str()) {
                 Some(m) => Some(*m),
@@ -945,6 +989,28 @@ fn port_width(pt: &PortType) -> Option<u32> {
     }
 }
 
+/// True when the module `start` instantiates the module `target`, directly
+/// or through other modules of the library.
+fn module_contains(library: &HashMap<&str, &ModuleDef>, start: &str, target: &str) -> bool {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut pending: Vec<&str> = vec![start];
+    while let Some(name) = pending.pop() {
+        if !seen.insert(name) {
+            continue;
+        }
+        let Some(module) = library.get(name) else {
+            continue;
+        };
+        for dependency in &module.dependencies {
+            if dependency == target {
+                return true;
+            }
+            pending.push(dependency);
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1203,6 +1269,92 @@ mod tests {
             diags
                 .iter()
                 .any(|d| d.is_error() && d.message.contains("not found in library"))
+        );
+    }
+
+    /// A module with the given dependencies, from the source `<name>.vhd`.
+    fn module_that_uses(name: &str, dependencies: &[&str]) -> ModuleDef {
+        ModuleDef {
+            source_path: format!("{name}.vhd").into(),
+            dependencies: dependencies.iter().map(|d| d.to_string()).collect(),
+            ..make_module(name, vec![])
+        }
+    }
+
+    fn errors(diags: &[Diagnostic]) -> Vec<&str> {
+        diags
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.message.as_str())
+            .collect()
+    }
+
+    /// A design is a module for other designs. An instance of the design in
+    /// the design itself has no end.
+    #[test]
+    fn instance_of_the_design_itself_is_an_error() {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.add_instance("u_self", "top").unwrap();
+        let lib = vec![module_that_uses("top", &[])];
+
+        let diags = s.validate(&lib);
+        assert_eq!(
+            errors(&diags),
+            ["instance 'u_self' uses the design 'top' itself"]
+        );
+    }
+
+    /// `outer` instantiates `inner`, and `inner` instantiates the design.
+    #[test]
+    fn module_that_contains_the_design_is_an_error() {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.add_instance("u_outer", "outer").unwrap();
+        s.add_instance("u_leaf", "leaf").unwrap();
+        let lib = vec![
+            module_that_uses("outer", &["leaf", "inner"]),
+            module_that_uses("inner", &["top"]),
+            module_that_uses("leaf", &[]),
+            module_that_uses("top", &["outer"]),
+        ];
+
+        let diags = s.validate(&lib);
+        assert_eq!(
+            errors(&diags),
+            ["module 'outer' of instance 'u_outer' contains the design 'top'"]
+        );
+    }
+
+    /// Two library modules that instantiate each other do not contain the
+    /// design, and the search ends.
+    #[test]
+    fn modules_that_use_each_other_do_not_contain_the_design() {
+        let mut s = Schematic::new("top", Language::Vhdl);
+        s.add_instance("u_a", "a").unwrap();
+        let lib = vec![module_that_uses("a", &["b"]), module_that_uses("b", &["a"])];
+
+        assert_eq!(errors(&s.validate(&lib)), [] as [&str; 0]);
+    }
+
+    /// The lookups of a module by name do not all take the same definition
+    /// when two sources define the name.
+    #[test]
+    fn module_name_from_two_sources_is_an_error() {
+        let s = Schematic::new("top", Language::Vhdl);
+        let mut second = module_that_uses("fifo", &[]);
+        second.source_path = "vendor/fifo.v".into();
+        let mut third = module_that_uses("fifo", &[]);
+        third.source_path = "sim/fifo.vhd".into();
+        let lib = vec![
+            module_that_uses("fifo", &[]),
+            module_that_uses("uart", &[]),
+            second,
+            third,
+        ];
+
+        // One message for the name, with the first two sources.
+        assert_eq!(
+            errors(&s.validate(&lib)),
+            ["module 'fifo' is defined in two sources: fifo.vhd and vendor/fifo.v"]
         );
     }
 

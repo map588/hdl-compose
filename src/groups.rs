@@ -564,6 +564,50 @@ mod tests {
         assert!(!flat.contains("u_chain"), "{flat}");
     }
 
+    /// A group or a design can have the name of a source that the user
+    /// wrote. Generate replaced that source. It now replaces only a file
+    /// that it wrote, and it writes no file when one is refused.
+    #[test]
+    fn generate_does_not_replace_a_file_that_hdlc_did_not_write() {
+        let (s, lib) = grouped_fixture();
+        let design = crate::codegen::generate_design(&s, &lib).unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let top = dir.path().join("top.vhd");
+        let by_hand = "entity top is\nend entity top;\n";
+        std::fs::write(&top, by_hand).unwrap();
+
+        let error = design.write_to(&top).unwrap_err();
+
+        assert!(error.to_string().contains("top.vhd"), "{error}");
+        assert_eq!(std::fs::read_to_string(&top).unwrap(), by_hand);
+        assert!(!dir.path().join("chain.vhd").exists(), "no file is written");
+    }
+
+    /// The second Generate of a design replaces the files of the first, in
+    /// the two languages. This holds only while each emitter writes the
+    /// first line that `codegen::is_generated` reads.
+    #[test]
+    fn generate_replaces_the_files_that_it_wrote() {
+        let (mut s, lib) = grouped_fixture();
+        s.language = Language::SystemVerilog;
+        let design = crate::codegen::generate_design(&s, &lib).unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let top = dir.path().join("top.sv");
+        design.write_to(&top).unwrap();
+        let written = design.write_to(&top).unwrap();
+        assert_eq!(written, vec![dir.path().join("chain.sv"), top]);
+
+        let (s, lib) = grouped_fixture();
+        let design = crate::codegen::generate_design(&s, &lib).unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let top = dir.path().join("top.vhd");
+
+        design.write_to(&top).unwrap();
+        let written = design.write_to(&top).unwrap();
+
+        assert_eq!(written, vec![dir.path().join("chain.vhd"), top]);
+    }
+
     #[test]
     fn validate_groups_catches_bad_members_and_cycles() {
         let (mut s, lib) = grouped_fixture();
