@@ -23,6 +23,22 @@ pub fn run(project: Option<&Path>) -> i32 {
     unsafe { run_gui(&mut argc, argv.as_mut_ptr(), project_ptr) }
 }
 
+#[cfg(feature = "gui-tests")]
+unsafe extern "C" {
+    fn run_gui_tests() -> i32;
+}
+
+/// Run the tests of the C++ side of the GUI (`gui_tests.cpp`) and return
+/// the number of tests that failed. The tests make the real window with
+/// the Qt `offscreen` platform, so nothing shows on the screen, and they
+/// keep their settings in a temporary directory. Call this from the main
+/// thread of a process that has no other Qt application.
+#[cfg(feature = "gui-tests")]
+pub fn run_tests() -> i32 {
+    // SAFETY: the function has no parameter and makes its own application.
+    unsafe { run_gui_tests() }
+}
+
 /// The argument list for Qt: each argument of the process, with no change.
 ///
 /// macOS sends each command-line argument that is not an option to the app

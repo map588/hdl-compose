@@ -11,7 +11,7 @@ help:
 	@echo "  run      - cargo run -- gui (debug)"
 	@echo "  gui      - alias for run"
 	@echo "  check    - cargo check"
-	@echo "  test     - cargo test"
+	@echo "  test     - cargo test, with the tests of the GUI (offscreen: no window shows)"
 	@echo "  fmt      - cargo fmt"
 	@echo "  clippy   - cargo clippy --all-targets -- -D warnings"
 	@echo "  app-release - release build installed as $(APP_BUNDLE) (macOS)"
@@ -32,8 +32,10 @@ run gui:
 check:
 	cargo check
 
+# The feature gui-tests adds the tests of the C++ side. They run the window
+# with the Qt offscreen platform, so nothing shows on the screen.
 test:
-	cargo test
+	cargo test --features gui-tests
 
 fmt:
 	cargo fmt

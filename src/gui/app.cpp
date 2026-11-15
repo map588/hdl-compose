@@ -2177,6 +2177,19 @@ class FileOpenFilter : public QObject {
     std::function<void(const QString &)> m_on_open;
 };
 
+#ifdef HDLC_GUI_TESTS
+// Entry points for gui_tests.cpp. The tests use the real window through its
+// widgets and its actions. They need this file only to make the window and
+// to open a project the way the operating system does.
+QMainWindow *hdlc_test_new_window() {
+    return new MainWindow();
+}
+
+void hdlc_test_open_project(QMainWindow *window, const QString &path) {
+    static_cast<MainWindow *>(window)->openFromSystem(path);
+}
+#endif
+
 // `argv` holds the arguments of the process with no change; see gui::run in
 // mod.rs for the reason. `project` is the project to open, or null.
 extern "C" int run_gui(int *argc, char **argv, const char *project) {

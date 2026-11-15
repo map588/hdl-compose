@@ -16,6 +16,11 @@ default = ["gui"]
 # The Qt 6 desktop application. Without this feature, `hdlc` is the CLI
 # only, and the build and the tests need no Qt.
 gui = ["dep:cxx", "dep:cxx-qt", "dep:cxx-qt-lib", "dep:cxx-qt-build"]
+# The tests of the C++ side of the GUI (tests/gui_offscreen.rs). They run the
+# real window with the Qt `offscreen` platform: nothing shows on the screen.
+# The feature adds the test code and the Qt Test module to the build, so it
+# is off by default. Run them with `cargo test --features gui-tests`.
+gui-tests = ["gui"]
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
@@ -31,6 +36,11 @@ thiserror = "2.0.18"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 vhdl_lang = "0.86.0"
+
+[[test]]
+name = "gui_offscreen"
+harness = false
+required-features = ["gui-tests"]
 
 [dev-dependencies]
 proptest = "1.12.0"
