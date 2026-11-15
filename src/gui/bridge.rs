@@ -5,6 +5,17 @@ pub mod qobject {
         type QString = cxx_qt_lib::QString;
     }
 
+    #[namespace = "rust::cxxqtlib1"]
+    unsafe extern "C++" {
+        include!("cxx-qt-lib/common.h");
+
+        /// Make an `AppState` in Rust. The application makes its `AppState`
+        /// in C++. The tests use this function to run the methods of
+        /// `AppState` with no window.
+        #[cxx_name = "make_unique"]
+        fn new_app_state() -> UniquePtr<AppState>;
+    }
+
     extern "RustQt" {
         #[qobject]
         #[qproperty(QString, project_name)]
@@ -710,10 +721,15 @@ pub struct AppStateRust {
     // from disk (rebuild_library_and_validate runs per mutation).
     parse_cache: HashMap<PathBuf, ParseCacheEntry>,
     // Mutation batching: depth > 0 while inside begin_batch/end_batch.
-    // Batched mutators skip per-entry snapshot/validate/signal; end_batch
-    // does each once.
+    // Batched mutators skip per-entry validate/signal; end_batch does each
+    // once. The first change in a batch takes the one snapshot of the batch.
     batch_depth: u32,
     batch_changed: bool,
+    // True when the open batch has its undo snapshot.
+    batch_recorded: bool,
+    // True while Rust sends a signal that makes the view build the canvas
+    // again (`project_loaded`, `groups_changed`). See `rebuild_view`.
+    view_rebuild: bool,
 }
 
 struct ParseCacheEntry {
@@ -932,13 +948,6 @@ impl qobject::AppState {
         self.as_mut().rust_mut().get_mut().last_error = msg.into();
     }
 
-    /// Snapshot for undo unless inside a batch (begin_batch already took one).
-    fn snapshot_for_mutation(mut self: Pin<&mut Self>) {
-        if self.as_ref().rust().batch_depth == 0 {
-            self.as_mut().push_snapshot();
-        }
-    }
-
     /// Existence pre-check so mutators can refuse BEFORE snapshotting —
     /// a snapshot taken for an op that then fails leaves a junk undo entry
     /// (Cmd+Z appears to do nothing).
@@ -975,10 +984,10 @@ impl qobject::AppState {
         }
     }
 
+    /// Open a batch: the changes until `end_batch` are one undo step, with
+    /// one validation and one signal. Batches nest; only the outer pair
+    /// acts. A batch with no change leaves the history as it is.
     pub fn begin_batch(mut self: Pin<&mut Self>) {
-        if self.as_ref().rust().batch_depth == 0 {
-            self.as_mut().push_snapshot();
-        }
         self.as_mut().rust_mut().get_mut().batch_depth += 1;
     }
 
@@ -992,6 +1001,7 @@ impl qobject::AppState {
             if m.batch_depth > 0 {
                 return;
             }
+            m.batch_recorded = false;
             let c = m.batch_changed;
             m.batch_changed = false;
             c
@@ -1321,7 +1331,7 @@ impl qobject::AppState {
                 self.as_mut().clear_undo_stacks();
                 self.as_mut().refresh_project_display();
                 self.as_mut().rebuild_library_and_validate();
-                self.as_mut().project_loaded();
+                self.as_mut().rebuild_view(|state| state.project_loaded());
                 true
             }
             Err(e) => {
@@ -1525,7 +1535,7 @@ impl qobject::AppState {
         // Fire project_loaded so the canvas does a full rebuild of top-port
         // graphics (added/removed pins) — onPortMapChanged only relayouts
         // existing items, it doesn't add or drop any.
-        self.as_mut().project_loaded();
+        self.as_mut().rebuild_view(|state| state.project_loaded());
         true
     }
 
@@ -1546,7 +1556,7 @@ impl qobject::AppState {
         }
         self.as_mut().clear_undo_stacks();
         self.as_mut().refresh_project_display();
-        self.as_mut().project_loaded();
+        self.as_mut().rebuild_view(|state| state.project_loaded());
         self.as_mut().validation_changed();
         true
     }
@@ -1595,7 +1605,7 @@ impl qobject::AppState {
         // Batch-aware so drop (add + initial position) is one undo step.
         // Signals still fire immediately — the canvas must create the item
         // before the position arrives.
-        self.as_mut().snapshot_for_mutation();
+        self.as_mut().push_snapshot();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s.add_instance(name_s.clone(), module_s).map(|_| ()),
             None => {
@@ -1719,7 +1729,7 @@ impl qobject::AppState {
         }
         // Snapshot so a completed move is undoable. Called once per drag
         // release / drop — never per drag tick.
-        self.as_mut().snapshot_for_mutation();
+        self.as_mut().push_snapshot();
         if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             if is_inst {
                 if let Some(inst) = s.get_instance_mut(&name_s) {
@@ -1834,7 +1844,11 @@ impl qobject::AppState {
             return editor_issues(&[]);
         }
         let mut late_errors: Vec<(usize, String)> = Vec::new();
-        let any = !parsed.generic_commits.is_empty() || !parsed.port_commits.is_empty();
+        // The commit clears the dirty flag of the instance. The clear is in
+        // the batch, so one undo brings back the connections and the flag.
+        let was_dirty = self.instance_is_dirty_name(instance);
+        let any =
+            was_dirty || !parsed.generic_commits.is_empty() || !parsed.port_commits.is_empty();
         if any {
             self.as_mut().begin_batch();
         }
@@ -1860,11 +1874,11 @@ impl qobject::AppState {
                 }
             }
         }
+        if was_dirty {
+            self.as_mut().clear_instance_dirty(instance);
+        }
         if any {
             self.as_mut().end_batch();
-        }
-        if self.instance_is_dirty_name(instance) {
-            self.as_mut().clear_instance_dirty(instance);
         }
         editor_issues(&late_errors)
     }
@@ -2113,7 +2127,7 @@ impl qobject::AppState {
                 .record_error(format!("instance not found: {inst}"));
             return false;
         }
-        self.as_mut().snapshot_for_mutation();
+        self.as_mut().push_snapshot();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s
                 .set_port_map_entry(&inst, port_s.clone(), parsed)
@@ -2167,7 +2181,7 @@ impl qobject::AppState {
                 .record_error(format!("instance not found: {inst}"));
             return false;
         }
-        self.as_mut().snapshot_for_mutation();
+        self.as_mut().push_snapshot();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s
                 .set_port_map_entry(&inst, port_s.clone(), Some(net_ref))
@@ -2211,7 +2225,7 @@ impl qobject::AppState {
                 .record_error(format!("instance not found: {inst}"));
             return false;
         }
-        self.as_mut().snapshot_for_mutation();
+        self.as_mut().push_snapshot();
         if let Some(i) = self
             .as_mut()
             .rust_mut()
@@ -2244,7 +2258,7 @@ impl qobject::AppState {
         if !has_slice {
             return true;
         }
-        self.as_mut().snapshot_for_mutation();
+        self.as_mut().push_snapshot();
         if let Some(i) = self
             .as_mut()
             .rust_mut()
@@ -2365,7 +2379,7 @@ impl qobject::AppState {
         // rebuild handler reads from that cache to render wires, and a stale
         // cache means the freshly-promoted wire wouldn't show.
         self.as_mut().rebuild_library_and_validate();
-        self.as_mut().project_loaded();
+        self.as_mut().rebuild_view(|state| state.project_loaded());
         QString::from(&resolved_name)
     }
 
@@ -2408,7 +2422,7 @@ impl qobject::AppState {
         self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
         self.as_mut().rebuild_library_and_validate();
-        self.as_mut().project_loaded();
+        self.as_mut().rebuild_view(|state| state.project_loaded());
         true
     }
 
@@ -2659,7 +2673,7 @@ impl qobject::AppState {
 
         self.as_mut().rebuild_library_and_validate();
         // Full canvas rebuild so updated widths / generics / port lists reflect.
-        self.as_mut().project_loaded();
+        self.as_mut().rebuild_view(|state| state.project_loaded());
 
         if !newly_dirty.is_empty() {
             self.as_mut().record_error(format!(
@@ -2674,6 +2688,10 @@ impl qobject::AppState {
     /// the dropped-port fallout from a library re-parse.
     pub fn clear_instance_dirty(mut self: Pin<&mut Self>, name: &QString) -> bool {
         let name_s = name.to_string();
+        if !self.instance_is_dirty_name(name) {
+            return false;
+        }
+        self.as_mut().push_snapshot();
         let was_dirty = {
             let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut() else {
                 return false;
@@ -2682,17 +2700,28 @@ impl qobject::AppState {
         };
         if was_dirty {
             self.as_mut().rebuild_library_and_validate();
-            self.as_mut().project_loaded();
+            self.as_mut().rebuild_view(|state| state.project_loaded());
         }
         was_dirty
     }
 
     // === Undo / redo (snapshot-based; see ARCHITECTURE.md) ===
 
-    /// Snapshot the current schematic for undo. Called as the first line
-    /// of every model-mutating invokable. No-op when no project is loaded.
-    /// Wipes the redo stack — a new edit invalidates redo history.
+    /// Snapshot the current schematic for undo. Each method that changes
+    /// the model calls this before the change. No-op when no project is
+    /// loaded. Wipes the redo stack — a new edit invalidates redo history.
+    ///
+    /// A batch is one undo step: only the first change in a batch takes a
+    /// snapshot. While the view builds the canvas again (`rebuild_view`), no
+    /// change takes a snapshot.
     fn push_snapshot(mut self: Pin<&mut Self>) {
+        {
+            let m = self.as_ref();
+            let m = m.rust();
+            if m.view_rebuild || (m.batch_depth > 0 && m.batch_recorded) {
+                return;
+            }
+        }
         let snap = match self.as_ref().rust().schematic.as_ref() {
             Some(s) => match serde_json::to_string(s) {
                 Ok(json) => json,
@@ -2706,6 +2735,18 @@ impl qobject::AppState {
             m.undo_stack.remove(0);
         }
         m.redo_stack.clear();
+        m.batch_recorded = m.batch_depth > 0;
+    }
+
+    /// Send a signal that makes the view build the canvas again from the
+    /// model. In its handler the view puts each block on the grid
+    /// (`CanvasLayer::settleAll`). Those moves are a part of the change
+    /// that sends the signal, so they take no snapshot: a snapshot there
+    /// would remove the redo history after each undo.
+    fn rebuild_view(mut self: Pin<&mut Self>, send: impl FnOnce(Pin<&mut Self>)) {
+        let outer = std::mem::replace(&mut self.as_mut().rust_mut().get_mut().view_rebuild, true);
+        send(self.as_mut());
+        self.as_mut().rust_mut().get_mut().view_rebuild = outer;
     }
 
     fn clear_undo_stacks(mut self: Pin<&mut Self>) {
@@ -2751,7 +2792,7 @@ impl qobject::AppState {
         }
         self.as_mut().set_dirty(true);
         self.as_mut().rebuild_library_and_validate();
-        self.as_mut().project_loaded();
+        self.as_mut().rebuild_view(|state| state.project_loaded());
         true
     }
 
@@ -2783,7 +2824,7 @@ impl qobject::AppState {
         }
         self.as_mut().set_dirty(true);
         self.as_mut().rebuild_library_and_validate();
-        self.as_mut().project_loaded();
+        self.as_mut().rebuild_view(|state| state.project_loaded());
         true
     }
 
@@ -2866,7 +2907,7 @@ impl qobject::AppState {
                 .record_error(format!("instance not found: {inst}"));
             return false;
         }
-        self.as_mut().snapshot_for_mutation();
+        self.as_mut().push_snapshot();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s
                 .set_port_map_entry(&inst, port_s.clone(), None)
@@ -2902,7 +2943,7 @@ impl qobject::AppState {
                 .record_error(format!("instance not found: {inst}"));
             return false;
         }
-        self.as_mut().snapshot_for_mutation();
+        self.as_mut().push_snapshot();
         let result = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             Some(s) => s.set_generic_map_entry(&inst, gen_s, expr_s).map(|_| ()),
             None => {
@@ -3117,15 +3158,18 @@ impl qobject::AppState {
 
     pub fn add_library_path(mut self: Pin<&mut Self>, path: &QString) -> bool {
         let path_buf = PathBuf::from(path.to_string());
-        let added = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
-            Some(s) => s.add_library_path(path_buf),
+        match self.as_ref().rust().schematic.as_ref() {
+            // A path that is in the project already is no change.
+            Some(s) if s.library_paths.contains(&path_buf) => return false,
+            Some(_) => {}
             None => {
                 self.as_mut().record_error("no project loaded");
                 return false;
             }
-        };
-        if !added {
-            return false;
+        }
+        self.as_mut().push_snapshot();
+        if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut() {
+            s.add_library_path(path_buf);
         }
         self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
@@ -3189,12 +3233,13 @@ impl qobject::AppState {
 
     pub fn remove_library_path(mut self: Pin<&mut Self>, path: &QString) -> bool {
         let path_buf = PathBuf::from(path.to_string());
-        let removed = match self.as_mut().rust_mut().get_mut().schematic.as_mut() {
-            Some(s) => s.remove_library_path(&path_buf),
-            None => return false,
-        };
-        if !removed {
-            return false;
+        match self.as_ref().rust().schematic.as_ref() {
+            Some(s) if s.library_paths.contains(&path_buf) => {}
+            _ => return false,
+        }
+        self.as_mut().push_snapshot();
+        if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut() {
+            s.remove_library_path(&path_buf);
         }
         self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
@@ -3316,7 +3361,7 @@ impl qobject::AppState {
             self.as_mut().record_error(e);
             return false;
         }
-        self.as_mut().snapshot_for_mutation();
+        self.as_mut().push_snapshot();
         if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             let pts: Vec<(f32, f32)> = s
                 .instances
@@ -3353,7 +3398,7 @@ impl qobject::AppState {
                 .record_error(format!("no such group: {name_s}"));
             return false;
         }
-        self.as_mut().snapshot_for_mutation();
+        self.as_mut().push_snapshot();
         if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             let parent = s
                 .groups
@@ -3383,7 +3428,7 @@ impl qobject::AppState {
                 .record_error(format!("no such group: {name_s}"));
             return false;
         }
-        self.as_mut().snapshot_for_mutation();
+        self.as_mut().push_snapshot();
         if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             let members = crate::groups::transitive_members(s, &name_s);
             let pts: Vec<(f32, f32)> = s
@@ -3453,7 +3498,7 @@ impl qobject::AppState {
         self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
         self.as_mut().rebuild_library_and_validate();
-        self.as_mut().groups_changed();
+        self.as_mut().rebuild_view(|state| state.groups_changed());
         true
     }
 
@@ -3554,7 +3599,7 @@ impl qobject::AppState {
                 .record_error(format!("instance not found: {n}"));
             return false;
         }
-        self.as_mut().snapshot_for_mutation();
+        self.as_mut().push_snapshot();
         if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut()
             && let Some(inst) = s.get_instance_mut(&n)
         {
@@ -4001,6 +4046,231 @@ fn parse_range_bound(s: &str) -> RangeExpr {
 mod tests {
     use super::*;
     use crate::types::{Direction, PortType};
+
+    // --- AppState with no window -------------------------------------------
+    //
+    // `qobject::new_app_state` makes the object that the C++ side uses. A
+    // closure on a signal stands for the handler of the C++ side.
+
+    use cxx::UniquePtr;
+    use qobject::AppState;
+
+    fn q(text: &str) -> QString {
+        QString::from(text)
+    }
+
+    fn vhdl_entity(name: &str, ports: &str) -> String {
+        format!(
+            "library ieee;\nuse ieee.std_logic_1164.all;\n\nentity {name} is\n  port ({ports});\nend entity;\n\narchitecture rtl of {name} is\nbegin\nend architecture;\n"
+        )
+    }
+
+    /// A VHDL project with the modules `source` (output `q`) and `sink`
+    /// (inputs `d` and `e`) in its library, and an empty history.
+    fn state_with_library() -> (tempfile::TempDir, UniquePtr<AppState>) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = qobject::new_app_state();
+        assert!(state.pin_mut().new_project(&q("top"), 0));
+        for (name, ports) in [
+            ("source", "q : out std_logic"),
+            ("sink", "d : in std_logic; e : in std_logic"),
+        ] {
+            let path = dir.path().join(format!("{name}.vhd"));
+            std::fs::write(&path, vhdl_entity(name, ports)).unwrap();
+            assert!(state.pin_mut().add_library_path(&q(path.to_str().unwrap())));
+        }
+        // To open a project makes the history empty.
+        let project = q(dir.path().join("top.hdlc").to_str().unwrap());
+        assert!(state.pin_mut().save_project_as(&project));
+        assert!(state.pin_mut().open_project(&project));
+        assert!(!state.can_undo() && !state.can_redo());
+        (dir, state)
+    }
+
+    /// What `CanvasLayer::settleAll` does on the C++ side after it builds
+    /// the canvas again: it opens a batch, moves each block that is not on
+    /// its place, and closes the batch. Here the place of `u_a` is (0, 100).
+    fn settle(mut state: Pin<&mut AppState>) {
+        state.as_mut().begin_batch();
+        let index = state.instance_index(&q("u_a"));
+        if index >= 0 && (state.instance_pos_x(index), state.instance_pos_y(index)) != (0.0, 100.0)
+        {
+            state.as_mut().set_instance_position(&q("u_a"), 0.0, 100.0);
+        }
+        state.as_mut().end_batch();
+    }
+
+    /// Regression: `undo` sends `project_loaded`, and the view settles the
+    /// blocks in its handler. The batch of the settle took a snapshot and
+    /// removed the redo history, so redo did nothing and a second undo
+    /// restored the same state.
+    #[test]
+    fn undo_and_redo_go_through_each_edit_while_the_view_settles() {
+        let (_dir, mut state) = state_with_library();
+        let _view = state.pin_mut().on_project_loaded(settle);
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+
+        assert!(state.pin_mut().undo());
+        assert_eq!(state.instance_count(), 1);
+        assert!(state.can_redo(), "the settle removed the redo history");
+        assert!(state.pin_mut().undo());
+        assert_eq!(state.instance_count(), 0);
+        assert!(!state.can_undo(), "the settle added an undo step");
+
+        assert!(state.pin_mut().redo());
+        assert!(state.pin_mut().redo());
+        assert_eq!(state.instance_count(), 2);
+        assert!(!state.can_redo());
+    }
+
+    /// Regression: a batch took its snapshot when it opened. A command that
+    /// changed nothing (a tidy of a tidy canvas) added an undo step and
+    /// removed the redo history.
+    #[test]
+    fn batch_with_no_change_leaves_the_history() {
+        let (_dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().undo());
+
+        state.pin_mut().begin_batch();
+        state.pin_mut().end_batch();
+
+        assert!(state.can_redo());
+        assert!(!state.can_undo());
+    }
+
+    /// Regression: `rename_instance` and nine more methods took a snapshot
+    /// of their own in an open batch, so one batch was more than one undo
+    /// step.
+    #[test]
+    fn batch_is_one_undo_step() {
+        let (_dir, mut state) = state_with_library();
+        state.pin_mut().begin_batch();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+        assert!(state.pin_mut().rename_instance(&q("u_b"), &q("u_c")));
+        state.pin_mut().end_batch();
+
+        assert!(state.pin_mut().undo());
+        assert_eq!(state.instance_count(), 0);
+        assert!(!state.can_undo());
+    }
+
+    /// Regression: the view settles the blocks after a group change too.
+    /// That settle was an undo step of its own.
+    #[test]
+    fn group_change_with_its_settle_is_one_undo_step() {
+        let (_dir, mut state) = state_with_library();
+        let _view = state.pin_mut().on_groups_changed(settle);
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().create_group(&q("g"), &q("u_a")));
+        assert_eq!(state.group_count(), 1);
+
+        assert!(state.pin_mut().undo());
+        assert_eq!(state.group_count(), 0);
+        assert!(state.pin_mut().undo());
+        assert_eq!(state.instance_count(), 0);
+        assert!(!state.can_undo());
+    }
+
+    /// Regression: a change of the library paths took no snapshot, so undo
+    /// did not revert it.
+    #[test]
+    fn library_path_changes_are_undo_steps() {
+        let (dir, mut state) = state_with_library();
+        let extra = dir.path().join("extra.vhd");
+        std::fs::write(&extra, vhdl_entity("extra", "x : in std_logic")).unwrap();
+        let extra = q(extra.to_str().unwrap());
+
+        assert!(state.pin_mut().add_library_path(&extra));
+        assert_eq!(state.library_path_count(), 3);
+        assert!(state.pin_mut().undo());
+        assert_eq!(state.library_path_count(), 2);
+        assert!(state.pin_mut().redo());
+        assert_eq!(state.library_path_count(), 3);
+
+        assert!(state.pin_mut().remove_library_path(&extra));
+        assert_eq!(state.library_path_count(), 2);
+        assert!(state.pin_mut().undo());
+        assert_eq!(state.library_path_count(), 3);
+
+        // A path that is in the project already is no change.
+        assert!(!state.pin_mut().add_library_path(&extra));
+        assert!(state.can_redo());
+    }
+
+    /// Make `u_b` dirty: the type of its port `e` changes in the source.
+    fn make_sink_dirty(dir: &tempfile::TempDir, state: &mut UniquePtr<AppState>) {
+        std::fs::write(
+            dir.path().join("sink.vhd"),
+            vhdl_entity(
+                "sink",
+                "d : in std_logic; e : in std_logic_vector(1 downto 0)",
+            ),
+        )
+        .unwrap();
+        assert!(state.pin_mut().reload_library());
+        assert!(state.instance_is_dirty_name(&q("u_b")));
+    }
+
+    /// Regression: `clear_instance_dirty` took no snapshot.
+    #[test]
+    fn clear_of_the_dirty_flag_is_an_undo_step() {
+        let (dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+        make_sink_dirty(&dir, &mut state);
+
+        assert!(state.pin_mut().clear_instance_dirty(&q("u_b")));
+        assert!(!state.instance_is_dirty_name(&q("u_b")));
+        assert!(state.pin_mut().undo());
+        assert!(state.instance_is_dirty_name(&q("u_b")));
+    }
+
+    /// A commit of the editor buffer clears the dirty flag of its instance.
+    /// The connections and the flag come back with one undo.
+    #[test]
+    fn commit_on_a_dirty_instance_is_one_undo_step() {
+        let (dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+        make_sink_dirty(&dir, &mut state);
+
+        let buffer = q("u_b : sink\n  port map (\n    d => u_a.q,\n  );\n");
+        let issues = state.pin_mut().commit_instance_buffer(&q("u_b"), &buffer);
+        assert!(issues.messages.is_empty(), "{:?}", issues.messages);
+        assert!(!state.instance_is_dirty_name(&q("u_b")));
+        assert!(
+            !state
+                .port_map_entry(&q("u_b"), &q("d"))
+                .to_string()
+                .is_empty()
+        );
+
+        assert!(state.pin_mut().undo());
+        assert!(state.instance_is_dirty_name(&q("u_b")));
+        assert!(
+            state
+                .port_map_entry(&q("u_b"), &q("d"))
+                .to_string()
+                .is_empty()
+        );
+    }
+
+    /// An alias change in a batch is a part of the one undo step of the
+    /// batch.
+    #[test]
+    fn alias_change_in_a_batch_takes_no_snapshot_of_its_own() {
+        let (_dir, mut state) = state_with_library();
+        state.pin_mut().begin_batch();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().set_alias(&q("u_a.q"), &q("named")));
+        state.pin_mut().end_batch();
+
+        assert!(state.pin_mut().undo());
+        assert_eq!(state.instance_count(), 0);
+        assert!(!state.can_undo());
+    }
 
     fn pd(name: &str, dir: Direction, ty: PortType, bundle: Option<&str>) -> PortDef {
         PortDef {

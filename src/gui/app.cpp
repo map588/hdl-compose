@@ -1025,6 +1025,9 @@ class MainWindow : public QMainWindow {
         connect(m_state, &AppState::port_map_changed_bulk, this, &MainWindow::refreshUndoActions);
         connect(m_state, &AppState::instance_added, this, [this](const QString &) { refreshUndoActions(); });
         connect(m_state, &AppState::instance_removed, this, [this](const QString &) { refreshUndoActions(); });
+        // A change of a library path, a group or an alias sends none of the
+        // signals above. Each of them runs validation.
+        connect(m_state, &AppState::validation_changed, this, &MainWindow::refreshUndoActions);
 
         // Sidebar + canvas reactive.
         connect(m_state, &AppState::project_loaded, this, [this]() {
@@ -1539,6 +1542,8 @@ class MainWindow : public QMainWindow {
         }
         int added = 0;
         QStringList failed;
+        // Batch so the paths of one command are one undo step.
+        m_state->begin_batch();
         for (const QString &p : paths) {
             if (m_state->add_library_path(p)) {
                 added++;
@@ -1547,6 +1552,7 @@ class MainWindow : public QMainWindow {
                 failed << (err.isEmpty() ? p : QStringLiteral("%1 (%2)").arg(p, err));
             }
         }
+        m_state->end_batch();
         if (!failed.isEmpty()) {
             // A folder can hold many files that fail; keep the dialog short.
             const int kMaxShown = 12;
@@ -1667,6 +1673,9 @@ class MainWindow : public QMainWindow {
         for (int i = 0; i < n; ++i) {
             originals << m_state->library_path(i);
         }
+        // Batch so the path changes of one command are one undo step. The
+        // loop has no return, so `end_batch` always runs.
+        m_state->begin_batch();
         for (const QString &src : originals) {
             QFileInfo src_info(src);
             if (!src_info.exists()) {
@@ -1694,6 +1703,7 @@ class MainWindow : public QMainWindow {
             m_state->add_library_path(target);
             copied++;
         }
+        m_state->end_batch();
         QString msg = QStringLiteral("Copied %1 of %2 file(s).").arg(copied).arg(n);
         if (!failures.isEmpty()) {
             msg += QStringLiteral("\n\nIssues:\n%1").arg(failures.join(QChar('\n')));
