@@ -28,7 +28,7 @@ Requires Rust (2024 edition) and Qt 6.
 brew install qt           # macOS; provides qmake6
 make build                # cargo build (debug)
 make run                  # launch the GUI
-make test                 # lib + integration + roundtrip tests
+make test                 # all tests, with the offscreen tests of the GUI
 make help                 # all targets
 ```
 
@@ -40,6 +40,14 @@ no Qt gives the CLI only:
 ```sh
 cargo build --no-default-features   # no Qt necessary; `hdlc gui` reports an error
 cargo test --no-default-features    # all tests but those of the GUI
+```
+
+The cargo feature `gui-tests` adds the tests of the window. They run on the
+Qt `offscreen` platform with input from Qt Test, so no window comes on the
+screen:
+
+```sh
+cargo test --features gui-tests     # `make test` runs this
 ```
 
 On macOS, `make app` installs `/Applications/hdl-compose.app`. The bundle
@@ -249,6 +257,15 @@ The window opens maximized with the canvas front and center.
 - **File > New** asks for the project name, the language, and where to save
   the `.hdlc` file. A project always has a file, so source paths stay
   relative to it.
+- **Save and recovery:** only **File > Save** (Cmd+S) and **Save As...**
+  (Cmd+Shift+S) change the `.hdlc` file. While a project has changes that
+  are not saved, the GUI keeps them in a recovery file,
+  `.<name>.hdlc.autosave` next to the project. It writes that file 12
+  seconds after a change, and one time for all changes in those 12
+  seconds. A save removes the recovery file. When you close a project with
+  changes that are not saved, the GUI asks: Save, Discard or Cancel. When
+  the program stopped with changes that were not saved, the next open of
+  the project offers to recover them.
 - **File > Generate HDL** (Cmd+G) writes the structural wrapper to
   `<top>.vhd` / `<top>.sv` next to the project file, plus one file for each
   group. It does not ask for a path. **Generate HDL As...** (Cmd+Shift+G)
@@ -406,7 +423,8 @@ The files in the repository root that have an effect on the build:
 ## Global Side Effects
 
 - **Files next to a project:** the `.hdlc` file, `<name>.toolchain.json`,
-  the generated `<top>.vhd` or `<top>.sv` and one file for each group, the
+  the recovery file `.<name>.hdlc.autosave` (only while the GUI has changes
+  that are not saved) [`src/gui/bridge.rs:autosave`], the generated `<top>.vhd` or `<top>.sv` and one file for each group, the
   directory `build/<top>/`, the bitstream, `<top>.floorplan.json`, the
   testbench `<top>_tb`, and the wave file of a simulation.
 - **Writes:** the project file and `<name>.toolchain.json` are replaced in
@@ -427,6 +445,7 @@ The files in the repository root that have an effect on the build:
 ## System Verification
 
 - Run: `cargo test`
+- With the offscreen tests of the window: `cargo test --features gui-tests`
 - Run: `cargo fmt --check`
 - Run: `cargo clippy --all-targets -- -D warnings`
 - With no Qt: `cargo test --no-default-features` and

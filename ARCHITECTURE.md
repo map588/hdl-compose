@@ -203,7 +203,7 @@ holds the widgets, the scene and the events.
 
 **Three channels** connect the two sides:
 
-1. **The `AppState` QObject.** More than 100 methods that C++ calls, and 13
+1. **The `AppState` QObject.** More than 100 methods that C++ calls, and 14
    signals that Rust sends. Most read methods return one field for one
    index. A method that can fail returns `false`, and `last_error()` gives
    the message.
@@ -249,15 +249,17 @@ Qt scene is not in these numbers.
 
 | Blocks | Edit (validation, wire list) | Reads of the canvas | Wire routes |
 |---|---|---|---|
-| 50 | 0.2 ms | 0.2 ms | 0.3 ms |
-| 200 | 1.0 ms | 1.6 ms | 7 ms |
-| 500 | 2.4 ms | 4.7 ms | 79 ms |
-| 1000 | 8.5 ms | 18 ms | 575 ms |
+| 50 | 0.2 ms | 0.1 ms | 0.2 ms |
+| 200 | 0.9 ms | 1.0 ms | 1.6 ms |
+| 500 | 3.2 ms | 4.3 ms | 8.4 ms |
+| 1000 | 12 ms | 17 ms | 29 ms |
 
-The wire router is the limit: its time grows faster than the square of the
-number of blocks. A project of 200 blocks recalculates in about 10 ms. At
-500 blocks a user can see the time of each change. The design is not for
-1000 blocks.
+A project of 500 blocks recalculates in about 16 ms, and a project of 1000
+blocks in about 60 ms. The wire routes are the part that grows fastest:
+their time grows almost with the square of the number of blocks (103 ms for
+2000 blocks). The router compares each bridge with the pins and the bridges
+of all gutters that it crosses. The design is not for many thousands of
+blocks.
 
 ## Library and module changes
 
@@ -278,9 +280,13 @@ Two events start that function:
    an undo snapshot only when the comparison changes an instance; the file
    watcher calls it for each save of a source.
 2. **Each other change of the model.** The comparison is then a part of that
-   change and of its undo step. In this case the canvas keeps the old pins
-   of the changed module until its next full rebuild (see "Known
-   weaknesses", item 4).
+   change and of its undo step.
+
+A block of the canvas shows the ports and the generics of its module. When
+these are different for a module that an instance uses, `AppState` sends
+`modules_changed`. The window answers with `refresh_canvas`, through a
+queued connection, and the canvas builds its items again. A reload builds
+the canvas again itself; `refresh_canvas` then does nothing.
 
 **Open** (GUI and CLI) has no earlier library to compare with, because the
 project file holds no module definition. A connection that no longer agrees
@@ -329,6 +335,17 @@ because the history is final only when the method returns.
 - The GUI shows the warnings of the loader in the diagnostics (prefix
   `load:`) until the next save. The loader can change the model: it removes
   a reference to an instance that is not in the file.
+- Only a save of the user changes the project file. Between two saves, the
+  GUI keeps a copy of the model in a recovery file,
+  `.<project file name>.autosave` next to the project. A change starts a
+  timer of 12 seconds. When the timer ends, `autosave` writes the file,
+  and only when the model is different from the file. Many changes in that
+  time give one write.
+- A save removes the recovery file. Discard, in the question about changes
+  that are not saved, removes it also. Thus the file is on the disk after
+  an open only when the program stopped with changes that were not saved.
+  The window then asks. Recover puts the changes into the model, as changes
+  that are not saved. Discard removes the file.
 - A panic in a method of the bridge stops the application (see "Known
   weaknesses", item 2).
 
@@ -377,7 +394,15 @@ codegen or in the group collapse shows as a difference.
   generation must return.
 - `cargo test --no-default-features` runs all tests but those of the GUI,
   on a machine with no Qt.
-- No test runs the C++ classes (see "Known weaknesses", item 3).
+- `cargo test --features gui-tests` (`make test`) also runs
+  `tests/gui_offscreen.rs`: the real `MainWindow` on the Qt `offscreen`
+  platform, with clicks, drags and keys from Qt Test
+  (`src/gui/gui_tests.cpp`). No window comes on the screen, and the
+  settings of the test are in a temporary directory. The 13 tests cover a
+  wire from two clicks, undo and redo from the menu, the drag of a block,
+  the Delete key, the context menu, the color of a net, the pins of a
+  changed source, the recovery file, the save key, and the questions on
+  close and on open (see "Known weaknesses", item 3).
 
 ## Decisions that stay
 
@@ -397,22 +422,25 @@ codegen or in the group collapse shows as a difference.
 
 A review on 2026-11-14 found eight weaknesses. The corrected ones are now in
 the sections above (undo and redo, the net of a wire, the library
-comparison, the build with no Qt, the save, the size). These stay:
+comparison, the build with no Qt, the save, the recovery file, the pins of
+a changed module, the tests of the window, the time of the wire routes).
+These stay:
 
-1. **Editing rules are in the bridge.** `src/gui/bridge.rs` (about 4,200
-   lines of code and 1,100 lines of tests) holds wiring rules, the grammar
+1. **Editing rules are in the bridge.** `src/gui/bridge.rs` (about 4,400
+   lines of code and 1,400 lines of tests) holds wiring rules, the grammar
    of the top-level buffer, undo and batching, as methods of the Qt object.
    A test reaches them only through `AppState`.
-2. **No recovery after a stop of the program.** A panic in a method of the
-   bridge stops the application, and the changes after the last save are
-   lost. No autosave or recovery file exists. The property test found no
-   panic in 4,000 random sequences of edits; that is evidence, not proof.
-3. **The C++ side has no test.** About 6,000 lines (`app.cpp`, `canvas.*`,
-   `items.*`, `floorplan.h`) are checked by reading only.
-4. **A changed source that comes in with an edit** (not with a reload)
-   leaves the old pins of its module on the canvas until the next full
-   rebuild. The model, the wires and the diagnostics are correct at once.
-5. **The wire router limits the size** (see "How a change flows").
+2. **A panic stops the application.** A panic in a method of the bridge
+   stops the program. The recovery file keeps all changes but those of the
+   last 12 seconds. The property test found no panic in 4,000 random
+   sequences of edits; that is evidence, not proof.
+3. **The offscreen tests run the main flows only.** They cover the window
+   and the canvas. The text editors, the library list, the groups, the
+   tool commands and the Chip View (`floorplan.h`) are checked by reading
+   only.
+4. **Routing is global.** Each change calculates all wire routes again, and
+   that time grows almost with the square of the number of blocks (see
+   "How a change flows").
 
 ## Out of scope
 
@@ -431,4 +459,5 @@ comparison, the build with no Qt, the save, the size). These stay:
   headers.
 - `serde` / `serde_json` for the project file, `schemars` for its schema,
   `clap` for the CLI, `tracing` for logs.
-- `proptest` and `tempfile` for tests.
+- `proptest` and `tempfile` for tests. Qt Test for the tests of the window,
+  only with the cargo feature `gui-tests` (off by default).

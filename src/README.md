@@ -216,5 +216,7 @@ CLI (`main.rs`), the commands of `hdlc`: `parse`, `new`, `validate`,
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - With no Qt: `cargo test --no-default-features` (all tests but those of
   `gui`)
+- With the offscreen tests of the window: `cargo test --features gui-tests`
+  (see [gui/README.md](gui/README.md))
 - The tests in `tests/toolchain_tools.rs` and `tests/netlist_roundtrip.rs`
   need the external tools. They skip with a message when a tool is missing.

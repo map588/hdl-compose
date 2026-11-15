@@ -12,6 +12,9 @@
   `canvas.h` / `canvas.cpp` are the canvas. `items.h` / `items.cpp` are the
   items of the scene. `floorplan.h` is the Chip View.
   `canvas_constants.h` holds the layout constants.
+- **Tests of the C++ side.** `gui_tests.h` / `gui_tests.cpp` run the real
+  window with Qt Test. They are in the build only with the cargo feature
+  `gui-tests`.
 
 The Rust side decides; the C++ side draws and takes input. Placement and
 wire routing are in `crate::routing`, and `bridge.rs` only converts the
@@ -29,6 +32,10 @@ Entry:
 
 - `gui::run(project: Option<&Path>) -> i32` (`mod.rs`): starts the Qt event
   loop. It calls the C function `run_gui`, which `app.cpp` defines.
+- `gui::run_tests() -> i32` (`mod.rs`, feature `gui-tests`): runs the tests
+  of the C++ side and returns the number of tests that failed. It calls
+  the C function `run_gui_tests`, which `gui_tests.cpp` defines.
+  `tests/gui_offscreen.rs` is its only caller.
 
 `AppState` (`bridge.rs`), the QObject that C++ uses:
 
@@ -37,7 +44,7 @@ Entry:
   `instance_removed`, `instance_moved`, `port_map_changed`,
   `port_map_changed_bulk`, `alias_changed`, `validation_changed`,
   `selection_changed`, `library_changed`, `groups_changed`,
-  `history_changed`.
+  `history_changed`, `modules_changed`.
 - **Batch:** `begin_batch`, `end_batch`.
 - **Tests:** `new_app_state` makes an `AppState` in Rust with no window.
   The application makes its `AppState` in C++.
@@ -45,6 +52,9 @@ Entry:
   `save_project_as`, `generate_code`, `suggest_codegen_path`,
   `project_language`, `has_project`, `current_project_path`, `last_error`,
   `project_board`, `set_project_board`.
+- **Recovery file:** `autosave`, `recovery_path`, `recover`,
+  `discard_recovery`.
+- **View:** `refresh_canvas`.
 - **Top-level buffer:** `top_level_buffer`, `commit_top_level_buffer`. Its
   grammar is in `bridge.rs` (crate only: `parse_top_level_buffer`,
   `ParsedTopLevel`, `resolve_top_port_name`).
@@ -107,6 +117,7 @@ C++ classes:
 - `items.h`: `NetKey`, `InstanceItem`, `PortPinItem`, `BundlePinItem`,
   `TopPortItem`, `WireItem`, `JunctionDotItem`, `GroupHullItem`.
 - `floorplan.h` (namespace `chipview`): the Chip View.
+- `gui_tests.h`: `GuiTests`, one private slot for each test.
 
 ## Invariants
 
@@ -158,6 +169,32 @@ C++ classes:
   [`bridge.rs:rebuild_library_and_validate`, `bridge.rs:open_project`].
 - `reload_library` takes a snapshot only when the comparison changes an
   instance [`bridge.rs:reload_library`].
+- When the ports or the generics of a module that an instance uses are
+  different from those of the last library, `AppState` sends
+  `modules_changed`. The window answers with `refresh_canvas`, through a
+  queued connection. `refresh_canvas` sends `groups_changed`, which builds
+  the canvas again in place, only when no full rebuild came after the
+  signal [`bridge.rs:rebuild_library_and_validate`,
+  `bridge.rs:refresh_canvas`, `app.cpp:MainWindow` constructor].
+- Only a save of the user changes the project file. `autosave` writes the
+  recovery file, `.<project file name>.autosave` next to the project, only
+  when the project has changes that are not saved and the file does not
+  have the model yet. A save and `discard_recovery` remove the file. Thus
+  `recovery_path` gives a file after an open only when the program stopped
+  with changes that were not saved [`bridge.rs:autosave`,
+  `bridge.rs:save_to`, `bridge.rs:discard_recovery`,
+  `bridge.rs:recovery_path`].
+- `recover` replaces the model with the content of the recovery file, sets
+  `dirty` and clears the two undo stacks. The file stays until the next
+  save or discard [`bridge.rs:recover`].
+- The window starts a timer of 12 seconds on `history_changed`, when the
+  timer does not run, and calls `autosave` when the timer ends. Many
+  changes in that time give one write [`app.cpp:kAutosaveDelayMs`,
+  `app.cpp:MainWindow` constructor].
+- The tests of the C++ side run only on the Qt `offscreen` platform. The
+  entry point sets the platform itself and stops when Qt uses another one.
+  It also puts `QSettings` into a temporary directory, so a test does not
+  read or change the settings of the user [`gui_tests.cpp:run_gui_tests`].
 - A wire is one `port_map` entry: its source is the pin that the entry
   references, which is not always the driver. `wire_net` gives the net of
   the wire from `nets::resolve_nets`: two wires have the same value when,
@@ -199,7 +236,15 @@ C++ classes:
   until the next save [`bridge.rs:open_project`,
   `bridge.rs:rebuild_library_and_validate`, `bridge.rs:save_to`].
 - `AppState::save_project` and `save_project_as` write the project file
-  (`project::save_project`) [`bridge.rs:save_to`].
+  (`project::save_project`) and remove the recovery file
+  [`bridge.rs:save_to`].
+- `AppState::autosave` writes the recovery file, `AppState::recover` reads
+  it, and `AppState::discard_recovery` removes it [`bridge.rs:autosave`,
+  `bridge.rs:recover`, `bridge.rs:discard_recovery`].
+- `MainWindow` asks about changes that are not saved before it closes,
+  opens or makes a project. Discard removes the recovery file. After an
+  open, `MainWindow` offers a recovery file that is on the disk
+  [`app.cpp:MainWindow::maybeSaveDirty`, `app.cpp:MainWindow::offerRecovery`].
 - `AppState::generate_code` writes the HDL files [`bridge.rs:generate_code`].
 - `AppState::set_project_board` writes `<project>.toolchain.json`
   (`ToolchainConfig::set_board`) [`bridge.rs:set_project_board`].
@@ -233,5 +278,16 @@ C++ classes:
   the canvas and the code generation on each final model.
   `PROPTEST_CASES=4000 cargo test --lib history_follows_the_model` runs
   more sequences.
-- No test runs the C++ classes. Their code is compiled and checked by
+- Run with the tests of the C++ side: `cargo test --features gui-tests`
+  (`make test`). `tests/gui_offscreen.rs` makes the real `MainWindow` on
+  the Qt `offscreen` platform; no window comes on the screen. `GuiTests`
+  sends clicks, drags and keys with Qt Test and answers each menu and
+  message box from a timer. A run stops after 120 seconds at most.
+- The 13 tests of `GuiTests` cover: a wire from clicks on two pins, undo
+  and redo from the menu, the drag of a block, the Delete key, the lock
+  entry of the context menu, the color and the highlight of a net, the
+  pins of a changed source, the recovery file, the save key, and the
+  questions on close and on open.
+- The text editors, the library list, the groups, the tool commands and
+  the Chip View have no test. Their code is compiled and checked by
   reading.
