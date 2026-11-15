@@ -43,6 +43,7 @@
 #include <QTest>
 #include <QTimer>
 
+#include <cmath>
 #include <memory>
 
 // Defined in app.cpp.
@@ -153,6 +154,54 @@ void hover(const QPoint &pos, Qt::KeyboardModifiers modifiers = {}) {
     QMouseEvent move(QEvent::MouseMove, pos, viewport->mapToGlobal(pos), Qt::NoButton, Qt::NoButton,
                      modifiers);
     QApplication::sendEvent(viewport, &move);
+}
+
+// The position of an instance in the model.
+QPointF modelPos(const QString &name) {
+    const int index = g->state->instance_index(name);
+    return QPointF(g->state->instance_pos_x(index), g->state->instance_pos_y(index));
+}
+
+// The scene distance between two points of the viewport. A drag from `from`
+// to `to` moves a block by this distance.
+QPointF sceneDistance(const QPoint &from, const QPoint &to) {
+    return g->view->mapToScene(to) - g->view->mapToScene(from);
+}
+
+bool near(const QPointF &a, const QPointF &b) {
+    return std::abs(a.x() - b.x()) < 0.5 && std::abs(a.y() - b.y()) < 0.5;
+}
+
+// The center of the block is on a column of the grid.
+bool onAColumn(const InstanceItem *block) {
+    const qreal center = block->pos().x() + block->width() / 2.0;
+    return std::abs(center - std::round(center / kColumnPitch) * kColumnPitch) < 1e-6;
+}
+
+// The route of the router: each part is horizontal or vertical. The line
+// that a wire has during a drag is not, when its two pins are not level.
+bool isARoute(const QVector<QPointF> &points) {
+    for (int i = 1; i < points.size(); ++i)
+        if (points[i].x() != points[i - 1].x() && points[i].y() != points[i - 1].y())
+            return false;
+    return points.size() >= 2;
+}
+
+// The number of junction dots that show.
+int dotsThatShow() {
+    int count = 0;
+    for (QGraphicsItem *item : g->view->scene()->items())
+        if (dynamic_cast<JunctionDotItem *>(item) && item->isVisible())
+            ++count;
+    return count;
+}
+
+// Press the left button at `from` and move the pointer to `to`. The button
+// stays down.
+void pressAndMove(const QPoint &from, const QPoint &to) {
+    QTest::mousePress(g->view->viewport(), Qt::LeftButton, {}, from);
+    QTest::mouseMove(g->view->viewport(), (from + to) / 2);
+    QTest::mouseMove(g->view->viewport(), to);
 }
 
 QAction *action(const QString &text) {
@@ -459,6 +508,182 @@ void GuiTests::dragOfABlockIsOneUndoStep() {
              start.y());
     QVERIFY(g->state->undo());
     QCOMPARE(g->state->instance_count(), 1);
+}
+
+// While the button is down, the block is where the pointer is, also between
+// two columns. The other blocks, the other wires and the model do not
+// change. The release puts the block on the nearest column, moves a block
+// that is in its way, routes the wires and writes the model.
+void GuiTests::dragMovesOnlyTheBlockAndTheReleasePlacesIt() {
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(0, 0)));
+    QVERIFY(g->view->placeModule(QStringLiteral("sink"), QPointF(640, 0)));
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(0, 400)));
+    QVERIFY(g->view->placeModule(QStringLiteral("sink"), QPointF(640, 400)));
+    QVERIFY(g->state->connect_pins(QStringLiteral("source_0.q"), QStringLiteral("sink_0.d")).committed);
+    QVERIFY(g->state->connect_pins(QStringLiteral("source_0.q"), QStringLiteral("sink_0.e")).committed);
+    QVERIFY(g->state->connect_pins(QStringLiteral("source_1.q"), QStringLiteral("sink_1.d")).committed);
+    settle();
+    // The net of `source_0.q` has two loads, so its route has a junction dot.
+    QVERIFY(dotsThatShow() > 0);
+
+    const QString name = QStringLiteral("source_0");
+    InstanceItem *moved = block(name);
+    InstanceItem *other = block(QStringLiteral("sink_0"));
+    QVERIFY(moved && other);
+    const QPointF start = moved->pos();
+    const QPointF other_start = other->pos();
+    const QVector<QPointF> other_route = wireTo(QStringLiteral("sink_1.d"))->waypoints();
+    QVERIFY(onAColumn(moved));
+
+    // Less than half a column to the right, and down.
+    QPointF grab = moved->mapToScene(moved->boundingRect().center());
+    QPoint from = onCanvas(grab);
+    QPoint to = onCanvas(grab + QPointF(150, 30));
+    QPointF by = sceneDistance(from, to);
+    pressAndMove(from, to);
+
+    QVERIFY(near(moved->pos(), start + by));
+    QVERIFY(!onAColumn(moved));
+    QCOMPARE(other->pos(), other_start);
+    QCOMPARE(modelPos(name), start);
+    QCOMPARE(wireTo(QStringLiteral("sink_1.d"))->waypoints(), other_route);
+    // The wire of the block is one line from pin to pin.
+    const QVector<QPointF> line = wireTo(QStringLiteral("sink_0.d"))->waypoints();
+    QCOMPARE(line.size(), 2);
+    QCOMPARE(line.first(), pin(name, QStringLiteral("q"))->tipScenePos());
+    QCOMPARE(line.last(), pin(QStringLiteral("sink_0"), QStringLiteral("d"))->tipScenePos());
+    QVERIFY(!isARoute(line));
+    // The route of that net is gone, and its junction dot with it.
+    QCOMPARE(dotsThatShow(), 0);
+
+    QTest::mouseRelease(g->view->viewport(), Qt::LeftButton, {}, to);
+    settle();
+
+    // The nearest column is the column that the block came from.
+    QCOMPARE(moved->pos().x(), start.x());
+    QVERIFY(near(moved->pos(), start + QPointF(0, by.y())));
+    QCOMPARE(modelPos(name), moved->pos());
+    QVERIFY(isARoute(wireTo(QStringLiteral("sink_0.d"))->waypoints()));
+    QVERIFY(dotsThatShow() > 0);
+
+    // More than half a column to the right: the nearest column is the
+    // column of `sink_0`, and the block is level with it.
+    const QPointF second_start = moved->pos();
+    grab = moved->mapToScene(moved->boundingRect().center());
+    from = onCanvas(grab);
+    to = onCanvas(grab + QPointF(400, 0));
+    by = sceneDistance(from, to);
+    pressAndMove(from, to);
+
+    QVERIFY(near(moved->pos(), second_start + by));
+    // No block makes room before the release.
+    QCOMPARE(other->pos(), other_start);
+
+    QTest::mouseRelease(g->view->viewport(), Qt::LeftButton, {}, to);
+    settle();
+
+    QCOMPARE(moved->pos().x() + moved->width() / 2.0, qreal(kColumnPitch));
+    QCOMPARE(moved->pos().y(), second_start.y());
+    // `sink_0` moved clear of the block, with the gap between two blocks.
+    QVERIFY(other->pos() != other_start);
+    const qreal moved_top = moved->pos().y(), moved_bottom = moved_top + moved->rect().height();
+    const qreal other_top = other->pos().y(), other_bottom = other_top + other->rect().height();
+    QVERIFY(std::max(other_top - moved_bottom, moved_top - other_bottom) >= kMinModuleVerticalGap - 1e-6);
+    QCOMPARE(modelPos(name), moved->pos());
+    QCOMPARE(modelPos(QStringLiteral("sink_0")), other->pos());
+    QVERIFY(isARoute(wireTo(QStringLiteral("sink_0.d"))->waypoints()));
+}
+
+// A press that moves less than the click threshold is a click: it selects
+// the block and does not move it.
+void GuiTests::pressWithASmallMoveIsAClickAndLeavesTheBlockInItsPlace() {
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(0, 0)));
+    settle();
+    const QString name = QStringLiteral("source_0");
+    InstanceItem *b = block(name);
+    QVERIFY(b);
+    const QPointF start = b->pos();
+    const QPoint from = center(b);
+    const QPoint to = from + QPoint(2, 2);
+    QVERIFY(sceneDistance(from, to).manhattanLength() < kClickThresholdPx);
+    QVERIFY(g->state->selected_instance().isEmpty());
+
+    QTest::mousePress(g->view->viewport(), Qt::LeftButton, {}, from);
+    QTest::mouseMove(g->view->viewport(), to);
+    QTest::mouseRelease(g->view->viewport(), Qt::LeftButton, {}, to);
+    settle();
+
+    QCOMPARE(b->pos(), start);
+    QCOMPARE(modelPos(name), start);
+    QCOMPARE(g->state->selected_instance(), name);
+}
+
+// The row of a port group covers most of one side of its block, so a drag
+// that starts on it moves the block. It moves the same way as a drag that
+// starts on the body.
+void GuiTests::dragOnTheRowOfAPortGroupMovesTheBlockWithThePointer() {
+    QVERIFY(g->view->placeModule(QStringLiteral("sink"), QPointF(640, 0)));
+    const QString name = QStringLiteral("sink_0");
+    QVERIFY(g->state->create_manual_bundle(name, QStringLiteral("bus"), QStringLiteral("d,e")));
+    settle();
+    InstanceItem *b = block(name);
+    QVERIFY(b);
+    BundlePinItem *row = nullptr;
+    for (QGraphicsItem *child : b->childItems())
+        if (auto *r = dynamic_cast<BundlePinItem *>(child))
+            row = r;
+    QVERIFY(row);
+    const QPointF start = b->pos();
+    const QPointF grab = row->mapToScene(row->shape().boundingRect().center());
+    const QPoint from = onCanvas(grab);
+    const QPoint to = onCanvas(grab + QPointF(150, 30));
+    const QPointF by = sceneDistance(from, to);
+    QCOMPARE(g->view->itemAt(from), row);
+
+    pressAndMove(from, to);
+    QVERIFY(near(b->pos(), start + by));
+    QVERIFY(!onAColumn(b));
+    QCOMPARE(modelPos(name), start);
+
+    QTest::mouseRelease(g->view->viewport(), Qt::LeftButton, {}, to);
+    settle();
+    b = block(name);
+    QVERIFY(b);
+    QCOMPARE(b->pos().x(), start.x());
+    QVERIFY(near(b->pos(), start + QPointF(0, by.y())));
+    QCOMPARE(modelPos(name), b->pos());
+}
+
+// A drag that starts on one block of a selection moves each selected block
+// by the same distance, and the release places each of them.
+void GuiTests::dragOfASelectionMovesEachSelectedBlockWithThePointer() {
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(0, 0)));
+    QVERIFY(g->view->placeModule(QStringLiteral("source"), QPointF(0, 400)));
+    settle();
+    InstanceItem *a = block(QStringLiteral("source_0"));
+    InstanceItem *b = block(QStringLiteral("source_1"));
+    QVERIFY(a && b);
+    a->setSelected(true);
+    b->setSelected(true);
+    const QPointF a_start = a->pos();
+    const QPointF b_start = b->pos();
+    const QPointF grab = a->mapToScene(a->boundingRect().center());
+    const QPoint from = onCanvas(grab);
+    const QPoint to = onCanvas(grab + QPointF(150, 30));
+    const QPointF by = sceneDistance(from, to);
+
+    pressAndMove(from, to);
+    QVERIFY(near(a->pos(), a_start + by));
+    QVERIFY(near(b->pos(), b_start + by));
+
+    QTest::mouseRelease(g->view->viewport(), Qt::LeftButton, {}, to);
+    settle();
+    QCOMPARE(a->pos().x(), a_start.x());
+    QCOMPARE(b->pos().x(), b_start.x());
+    QVERIFY(near(a->pos(), a_start + QPointF(0, by.y())));
+    QVERIFY(near(b->pos(), b_start + QPointF(0, by.y())));
+    QCOMPARE(modelPos(QStringLiteral("source_0")), a->pos());
+    QCOMPARE(modelPos(QStringLiteral("source_1")), b->pos());
 }
 
 void GuiTests::deleteKeyRemovesTheSelectionAsOneUndoStep() {

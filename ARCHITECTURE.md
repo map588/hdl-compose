@@ -243,6 +243,13 @@ For a change from the canvas or from the editor:
 `begin_batch` / `end_batch` put several changes into one undo step, one
 validation and one signal.
 
+A drag of a block with the pointer is not a change until the release. While
+the button is down, the canvas moves the block with the pointer and draws
+each wire of the block as one straight line; it calculates no route and
+moves no other block. The release puts the block on the nearest column,
+moves the other blocks clear, writes the positions as one undo step, and
+calculates the routes one time (`CanvasLayer::endDrag`).
+
 Everything recalculates on each change. This is a decision: the picture then
 depends only on the model, not on the history of edits.
 
@@ -456,9 +463,10 @@ codegen or in the group collapse shows as a difference.
   `tests/gui_offscreen.rs`: the real `MainWindow` on the Qt `offscreen`
   platform, with clicks, drags and keys from Qt Test
   (`src/gui/gui_tests.cpp`). No window comes on the screen, and the
-  settings of the test are in a temporary directory. The 17 tests cover a
-  wire from two clicks, undo and redo from the menu, the drag of a block,
-  the Delete key, the context menu, the color of a net, the pins of a
+  settings of the test are in a temporary directory. The 21 tests cover a
+  wire from two clicks, undo and redo from the menu, the drag of a block
+  and of a selection, a click with a small move, the Delete key, the
+  context menu, the color of a net, the pins of a
   changed source, the recovery file, the save key, the questions on close
   and on open, a new design in the folder, the list of designs, the
   placement of a design, and the removal of stale connections (see "Known
@@ -502,7 +510,9 @@ These stay:
    only.
 4. **Routing is global.** Each change calculates all wire routes again, and
    that time grows almost with the square of the number of blocks (see
-   "How a change flows").
+   "How a change flows"). A drag of a block calculates them one time, at
+   the release. A drag of a top-level port calculates them at each move of
+   the pointer.
 5. **A design is a module through its generated file only.** A parent uses
    the HDL that a child generated last, and nothing shows that the child
    changed after that. The paths that a parent got at the placement do not

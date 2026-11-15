@@ -15,6 +15,10 @@ class GuiTests : public QObject {
     void clicksOnTwoPinsMakeAWire();
     void undoAndRedoFromTheMenuGoThroughEachEdit();
     void dragOfABlockIsOneUndoStep();
+    void dragMovesOnlyTheBlockAndTheReleasePlacesIt();
+    void pressWithASmallMoveIsAClickAndLeavesTheBlockInItsPlace();
+    void dragOnTheRowOfAPortGroupMovesTheBlockWithThePointer();
+    void dragOfASelectionMovesEachSelectedBlockWithThePointer();
     void deleteKeyRemovesTheSelectionAsOneUndoStep();
     void lockFromTheContextMenuTurnsTheUndoEntryOn();
     void wiresOfOneNetHaveOneColorAndOneHighlight();

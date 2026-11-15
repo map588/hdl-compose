@@ -147,6 +147,16 @@ C++ classes:
   snapshot. The view puts each block on the grid in the handler of these
   signals, and those moves are a part of the change that sent the signal
   [`bridge.rs:rebuild_view`, `bridge.rs:push_snapshot`].
+- A drag of a block with the pointer changes only the canvas until the
+  release. While the button is down, the block is where the pointer is
+  (no column snap), each wire of a moved block is one straight line between
+  its two pins, and no other block and no other wire changes. The release
+  puts each moved block on the nearest column, moves the other blocks
+  clear, writes the positions to the model as one undo step and calculates
+  the routes one time. A press that moves less than `kClickThresholdPx` is
+  a click and moves no block [`items.h:InstanceItem::mouseMoveEvent`,
+  `items.cpp:InstanceItem::itemChange`, `canvas.h:CanvasLayer::endDrag`,
+  `canvas.h:CanvasLayer::onInstanceDragged`].
 - Each undo stack holds 100 entries at most [`bridge.rs:UNDO_STACK_LIMIT`].
 - `begin_batch` and `end_batch` can nest. Only the outer pair acts. The
   first change in a batch takes the one snapshot of the batch; a batch with
@@ -317,9 +327,11 @@ C++ classes:
   the Qt `offscreen` platform; no window comes on the screen. `GuiTests`
   sends clicks, drags and keys with Qt Test and answers each menu and
   message box from a timer. A run stops after 120 seconds at most.
-- The 17 tests of `GuiTests` cover: a wire from clicks on two pins, undo
-  and redo from the menu, the drag of a block, the Delete key, the lock
-  entry of the context menu, the color and the highlight of a net, the
+- The 21 tests of `GuiTests` cover: a wire from clicks on two pins, undo
+  and redo from the menu, the drag of a block (the undo step, the free
+  move and the placement at the release, a click with a small move, a drag
+  on the row of a port group, a drag of a selection), the Delete key, the
+  lock entry of the context menu, the color and the highlight of a net, the
   pins of a changed source, the recovery file, the save key, the questions
   on close and on open, a new design in the folder of the open design, a
   click in the list of designs, the placement of a design from the library

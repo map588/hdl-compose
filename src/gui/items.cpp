@@ -306,8 +306,10 @@ void BundlePinItem::mousePressEvent(QGraphicsSceneMouseEvent *event) {
 void BundlePinItem::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
     if (m_parent && (event->buttons() & Qt::LeftButton)) {
         QPointF delta = event->scenePos() - m_press_scene;
-        if (!m_dragged && delta.manhattanLength() >= kClickThresholdPx)
+        if (!m_dragged && delta.manhattanLength() >= kClickThresholdPx) {
             m_dragged = true;
+            m_parent->beginDrag();
+        }
         if (m_dragged)
             m_parent->setPos(m_parent_start + delta);
         event->accept();
@@ -868,6 +870,11 @@ void PortPinItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     }
 }
 
+void InstanceItem::beginDrag() {
+    if (m_canvas_layer)
+        m_canvas_layer->beginDrag();
+}
+
 void InstanceItem::commitDragPosition() {
     // Multi-drag: every selected instance keeps its dropped spot (relative
     // spacing intact); the rest of the column shoves out of the way.
@@ -881,7 +888,7 @@ void InstanceItem::commitDragPosition() {
     if (!fixed.contains(this))
         fixed << this;
     if (m_canvas_layer) {
-        m_canvas_layer->settleAfterMove(fixed);
+        m_canvas_layer->endDrag(fixed);
     } else {
         QPointF p = pos();
         m_state->set_instance_position(m_name, p.x(), p.y());
@@ -1030,21 +1037,26 @@ void TopPortItem::paintIssueRing(QPainter *painter, const QPointF &center) {
 // CanvasView + CanvasLayer moved to canvas.h / canvas.cpp.
 
 
-// --- InstanceItem::itemChange (live wire reroute during drag) ---------------
+// --- InstanceItem::itemChange -----------------------------------------------
 
 QVariant InstanceItem::itemChange(GraphicsItemChange change, const QVariant &value) {
-    if (change == ItemPositionChange) {
-        // Live placement: snap X to the column grid, but let Y follow the cursor.
-        // Vertical collision-shoving is deferred to release/drop (see
-        // commitDragPosition / placeInstance) so dragging within a rank stays
-        // smooth instead of fighting the cursor each frame.
+    // During a drag with the pointer the block goes where the pointer is, and
+    // only its own wires follow. The column snap, the push of the other
+    // blocks and the routes come at the release (CanvasLayer::endDrag).
+    const bool dragging = m_canvas_layer && m_canvas_layer->dragging();
+    if (change == ItemPositionChange && !dragging) {
+        // A position from the model, a settle or a drop: X goes to the
+        // column grid, Y stays.
         QPointF p = value.toPointF();
         qreal centered = p.x() + m_width / 2.0;
         int col = static_cast<int>(std::round(centered / kColumnPitch));
         return QPointF(col * kColumnPitch - m_width / 2.0, p.y());
     }
     if (change == ItemPositionHasChanged && m_canvas_layer) {
-        m_canvas_layer->onInstanceColumnChanged();
+        if (dragging)
+            m_canvas_layer->onInstanceDragged(this);
+        else
+            m_canvas_layer->onInstanceColumnChanged();
     }
     return QGraphicsRectItem::itemChange(change, value);
 }

@@ -413,6 +413,7 @@ class CanvasLayer {
 
     void rebuild() {
         m_wire_tool.cancel();
+        m_dragging = false; // the dragged items go away with the scene
         m_scene->clear(); // deletes hull items too — just drop the pointers
         m_items.clear();
         m_top_ports.clear();
@@ -646,6 +647,57 @@ class CanvasLayer {
         }
         m_state->end_batch();
         replanWires();
+    }
+
+    // --- Drag of blocks with the pointer ---
+    //
+    // While a drag is in progress, a block follows the pointer with no
+    // column snap, and only the wires of the moved blocks change: each is
+    // one straight line between its two pins. The column snap, the push of
+    // the other blocks and the routes of all wires are made one time, at
+    // the release. Thus no other block and no other wire changes while the
+    // pointer moves, and a move of the pointer costs no routing.
+
+    bool dragging() const { return m_dragging; }
+
+    void beginDrag() { m_dragging = true; }
+
+    // The release: each dragged block goes to the nearest column, then
+    // settleAfterMove moves the other blocks clear, writes the positions as
+    // one undo step and routes the wires.
+    void endDrag(const QList<InstanceItem *> &dragged) {
+        // The drag is still in progress for these moves, so they route no
+        // wires. settleAfterMove routes them one time.
+        for (auto *ii : dragged) {
+            const qreal x =
+                instanceColumn(ii) * static_cast<qreal>(kColumnPitch) - ii->width() / 2.0;
+            ii->setPos(x, ii->pos().y());
+        }
+        m_dragging = false;
+        settleAfterMove(dragged);
+    }
+
+    // `item` moved during a drag. Each wire of the block becomes a straight
+    // line between its pins. The junction dots of those nets are on routes
+    // that are gone, so they hide; replanWires makes new dots at the release.
+    void onInstanceDragged(InstanceItem *item) {
+        const QString name = item->instanceName();
+        QSet<QString> nets;
+        for (auto *w : m_wires) {
+            if (NetKey::parse(w->sourceKey()).instance != name &&
+                NetKey::parse(w->targetKey()).instance != name)
+                continue;
+            Endpoint from, to;
+            if (!resolveEndpoint(w->sourceKey(), from) || !resolveEndpoint(w->targetKey(), to))
+                continue;
+            w->setWaypoints({from.pt, to.pt});
+            nets.insert(w->netKey());
+        }
+        for (auto *d : m_junction_dots) {
+            if (nets.contains(d->netKey()))
+                d->setVisible(false);
+        }
+        updateGroupHulls();
     }
 
     // Normalize the whole canvas: snap every block onto the column grid,
@@ -996,7 +1048,8 @@ class CanvasLayer {
             }
         }
         for (const FfiDot &d : routes.dots) {
-            auto *dot = new JunctionDotItem(QPointF(d.x, d.y), net_colors[d.net]);
+            auto *dot = new JunctionDotItem(QPointF(d.x, d.y), net_colors[d.net],
+                                            net_wires[d.net].first()->netKey());
             m_scene->addItem(dot);
             m_junction_dots.push_back(dot);
         }
@@ -1121,6 +1174,7 @@ class CanvasLayer {
     std::vector<JunctionDotItem *> m_junction_dots;
     QVector<GroupHullItem *> m_group_hulls;
     std::pair<int, int> m_last_col_bounds = {0, 0};
+    bool m_dragging = false; // a drag of blocks with the pointer is in progress
     QString m_hovered_net; // the net that shows the highlight
     QString m_pointer_net; // the net under the pointer, with or without Shift
     WireTool m_wire_tool;

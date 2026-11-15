@@ -245,8 +245,12 @@ The window opens maximized with the canvas front and center.
   and Generate HDL stops. Right-click the block and choose **Remove Stale
   Connections** to remove them.
 - **Canvas:** instances as boxes, top-level ports on the edges, wires routed
-  through gutters between columns. Click a pin, then click another pin to
-  connect, or drag pin to pin. While a pin is armed (dashed cyan ring,
+  through gutters between columns. Drag a block to move it. The block
+  follows the pointer, and its wires show as straight lines. When you
+  release it, the block goes to the nearest column, the blocks in its way
+  make room, and the wires get their routes. Click a pin, then click
+  another pin to connect, or drag pin to pin. While a pin is armed (dashed
+  cyan ring,
   crosshair cursor) you can also click any existing wire to join that net;
   clicking anything else cancels. Hold `Shift` and hover a pin or wire to
   highlight its whole net. `F` / `Ctrl+0` zoom to fit, `Ctrl`+wheel zoom,

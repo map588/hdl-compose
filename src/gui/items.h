@@ -109,15 +109,22 @@ struct NetKey {
 
 class JunctionDotItem : public QGraphicsEllipseItem {
   public:
-    JunctionDotItem(const QPointF &center, const QColor &color)
+    // `net_key` is the net of the route that has this dot (WireItem::netKey).
+    JunctionDotItem(const QPointF &center, const QColor &color, const QString &net_key)
         : QGraphicsEllipseItem(center.x() - kJunctionDotRadius, center.y() - kJunctionDotRadius,
-                               2 * kJunctionDotRadius, 2 * kJunctionDotRadius) {
+                               2 * kJunctionDotRadius, 2 * kJunctionDotRadius),
+          m_net_key(net_key) {
         setBrush(color);
         QPen pen(color);
         pen.setCosmetic(true);
         setPen(pen);
         setZValue(2);
     }
+
+    const QString &netKey() const { return m_net_key; }
+
+  private:
+    QString m_net_key;
 };
 
 // --- WireItem ---------------------------------------------------------------
@@ -601,8 +608,13 @@ class InstanceItem : public QGraphicsRectItem {
         update();
     }
 
-    // End-of-drag: settle clear of other modules (deferred from the live drag),
-    // then persist the position. Defined in items.cpp (needs CanvasLayer).
+    // Start of a drag with the pointer: from here the block follows the
+    // pointer with no column snap. Defined in items.cpp (needs CanvasLayer).
+    void beginDrag();
+
+    // End of a drag: put the block on its column, make the other blocks
+    // clear of it, then write the positions to the model. Defined in
+    // items.cpp (needs CanvasLayer).
     void commitDragPosition();
 
     void layoutPins();
@@ -636,20 +648,23 @@ class InstanceItem : public QGraphicsRectItem {
             return;
         }
         if (event->button() == Qt::LeftButton) {
-            m_pressScenePos = event->scenePos();
             m_dragged = false;
         }
         QGraphicsRectItem::mousePressEvent(event);
     }
 
     void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override {
-        QGraphicsRectItem::mouseMoveEvent(event);
         if (!m_dragged) {
-            QPointF delta = event->scenePos() - m_pressScenePos;
-            if (delta.manhattanLength() >= kClickThresholdPx) {
-                m_dragged = true;
+            // A press that moves less than the threshold is a click: the
+            // block stays in its place.
+            const QPointF delta = event->scenePos() - event->buttonDownScenePos(Qt::LeftButton);
+            if (delta.manhattanLength() < kClickThresholdPx) {
+                return;
             }
+            m_dragged = true;
+            beginDrag();
         }
+        QGraphicsRectItem::mouseMoveEvent(event);
     }
 
     void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override {
@@ -672,7 +687,6 @@ class InstanceItem : public QGraphicsRectItem {
     AppState *m_state;
     QString m_name;
     QString m_module;
-    QPointF m_pressScenePos;
     bool m_dragged = false;
     std::vector<PortPinItem *> m_pins;
     QSet<QString> m_expanded_bundles;
