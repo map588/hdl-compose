@@ -5,7 +5,7 @@ modules in VHDL or SystemVerilog. The tool reads their ports, lets the user
 place instances and connect them, and writes the structural module that
 instantiates them. It can then run the open-source FPGA tools on the result.
 
-This document describes the design as the code is on 2026-11-14. It replaces
+This document describes the design as the code is on 2026-11-15. It replaces
 the earlier version, which described the system before groups, the net
 model with union-find, and the tool flows.
 
@@ -69,7 +69,7 @@ The binary is the CLI and the GUI.
         |        |   Rust: AppState (bridge.rs)       |                  |
         v        |        |                           |                  |
    +----+--------+--------+---------------------------+----------------+ |
-   | Model:        types, schematic, project, reserved                 | |
+   | Model:        types, schematic, project, reserved, designs        | |
    | Derived data: nets, groups, codegen, routing, vhdl, verilog       | |
    | Tools:        toolchain, board, floorplan, netcheck               | |
    +--------------------------------------------------------------------+ |
@@ -510,8 +510,8 @@ comparison, the build with no Qt, the save, the recovery file, the pins of
 a changed module, the tests of the window, the time of the wire routes).
 These stay:
 
-1. **Editing rules are in the bridge.** `src/gui/bridge.rs` (about 4,400
-   lines of code and 1,400 lines of tests) holds wiring rules, the grammar
+1. **Editing rules are in the bridge.** `src/gui/bridge.rs` (about 4,600
+   lines of code and 1,750 lines of tests) holds wiring rules, the grammar
    of the top-level buffer, undo and batching, as methods of the Qt object.
    A test reaches them only through `AppState`.
 2. **A panic stops the application.** A panic in a method of the bridge
@@ -548,7 +548,8 @@ These stay:
 
 ## Stack
 
-- Rust 2024, one package.
+- Rust 2024, one package. The tests of the application are a second
+  package, `ui-tests`, that the main package does not use.
 - Qt 6 (Widgets, Gui) through [cxx-qt](https://github.com/KDAB/cxx-qt) 0.8,
   only with the cargo feature `gui` (on by default). A build with
   `--no-default-features` is the CLI only and needs no Qt.

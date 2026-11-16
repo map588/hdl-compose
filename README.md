@@ -419,17 +419,20 @@ The files in the repository root that have an effect on the build:
   `gui` is on by default. Only with it, the build has the module `gui`,
   the cxx-qt dependencies and the C++ code, and needs Qt 6. With no `gui`
   feature, `hdlc gui` and `hdlc` with no command return exit code 2
-  [`Cargo.toml`, `src/lib.rs`: `pub mod gui`, `src/main.rs:cmd_gui`].
+  [`Cargo.toml`, `src/lib.rs`: `pub mod gui`, `src/main.rs:cmd_gui`]. The
+  cargo feature `gui-tests` is off by default; it adds the tests of the
+  window to the build.
 - `build.rs`: with the `gui` feature, gives `src/gui/bridge.rs` to cxx-qt
   and compiles `src/gui/app.cpp`, `src/gui/canvas.cpp` and
   `src/gui/items.cpp` against the Qt modules Widgets and Gui. The list of
-  C++ files is explicit: a new `.cpp` file must be added there. With no
-  `gui` feature it does nothing [`build.rs:main`].
+  C++ files is explicit: a new `.cpp` file must be added there. With the
+  `gui-tests` feature it also compiles `src/gui/gui_tests.cpp` against the
+  Qt module Test. With no `gui` feature it does nothing [`build.rs:main`].
 - `.cargo/config.toml`: holds the C++ flags for the macOS arm64 workaround
   that `build.rs` names in its comment.
-- `Makefile`: `build`, `release`, `run` / `gui`, `check`, `test`, `fmt`,
-  `clippy`, `clean`, and the macOS bundle targets `app`, `app-debug`,
-  `app-release`, `app-bundle`.
+- `Makefile`: `help`, `build`, `release`, `run` / `gui`, `check`, `test`,
+  `test-ui`, `fmt`, `clippy`, `clean`, and the macOS bundle targets `app`,
+  `app-debug`, `app-release`, `app-bundle`.
 
 ## Subdirectories & System Boundaries
 
@@ -444,6 +447,9 @@ The files in the repository root that have an effect on the build:
   and `hdlc schema` print them (no contract file).
 - packaging: the macOS `Info.plist` of the application bundle (no contract
   file).
+- ui-tests: a package of its own with the tests of the application on a
+  headless screen. `make test-ui` runs it. The main package does not use
+  it (no contract file).
 
 ## Global Invariants
 

@@ -8,7 +8,7 @@ Vivado project, restructured for hdl-compose + GHDL. No Vivado boilerplate.
 ```
 voice_chain.hdlc   one voice signal chain (wave select, osc, VCA env, audio out)
 synth_top.hdlc     full top: MIDI front end, 2x voice_chain, VCF env + LFO + mix, I2C CV DAC
-gen_hdlc.py        single source of truth — writes both .hdlc files. Edit this, not the JSON.
+gen_hdlc.py        writes both .hdlc files at format version 4. See the note below before you run it.
 run_sims.sh        compile everything with GHDL and run all 7 testbenches
 rtl/
   loot/            MIDI/CC LUT packages (compiled into library `loot`)
@@ -24,6 +24,12 @@ sim/               testbenches + selectio_sim (behavioral, GHDL-only, never add 
 ```
 
 ## Workflow
+
+`gen_hdlc.py` gives the tracked `voice_chain.hdlc` exactly. The tracked
+`synth_top.hdlc` was saved from the GUI after the script wrote it (format
+version 5): it has no `selectio0` / `selectio1` instances, the `i2s`
+outputs go to the top-level ports directly, and it has two more library
+paths. A run of the script replaces that file with the older design.
 
 Regenerate after any structural change (run from this directory):
 
@@ -56,9 +62,10 @@ the `loot` packages and the leaf sources from `voice_chain.toolchain.json`,
 so `synth_top.toolchain.json` holds only what `synth_top` adds: `i2s_tx`,
 `selectio_sim.vhd`, the exclusion and the `--latches` flag.
 
-Net convention reminder: an instance OUTPUT feeding others references
-itself in its port_map; INPUTS reference the driving instance/port.
-Mutual references silently split the net in two.
+Net convention: a `port_map` entry states that two pins are connected, and
+its direction has no effect. `hdlc` merges all pins that reference each
+other into one net, so an output needs no reference to itself (see
+`docs/FORMAT.md`).
 
 ## CC / param address map
 

@@ -28,8 +28,9 @@ the code that is not test code:
   uses `nets` and `codegen`; `nets` uses `codegen`; `codegen` uses
   `schematic`, `nets` and `groups`; `groups` uses `schematic`, `nets` and
   `codegen`.
-- `toolchain` and `board` use each other. `toolchain` also uses `codegen`
-  and `floorplan`.
+- `toolchain` and `board` use each other. `toolchain` also uses `codegen`,
+  `floorplan` and `designs`.
+- `designs` uses `project`, `reserved` and `codegen`.
 - `netcheck` uses `nets` and `codegen`. It does not use `toolchain`.
 - `gui` uses the model and the derived data, and from the tools only
   `toolchain` (for the board setting of a design).

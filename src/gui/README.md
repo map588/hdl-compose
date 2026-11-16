@@ -89,8 +89,11 @@ Entry:
   `is_group_block`, `instance_group`, `group_count`, `group_name`,
   `group_expanded_visible`, `group_hull_items`.
 - **Data for the canvas:** the port, top-port and wire read methods
-  (`instance_port_*`, `top_port_*`, `wire_count`, `wire_source`,
-  `wire_target`, `wire_width`, `wire_net`), the validation read methods
+  (`instance_port_count`, `instance_port_name`, `instance_port_direction`,
+  `instance_port_width`, `instance_port_bundle`, `top_port_count`,
+  `top_port_name`, `top_port_direction`, `top_port_width`, `wire_count`,
+  `wire_source`, `wire_target`, `wire_width`, `wire_net`), the validation
+  read methods
   (`validation_error_count`, `validation_warning_count`,
   `validation_messages`, `pin_issue_level`, `pin_issue_message`), and the pin
   notes (`pin_exposed_note`, `pin_origin_note`, `pin_direction_code`).
@@ -247,6 +250,16 @@ C++ classes:
   be used in `app.cpp`: it always uses the native format, and with it the
   tests wrote into the settings of the user [`gui_tests.cpp:run_gui_tests`,
   `app.cpp:AppSettings`, `app.cpp:hdlc_test_keep_settings_in`].
+- With the environment variable `HDLC_SETTINGS_DIR`, the application keeps
+  its settings in a file in that folder, through the same function as the
+  tests of the C++ side. The tests of the application (`ui-tests`) set it,
+  and they refuse a program that does not read it [`app.cpp:run_gui`,
+  `app.cpp:keep_settings_in`].
+- Each block, pin, top-level port and wire of the scene has a name in
+  `data(Qt::AccessibleTextRole)`, for a tool that reads the scene. The user
+  does not see it. The name is the instance name for a block, the port name
+  for a pin and a top-level port, and `<source key> -> <target key>` for a
+  wire [`items.h:InstanceItem`, `items.cpp:PortPinItem`, `items.h:WireItem`].
 - A wire is one `port_map` entry: its source is the pin that the entry
   references, which is not always the driver. `wire_net` gives the net of
   the wire from `nets::resolve_nets`: two wires have the same value when,
@@ -320,7 +333,10 @@ C++ classes:
   the editor command of the user for "go to source".
 - `app.cpp` keeps settings with `QSettings`: `recent_projects`,
   `default_open_dir`, `editor_command`, `window/geometry`,
-  `window/splitter`, `window/editor_visible`.
+  `window/splitter`, `window/editor_visible`. It reads, and removes at the
+  next Select Board, the key `toolchain/board/<design path>` of an earlier
+  version; the board is now in `<design>.toolchain.json`
+  [`app.cpp:MainWindow::boardForProject`, `app.cpp:MainWindow::storeBoard`].
 - `app.cpp` watches the library files with `QFileSystemWatcher` and calls
   `AppState::reload_library` when a file changes.
 - `floorplan.h` reads `<top>.floorplan.json` with `QFile` and
@@ -355,6 +371,17 @@ C++ classes:
   on close and on open, a new design in the folder of the open design, a
   click in the list of designs, the placement of a design from the library
   list, and the removal of stale connections from the context menu.
-- The text editors, the library list, the groups, the tool commands and
-  the Chip View have no test. Their code is compiled and checked by
-  reading.
+- Run the tests of the application: `make test-ui`. The package `ui-tests`
+  starts the real `hdlc` program on a headless screen with the test
+  library of the `headless-computer-use` project. Each test has a
+  temporary folder for its designs and its settings. The 26 tests cover:
+  open (argument, dialog, list of designs, recent menu, most recent
+  design), a new design, a block from a double-click in the library, save,
+  Generate HDL, undo and redo, rename and delete from the Edit menu, the
+  three answers to the question about changes that are not saved, the
+  recovery file after a stop with `kill -9`, and on the canvas the drag of
+  a block to the next column, a click, a wire from clicks on two pins, two
+  pins that do not connect, and the Delete key for a wire and for a block.
+- The text editors, the drag of a module from the library, the groups, the
+  tool commands and the Chip View have no test. Their code is compiled and
+  checked by reading.
