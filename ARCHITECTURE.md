@@ -473,6 +473,18 @@ codegen or in the group collapse shows as a difference.
   and on open, a new design in the folder, the list of designs, the
   placement of a design, and the removal of stale connections (see "Known
   weaknesses", item 3).
+- `make test-ui` runs the package `ui-tests`: the real `hdlc` program on a
+  headless screen, with the test library of the `headless-computer-use`
+  project. A test does the actions of a user and reads the window and the
+  files of a temporary folder. The 26 tests cover open, new, save,
+  Generate HDL, the library and the list of designs, rename and delete,
+  the question about changes that are not saved, the recovery file after
+  a stop with `kill -9`, the recent designs, and on the canvas a drag, a
+  wire from two clicks, and the Delete key. For these tests each block,
+  pin and wire of the canvas has a name in `data(Qt::AccessibleTextRole)`
+  (a wire: `<source key> -> <target key>`), and `HDLC_SETTINGS_DIR` gives
+  the application a folder for its settings. The package is not part of
+  the main package: its path dependency is not on each machine.
 
 ## Decisions that stay
 
@@ -506,8 +518,9 @@ These stay:
    stops the program. The recovery file keeps all changes but those of the
    last 12 seconds. The property test found no panic in 4,000 random
    sequences of edits; that is evidence, not proof.
-3. **The offscreen tests run the main flows only.** They cover the window
-   and the canvas. The text editors, the library list, the groups, the
+3. **The tests of the GUI run the main flows only.** The offscreen tests
+   and the tests of the application cover the window and the canvas. The
+   text editors, the drag of a module from the library, the groups, the
    tool commands and the Chip View (`floorplan.h`) are checked by reading
    only.
 4. **Routing is global.** Each change calculates all wire routes again, and
@@ -544,4 +557,5 @@ These stay:
 - `serde` / `serde_json` for the design file, `schemars` for its schema,
   `clap` for the CLI, `tracing` for logs.
 - `proptest` and `tempfile` for tests. Qt Test for the tests of the window,
-  only with the cargo feature `gui-tests` (off by default).
+  only with the cargo feature `gui-tests` (off by default). The test
+  library of `headless-computer-use` for the package `ui-tests` only.

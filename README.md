@@ -51,6 +51,29 @@ screen:
 cargo test --features gui-tests     # `make test` runs this
 ```
 
+The package `ui-tests` has the tests of the application as a user sees it.
+Each test starts the real `hdlc` program on a headless screen, does the
+actions of a user, and reads the window and the files that the program
+writes. No window comes on the screen, and the settings of the user are not
+read or changed:
+
+```sh
+make test-ui                        # cargo test --manifest-path ui-tests/Cargo.toml
+```
+
+These tests need the `headless-computer-use` project in
+`../../mcp/headless-computer-use`, with its probe plugin installed
+(`just install` in that project). The package is not part of the main
+package, so `cargo build` and `make test` do not need that project.
+
+The test library comes from the source of that project, and the probe
+plugin from its last install. If a test of the application fails with no
+change in this project, run `just install` in that project first.
+
+`hdlc` reads one environment variable for these tests. With
+`HDLC_SETTINGS_DIR=<folder>`, the GUI keeps its settings in a file in that
+folder and not in the settings of the user.
+
 On macOS, `make app` installs `/Applications/hdl-compose.app`. The bundle
 starts from Finder and opens `.hdlc` files on double-click.
 
@@ -490,6 +513,7 @@ The files in the repository root that have an effect on the build:
 
 - Run: `cargo test`
 - With the offscreen tests of the window: `cargo test --features gui-tests`
+- The tests of the application on a headless screen: `make test-ui`
 - Run: `cargo fmt --check`
 - Run: `cargo clippy --all-targets -- -D warnings`
 - With no Qt: `cargo test --no-default-features` and

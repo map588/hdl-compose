@@ -98,9 +98,9 @@ using namespace hdlc;
 //
 // Each read and each write of the settings uses AppSettings. With the native
 // format it is the same as QSettings("hdl-compose", "hdl-compose"). The tests
-// change the format to a file in a temporary directory
-// (hdlc_test_keep_settings_in). QSettings(organization, application) always
-// uses the native format and ignores QSettings::setDefaultFormat; with that
+// and HDLC_SETTINGS_DIR change the format to a file in a folder
+// (keep_settings_in). QSettings(organization, application) always uses the
+// native format and ignores QSettings::setDefaultFormat; with that
 // constructor the tests wrote the recent designs and the window geometry
 // into the settings of the user.
 QSettings::Format g_settings_format = QSettings::NativeFormat;
@@ -110,6 +110,13 @@ struct AppSettings : QSettings {
         : QSettings(g_settings_format, QSettings::UserScope, QStringLiteral("hdl-compose"),
                     QStringLiteral("hdl-compose")) {}
 };
+
+// From here the window keeps its settings in a file below `dir`, and does
+// not read or change the settings of the user.
+void keep_settings_in(const QString &dir) {
+    g_settings_format = QSettings::IniFormat;
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir);
+}
 
 void apply_material_dark_theme(QApplication &app) {
     QPalette palette;
@@ -2382,11 +2389,8 @@ void hdlc_test_open_project(QMainWindow *window, const QString &path) {
     static_cast<MainWindow *>(window)->openFromSystem(path);
 }
 
-// From here the window keeps its settings in a file below `dir`, and does
-// not read or change the settings of the user.
 void hdlc_test_keep_settings_in(const QString &dir) {
-    g_settings_format = QSettings::IniFormat;
-    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir);
+    keep_settings_in(dir);
 }
 #endif
 
@@ -2402,6 +2406,14 @@ extern "C" int run_gui(int *argc, char **argv, const char *project) {
     app.setApplicationName(QStringLiteral("HDL Compose"));
     app.setStyle(QStringLiteral("Fusion"));
     apply_material_dark_theme(app);
+
+    // A test of the application gives a folder for the settings in
+    // HDLC_SETTINGS_DIR. Then the application does not read or change the
+    // settings of the user.
+    const QString settings_dir = qEnvironmentVariable("HDLC_SETTINGS_DIR");
+    if (!settings_dir.isEmpty()) {
+        keep_settings_in(settings_dir);
+    }
 
     const QString initial_project = project ? QString::fromLocal8Bit(project) : QString();
 

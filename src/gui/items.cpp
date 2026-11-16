@@ -22,6 +22,9 @@ PortPinItem::PortPinItem(const QString &name, int direction, int width, PinSide 
     : QGraphicsItem(parent), m_name(name), m_direction(direction), m_width(width), m_side(side), m_parent(parent) {
     setAcceptedMouseButtons(Qt::LeftButton);
     setAcceptHoverEvents(true);
+    // The name of the pin for a tool that reads the scene, for example a
+    // test of the application. The tooltip has the width also.
+    setData(Qt::AccessibleTextRole, m_name);
     QString tip = m_name;
     QString w = format_width(m_width);
     if (!w.isEmpty())

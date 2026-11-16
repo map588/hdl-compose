@@ -141,6 +141,9 @@ class WireItem : public QGraphicsPathItem {
     // always the driver, so it does not identify the net.
     WireItem(const QString &source_key, const QString &target_key, const QString &net_key)
         : m_source_key(source_key), m_target_key(target_key), m_net_key(net_key) {
+        // The name of the wire for a tool that reads the scene, for example
+        // a test of the application. The user does not see it.
+        setData(Qt::AccessibleTextRole, QStringLiteral("%1 -> %2").arg(source_key, target_key));
         setFlag(QGraphicsItem::ItemIsSelectable, true);
         setAcceptedMouseButtons(Qt::LeftButton | Qt::RightButton);
         setAcceptHoverEvents(true);
@@ -549,6 +552,9 @@ class InstanceItem : public QGraphicsRectItem {
     InstanceItem(AppState *state, const QString &name, const QString &module, QGraphicsItem *parent = nullptr)
         : QGraphicsRectItem(0, 0, kMinInstanceWidth, kInstanceHeaderHeight + kMinInstanceBodyHeight, parent),
           m_state(state), m_name(name), m_module(module) {
+        // The name of the block for a tool that reads the scene, for example
+        // a test of the application. The user does not see it.
+        setData(Qt::AccessibleTextRole, name);
         setFlags(QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemIsSelectable |
                  QGraphicsItem::ItemSendsGeometryChanges);
         setAcceptedMouseButtons(Qt::LeftButton);
@@ -557,7 +563,10 @@ class InstanceItem : public QGraphicsRectItem {
 
     QString instanceName() const { return m_name; }
     AppState *state() const { return m_state; }
-    void setInstanceName(const QString &n) { m_name = n; }
+    void setInstanceName(const QString &n) {
+        m_name = n;
+        setData(Qt::AccessibleTextRole, n);
+    }
     void setModuleRef(const QString &m) { m_module = m; }
     int width() const { return m_width; }
 

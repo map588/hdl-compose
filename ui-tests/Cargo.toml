@@ -1,0 +1,25 @@
+# Tests of the application as a user sees it. Each test starts the real
+# `hdlc` program on a headless screen, does the actions of a user, and reads
+# the window and the files that the program writes. Nothing shows on the
+# desktop. Run them with `make test-ui`.
+#
+# This is a package of its own, and not a test of the main package: the test
+# library is a path dependency that is not on each machine. In the main
+# package, a path that is not there stops each `cargo build`.
+[package]
+name = "hdlc-ui-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# The package is not a member of a workspace.
+[workspace]
+
+[dependencies]
+# The test library of the `headless-computer-use` project. It replaces
+# nothing: the standard library and the other dependencies cannot start a
+# Qt application on a headless screen and read its user interface. Without
+# the default features, the MCP server of that project is not built.
+headless-computer-use = { path = "../../../mcp/headless-computer-use", default-features = false }
+serde_json = "1"
+tempfile = "3"
