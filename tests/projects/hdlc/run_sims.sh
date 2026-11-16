@@ -1,8 +1,8 @@
 #!/bin/sh
 # Compile the full design + testbenches with GHDL and run every testbench.
 # Run from this directory:  ./run_sims.sh [ghdl-binary]
-# rtl/gen/* are outputs of `gen_hdlc.py` + `hdlc codegen` — regenerate
-# after editing the .hdlc files, never hand-edit them.
+# rtl/gen/* are outputs of `hdlc codegen` — regenerate after editing the
+# .hdlc files, never hand-edit them.
 set -e
 GHDL=${1:-ghdl}
 FLAGS="--std=08 --workdir=build -Pbuild"

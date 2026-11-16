@@ -954,8 +954,9 @@ mod tests {
         );
     }
 
-    /// The same net with the reference on the driver, to itself. This is
-    /// the convention of `tests/projects/hdlc/gen_hdlc.py`.
+    /// The same net with the reference on the driver, to itself. Older
+    /// design files, for example `tests/projects/hdlc/voice_chain.hdlc`,
+    /// use this convention.
     #[test]
     fn output_of_a_group_is_driven_when_the_driver_references_itself() {
         let design = generate_grouped(&["u_pulse"], |s| {

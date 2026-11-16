@@ -8,7 +8,6 @@ Vivado project, restructured for hdl-compose + GHDL. No Vivado boilerplate.
 ```
 voice_chain.hdlc   one voice signal chain (wave select, osc, VCA env, audio out)
 synth_top.hdlc     full top: MIDI front end, 2x voice_chain, VCF env + LFO + mix, I2C CV DAC
-gen_hdlc.py        writes both .hdlc files at format version 4. See the note below before you run it.
 run_sims.sh        compile everything with GHDL and run all 7 testbenches
 rtl/
   loot/            MIDI/CC LUT packages (compiled into library `loot`)
@@ -25,16 +24,11 @@ sim/               testbenches + selectio_sim (behavioral, GHDL-only, never add 
 
 ## Workflow
 
-`gen_hdlc.py` gives the tracked `voice_chain.hdlc` exactly. The tracked
-`synth_top.hdlc` was saved from the GUI after the script wrote it (format
-version 5): it has no `selectio0` / `selectio1` instances, the `i2s`
-outputs go to the top-level ports directly, and it has two more library
-paths. A run of the script replaces that file with the older design.
-
-Regenerate after any structural change (run from this directory):
+The two `.hdlc` files are the source of the design. Change them in the
+GUI (`hdlc synth_top.hdlc`) or by hand (`hdlc guide`). Generate the HDL
+again after each change (run from this directory):
 
 ```sh
-python3 gen_hdlc.py
 hdlc codegen voice_chain.hdlc -o rtl/gen/voice_chain.vhd
 hdlc codegen synth_top.hdlc   -o rtl/gen/synth_top.vhd
 ./run_sims.sh            # or ./run_sims.sh /path/to/ghdl
