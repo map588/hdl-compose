@@ -130,6 +130,15 @@ A `ModuleDef` (name, generics, ports of a library module) is never saved.
 The loader reads it from the library sources each time, so a changed source
 is seen.
 
+A built-in logic gate is an `Instance` whose `module_ref` starts with `$`
+(`$and`, `$xor_vec`; see `gates.rs`). No HDL name can start with `$`, so
+a module of a source never has such a name. The library of each design has
+a `ModuleDef` for each gate, from `gates::modules`. Thus the canvas, the
+nets, the wiring rules and the validation handle a gate as they handle each
+instance, and the design file needs no new field and no new version. Only
+the parts that go to the HDL know about gates: the code generators, the
+staging of sources, and the netlist check.
+
 ### Nets
 
 A `port_map` entry states that two pins are connected. Its direction has no
@@ -183,6 +192,11 @@ GUI. It returns the text of each file and writes nothing.
   the bound.
 - The output is deterministic: instances in the order of their names, no
   metadata of the tool.
+- A built-in gate becomes an assignment (`y <= a and b;`), not an
+  instance. Validation makes an input of a gate with no connection an
+  error, so the expression always has its operands. The netlist check does
+  not compare the pins of a gate: yosys makes logic cells with names of
+  its own from the assignment.
 - `GeneratedDesign::write_to` replaces only a file that hdlc generated (the
   first line says so), and writes no file when it refuses one. A design or
   a group can have the name of a hand-written source; that source stays.
@@ -476,8 +490,9 @@ codegen or in the group collapse shows as a difference.
 - `make test-ui` runs the package `ui-tests`: the real `hdlc` program on a
   headless screen, with the test library of the `headless-computer-use`
   project. A test does the actions of a user and reads the window and the
-  files of a temporary folder. The 27 tests cover open, new, save,
-  Generate HDL, the library and the list of designs, rename and delete,
+  files of a temporary folder. The 28 tests cover open, new, save,
+  Generate HDL, the library and the list of designs, the menu of the
+  logic gates, rename and delete,
   the mark of the title and the question about changes that are not saved, the recovery file after
   a stop with `kill -9`, the recent designs, and on the canvas a drag, a
   wire from two clicks, and the Delete key. For these tests each block,

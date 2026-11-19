@@ -10,9 +10,9 @@ application. The module `gui` is in the build only with the cargo feature
 
 The modules have four roles:
 
-1. **Model:** `types`, `schematic`, `project`, `reserved`, `designs`. The
-   `Schematic` and its checks, the `.hdlc` file, and the designs of one
-   folder.
+1. **Model:** `types`, `schematic`, `project`, `reserved`, `designs`,
+   `gates`. The `Schematic` and its checks, the `.hdlc` file, the designs
+   of one folder, and the built-in logic gates.
 2. **Derived data:** `nets`, `groups`, `codegen`, `routing`, the parsers
    `vhdl` and `verilog`. Functions on the model. Only the parsers read a
    file.
@@ -32,6 +32,8 @@ the code that is not test code:
   `floorplan` and `designs`.
 - `designs` uses `project`, `reserved` and `codegen`.
 - `netcheck` uses `nets` and `codegen`. It does not use `toolchain`.
+- `gates` uses only `types`. `schematic`, `codegen`, `toolchain`,
+  `netcheck` and `gui` use `gates`.
 - `gui` uses the model and the derived data, and from the tools only
   `toolchain` (for the board setting of a design).
 - No module but `main.rs` uses `gui`.
@@ -70,6 +72,11 @@ Model:
   `SchematicError`.
 - `project.rs`: `load_project`, `save_project`, `hdlc_schema_json`,
   `ProjectError`.
+- `gates.rs`: the built-in logic gates. `Op`, `OPS`, `Gate` (`of`,
+  `module_name`, `label`, `module`, `vhdl`, `sv`), `modules`, and the names
+  `PREFIX`, `WIDTH`, `OUTPUT`. An instance is a gate when `Gate::of` knows
+  its `module_ref`. `Schematic::resolve_modules` and the GUI add
+  `gates::modules()` to the library of each design.
 - `reserved.rs`: `is_reserved_word`.
 - `designs.rs`: `folder_designs`, `FolderDesign` (`module_file`, `sources`,
   `obstacle`), `design_name`, `check_name_is_free`.

@@ -152,7 +152,7 @@ Each instance has these fields:
 | Field | Content |
 |---|---|
 | `name` | The instance label. It must be unique. |
-| `module_ref` | The name of a module from `library_paths`. |
+| `module_ref` | The name of a module from `library_paths`, or the name of a built-in logic gate such as `$and` (see "Logic gates" in the format reference below). |
 | `generic_map` | Generic name to value. Use `{}` to keep the defaults. |
 | `port_map` | Port name to reference. The reference forms are in the format reference below. |
 | `position` | `[x, y]`, the position of the block in the GUI. It has no effect on the generated HDL. |

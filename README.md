@@ -252,6 +252,14 @@ The window opens maximized with the canvas front and center.
   module library. Drag a module from the library onto the canvas to add an
   instance, or double-click it. **File > Add HDL Folder** adds every HDL
   source below a directory.
+- **Logic gates:** the menu **Logic** has the built-in gates AND, OR, XOR,
+  NOT, NAND, NOR and XNOR in two groups. A gate of **Basic Logic** has
+  ports of one bit. A gate of **Vector Logic** does the operation on each
+  bit of two vectors; its generic `WIDTH` (default 8) gives the width. An
+  entry of the menu puts the gate at the middle of the canvas. A right
+  click on the empty canvas shows the same two groups and puts the gate at
+  the pointer. The block of a gate shows the symbol of its operation. A
+  gate needs no HDL source: the generated HDL has an assignment for it.
 - **Designs:** the list shows each `.hdlc` file in the folder of the open
   design, with the open design in bold. Click another design to open it;
   the GUI asks first when the open design has changes that are not saved.
@@ -372,6 +380,12 @@ Component declarations stay symbolic so child parameterization survives.
 
 Instances can be grouped (right-click a selection); each group becomes its
 own generated module file, and the top level instantiates it.
+
+A built-in logic gate is the one part of the output that is not
+structural: codegen writes an assignment for it, with the instance name as
+the label (`and_0 : and_0_y <= a_s and b_s;` in VHDL,
+`assign and_0_y = a_s & b_s; // and_0` in SystemVerilog). A gate has no
+component declaration and no source file.
 
 ## Design file (`.hdlc`)
 

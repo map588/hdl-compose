@@ -67,6 +67,29 @@ without a default value — tie it or connect it.
   (`"DIV": "CLK_DIV"`) is a reference and is never quoted — use this to
   forward top generics into instances.
 
+## Logic gates
+
+An instance whose `module_ref` is one of the names below is a built-in
+gate. It needs no source in `library_paths`. The generated HDL has an
+assignment for it (`y <= a and b;` in VHDL, `assign y = a & b;` in
+SystemVerilog), not an instance of a module.
+
+| `module_ref` | Ports | Type of each port |
+|---|---|---|
+| `$and`, `$or`, `$xor`, `$nand`, `$nor`, `$xnor` | inputs `a`, `b`; output `y` | one bit |
+| `$not` | input `a`; output `y` | one bit |
+| `$and_vec`, `$or_vec`, `$xor_vec`, `$nand_vec`, `$nor_vec`, `$xnor_vec` | inputs `a`, `b`; output `y` | vector of `WIDTH` bits |
+| `$not_vec` | input `a`; output `y` | vector of `WIDTH` bits |
+
+A vector gate does the operation on each bit. Give its width in
+`generic_map`: `{"WIDTH": "4"}`. The default is 8.
+
+Each input of a gate must have a connection or a constant; an input with
+none is an error. A port of a gate takes no slice of its own (a reference
+to a slice of another net is correct). Give a gate instance a name that is
+a legal HDL name, for example `and_0`: the net of its output gets its name
+from the instance.
+
 ## Groups (hierarchy)
 
 `groups` is a list of named instance sets:
