@@ -273,6 +273,11 @@ pub fn title(name: &str) -> String {
     format!("HDL Compose \u{2014} {name}")
 }
 
+/// The window title while the design `name` has changes that are not saved.
+pub fn title_not_saved(name: &str) -> String {
+    format!("{} *", title(name))
+}
+
 /// Waits until `condition` is true. The expectations of [`TestApp`] wait for
 /// the window. This function is for a result that is not in the window, for
 /// example a file that the application writes later.

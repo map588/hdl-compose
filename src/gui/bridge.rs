@@ -783,7 +783,13 @@ fn group_hidden_by_ancestor(s: &Schematic, g: &Group) -> bool {
 pub struct AppStateRust {
     // Qt properties (auto getters/setters/signals)
     project_name: QString,
+    // Write this field with `set_dirty` only. The setter sends
+    // `dirtyChanged` when the value changes; a direct write hides the
+    // change from the setter, and the window title does not follow.
     dirty: bool,
+    // The snapshot text of the model that the project file has. Undo and
+    // redo compare with it: a model equal to the file is not dirty.
+    saved_snapshot: Option<String>,
     // Internal state — not directly exposed as properties
     schematic: Option<Schematic>,
     current_path: Option<PathBuf>,
@@ -1121,8 +1127,8 @@ impl qobject::AppState {
     fn finish_mutation(mut self: Pin<&mut Self>, entry: Option<(&str, &str)>) {
         {
             let m = self.as_mut().rust_mut().get_mut();
-            m.dirty = true;
             if m.batch_depth > 0 {
+                // `end_batch` sets `dirty`.
                 m.batch_changed = true;
                 return;
             }
@@ -1275,12 +1281,11 @@ impl qobject::AppState {
     }
 
     fn refresh_project_display(mut self: Pin<&mut Self>) {
-        let (name, dirty) = match &self.as_ref().rust().schematic {
-            Some(s) => (QString::from(&s.top_name), self.as_ref().rust().dirty),
-            None => (QString::default(), false),
+        let name = match &self.as_ref().rust().schematic {
+            Some(s) => QString::from(&s.top_name),
+            None => QString::default(),
         };
         self.as_mut().set_project_name(name);
-        self.as_mut().set_dirty(dirty);
     }
 
     // === Library resolution, validation, wire cache ===
@@ -1324,7 +1329,6 @@ impl qobject::AppState {
                 })
         };
         if !newly_dirty.is_empty() {
-            self.as_mut().rust_mut().get_mut().dirty = true;
             self.as_mut().set_dirty(true);
             self.as_mut().record_error(format!(
                 "library re-parse dropped connections on: {}",
@@ -1522,11 +1526,12 @@ impl qobject::AppState {
                     let _ = std::fs::remove_file(other);
                 }
                 let m = self.as_mut().rust_mut().get_mut();
-                m.dirty = false;
+                m.saved_snapshot = serde_json::to_string(&schematic).ok();
                 m.last_error.clear();
                 // The file is now the model: the warnings of the loader no
                 // longer apply.
                 let had_warnings = !std::mem::take(&mut m.load_warnings).is_empty();
+                self.as_mut().set_dirty(false);
                 self.as_mut().refresh_project_display();
                 if had_warnings {
                     self.as_mut().rebuild_library_and_validate();
@@ -1554,13 +1559,15 @@ impl qobject::AppState {
                     m.autosaved = None;
                     m.schematic = Some(schematic);
                     m.current_path = Some(path_buf);
-                    m.dirty = false;
                     m.last_error.clear();
                     // The library of the last project is not an earlier
                     // library of this one: no comparison of ports.
                     m.library.clear();
                     m.library_baseline = false;
                 }
+                let text = self.snapshot_text();
+                self.as_mut().rust_mut().get_mut().saved_snapshot = text;
+                self.as_mut().set_dirty(false);
                 self.as_mut().clear_undo_stacks();
                 self.as_mut().refresh_project_display();
                 self.as_mut().rebuild_library_and_validate();
@@ -1703,7 +1710,6 @@ impl qobject::AppState {
                     m.schematic = Some(schematic);
                     m.load_warnings = warnings;
                     // The project file does not have these changes.
-                    m.dirty = true;
                     m.last_error.clear();
                     m.library.clear();
                     m.library_baseline = false;
@@ -1901,9 +1907,9 @@ impl qobject::AppState {
             let s = m.schematic.as_mut().expect("checked above");
             let top_name = s.top_name.clone();
             s.replace_top_level(top_name, parsed.generics, parsed.ports);
-            m.dirty = true;
             m.last_error.clear();
         }
+        self.as_mut().set_dirty(true);
         self.as_mut().refresh_project_display();
         self.as_mut().rebuild_library_and_validate();
         // Fire project_loaded so the canvas does a full rebuild of top-port
@@ -2082,7 +2088,6 @@ impl qobject::AppState {
         };
         match result {
             Ok(new_sources) => {
-                self.as_mut().rust_mut().get_mut().dirty = true;
                 self.as_mut().set_dirty(true);
                 if new_sources {
                     // The canvas reads the ports of the module when it
@@ -2129,7 +2134,6 @@ impl qobject::AppState {
             Ok(()) => {
                 {
                     let r = self.as_mut().rust_mut().get_mut();
-                    r.dirty = true;
                     if r.selected_instance == old_s {
                         r.selected_instance = new_s.clone();
                     }
@@ -2211,7 +2215,6 @@ impl qobject::AppState {
                 g.position = (x as f32, y as f32);
             }
         }
-        self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
         self.as_mut().instance_moved(QString::from(&name_s), x, y);
         true
@@ -2269,7 +2272,6 @@ impl qobject::AppState {
         };
         match result {
             Ok(()) => {
-                self.as_mut().rust_mut().get_mut().dirty = true;
                 self.as_mut().set_dirty(true);
                 // Refresh wire cache BEFORE firing signals so canvas reads fresh data.
                 self.as_mut().rebuild_library_and_validate();
@@ -2845,7 +2847,6 @@ impl qobject::AppState {
             }
         }
 
-        self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
         // Rebuild the wire cache BEFORE firing project_loaded — the canvas's
         // rebuild handler reads from that cache to render wires, and a stale
@@ -2891,7 +2892,6 @@ impl qobject::AppState {
                 }
             }
         }
-        self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
         self.as_mut().rebuild_library_and_validate();
         self.as_mut().rebuild_view(|state| state.project_loaded());
@@ -2936,7 +2936,6 @@ impl qobject::AppState {
         {
             inst.manual_bundles.insert(name_s, ports);
         }
-        self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
         self.as_mut().rebuild_library_and_validate();
         self.as_mut().port_map_changed_bulk();
@@ -2972,7 +2971,6 @@ impl qobject::AppState {
             .and_then(|s| s.get_instance_mut(&inst_s))
             .is_some_and(|inst| inst.manual_bundles.remove(&name_s).is_some());
         if removed {
-            self.as_mut().rust_mut().get_mut().dirty = true;
             self.as_mut().set_dirty(true);
             self.as_mut().rebuild_library_and_validate();
             self.as_mut().port_map_changed_bulk();
@@ -3095,7 +3093,6 @@ impl qobject::AppState {
         }
 
         if count > 0 {
-            self.as_mut().rust_mut().get_mut().dirty = true;
             self.as_mut().set_dirty(true);
             self.as_mut().rebuild_library_and_validate();
             self.as_mut().port_map_changed_bulk();
@@ -3272,6 +3269,14 @@ impl qobject::AppState {
         !self.rust().redo_stack.is_empty() && !self.pending_changed()
     }
 
+    /// Set `dirty` from a comparison of the model with the model of the
+    /// project file. Undo and redo use this: they can give back the model
+    /// that the file has.
+    fn refresh_dirty(mut self: Pin<&mut Self>) {
+        let dirty = self.snapshot_text() != self.as_ref().rust().saved_snapshot;
+        self.as_mut().set_dirty(dirty);
+    }
+
     pub fn undo(mut self: Pin<&mut Self>) -> bool {
         self.as_mut().settle_snapshot();
         // Move current state onto redo stack, restore prior state.
@@ -3298,9 +3303,8 @@ impl qobject::AppState {
                 }
             }
             m.schematic = Some(restored);
-            m.dirty = true;
         }
-        self.as_mut().set_dirty(true);
+        self.as_mut().refresh_dirty();
         self.as_mut().rebuild_library_and_validate();
         self.as_mut().rebuild_view(|state| state.project_loaded());
         self.as_mut().history_changed();
@@ -3332,9 +3336,8 @@ impl qobject::AppState {
                 }
             }
             m.schematic = Some(restored);
-            m.dirty = true;
         }
-        self.as_mut().set_dirty(true);
+        self.as_mut().refresh_dirty();
         self.as_mut().rebuild_library_and_validate();
         self.as_mut().rebuild_view(|state| state.project_loaded());
         self.as_mut().history_changed();
@@ -3674,7 +3677,6 @@ impl qobject::AppState {
             self.as_mut().record_error("no design loaded");
             return false;
         }
-        self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
         // An alias can make an error (one name on two nets). Validate
         // before the signal; in a batch `end_batch` validates.
@@ -3742,7 +3744,6 @@ impl qobject::AppState {
         if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             s.add_library_path(path_buf);
         }
-        self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
         self.as_mut().rebuild_library_and_validate();
         true
@@ -3812,7 +3813,6 @@ impl qobject::AppState {
         if let Some(s) = self.as_mut().rust_mut().get_mut().schematic.as_mut() {
             s.remove_library_path(&path_buf);
         }
-        self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
         self.as_mut().rebuild_library_and_validate();
         true
@@ -4066,7 +4066,6 @@ impl qobject::AppState {
 
     /// Shared tail for group mutators: dirty + revalidate + notify.
     fn finish_group_mutation(mut self: Pin<&mut Self>) -> bool {
-        self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
         self.as_mut().rebuild_library_and_validate();
         self.as_mut().rebuild_view(|state| state.groups_changed());
@@ -4176,7 +4175,6 @@ impl qobject::AppState {
         {
             inst.locked = locked;
         }
-        self.as_mut().rust_mut().get_mut().dirty = true;
         self.as_mut().set_dirty(true);
         true
     }
@@ -5963,6 +5961,59 @@ mod tests {
         }
     }
 
+    /// Regression: a method wrote the field `dirty` and then called the
+    /// setter of the property. The setter found no change and sent no
+    /// `dirtyChanged`, so the window title never showed the mark for
+    /// changes that are not saved.
+    #[test]
+    fn each_change_of_dirty_sends_the_signal() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (_dir, mut state) = state_with_library();
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = count.clone();
+        let _title = state.pin_mut().on_dirty_changed(move |_| {
+            seen.fetch_add(1, Ordering::Relaxed);
+        });
+        let sent = |what: &str, dirty: bool, state: &UniquePtr<AppState>| {
+            assert_eq!(*state.dirty(), dirty, "dirty after {what}");
+            assert_eq!(count.swap(0, Ordering::Relaxed), 1, "signals of {what}");
+        };
+
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        sent("add_instance", true, &state);
+        assert!(state.pin_mut().save_project());
+        sent("save_project", false, &state);
+        state.pin_mut().begin_batch();
+        assert!(state.pin_mut().set_instance_position(&q("u_a"), 640.0, 0.0));
+        state.pin_mut().end_batch();
+        sent("a batch", true, &state);
+        assert!(state.pin_mut().save_project());
+        sent("the second save_project", false, &state);
+        assert!(state.pin_mut().rename_instance(&q("u_a"), &q("u_z")));
+        sent("rename_instance", true, &state);
+    }
+
+    /// Regression: undo and redo set `dirty` each time, also when they gave
+    /// back the model that the file has.
+    #[test]
+    fn undo_to_the_saved_model_is_not_dirty() {
+        let (_dir, mut state) = state_with_library();
+        assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+        assert!(state.pin_mut().save_project());
+        assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+        assert!(*state.dirty());
+
+        assert!(state.pin_mut().undo());
+        assert!(!*state.dirty(), "the model is the model of the file");
+        assert!(state.pin_mut().undo());
+        assert!(*state.dirty(), "the file has u_a, the model does not");
+        assert!(state.pin_mut().redo());
+        assert!(!*state.dirty(), "redo gave the model of the file");
+        assert!(state.pin_mut().redo());
+        assert!(*state.dirty());
+    }
+
     /// Regression: the menu followed five signals of the model. To lock a
     /// block sends none of them, so the Undo entry of the menu stayed off
     /// after it. Each change now sends `history_changed`.
@@ -6044,11 +6095,18 @@ mod tests {
                     Step::Undo => {
                         let did = state.pin_mut().undo();
                         prop_assert_eq!(did, undo_before > 0);
+                        if did {
+                            // The file has the first model.
+                            prop_assert_eq!(*state.dirty(), model(&state) != first);
+                        }
                         continue;
                     }
                     Step::Redo => {
                         let did = state.pin_mut().redo();
                         prop_assert_eq!(did, redo_before > 0);
+                        if did {
+                            prop_assert_eq!(*state.dirty(), model(&state) != first);
+                        }
                         continue;
                     }
                     Step::One(edit) => apply(&mut state, dir.path(), edit),

@@ -3,7 +3,9 @@
 
 use std::fs;
 
-use hdlc_ui_tests::{EXAMPLE, Failure, Workspace, button, menu, name, role, title};
+use hdlc_ui_tests::{
+    EXAMPLE, Failure, Workspace, button, menu, name, role, title, title_not_saved,
+};
 
 /// The entry of a list, for example a module of the library.
 fn list_item(text: &str) -> hdlc_ui_tests::Locator {
@@ -91,6 +93,27 @@ fn a_double_click_on_a_module_adds_a_block_and_save_writes_it() -> Result<(), Fa
     Ok(())
 }
 
+/// The title has the mark ` *` while the design has changes that are not
+/// saved. Undo back to the saved design removes the mark.
+#[test]
+fn the_title_marks_changes_that_are_not_saved() -> Result<(), Failure> {
+    let workspace = Workspace::with_example();
+    let mut app = workspace.open(EXAMPLE)?;
+    app.expect(role("Window")).name(&title(EXAMPLE))?;
+
+    app.double_click(list_item("led_driver"))?;
+    app.expect(role("Window")).name(&title_not_saved(EXAMPLE))?;
+    app.click(button("Save"))?;
+    app.expect(role("Window")).name(&title(EXAMPLE))?;
+
+    app.double_click(list_item("pulse_gen"))?;
+    app.expect(role("Window")).name(&title_not_saved(EXAMPLE))?;
+    app.click(menu("Edit"))?;
+    app.click(menu("Undo"))?;
+    app.expect(role("Window")).name(&title(EXAMPLE))?;
+    Ok(())
+}
+
 #[test]
 fn undo_removes_the_added_block_and_redo_adds_it_again() -> Result<(), Failure> {
     let workspace = Workspace::with_example();
@@ -158,7 +181,7 @@ fn cancel_keeps_the_design_and_its_changes() -> Result<(), Failure> {
 
     app.expect(role("AlertMessage")).absent()?;
     app.expect(role("Dialog")).absent()?;
-    app.expect(role("Window")).name(&title(EXAMPLE))?;
+    app.expect(role("Window")).name(&title_not_saved(EXAMPLE))?;
     app.expect(tree_item("led_driver_0 : led_driver"))
         .exists()?;
     assert_eq!(workspace.saved(EXAMPLE).instances(), ["u_pulse", "u_led"]);
