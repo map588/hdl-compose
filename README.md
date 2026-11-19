@@ -312,7 +312,8 @@ The window opens maximized with the canvas front and center.
   design always has a file, so source paths stay relative to it.
 - **Save and recovery:** only **File > Save** (Cmd+S) and **Save As...**
   (Cmd+Shift+S) change the `.hdlc` file. While a design has changes that
-  are not saved, the GUI keeps them in a recovery file,
+  are not saved, the window title shows ` *` after the name of the design,
+  and the GUI keeps the changes in a recovery file,
   `.<name>.hdlc.autosave` next to the design. It writes that file 12
   seconds after a change, and one time for all changes in those 12
   seconds. A save removes the recovery file. When you close a design with

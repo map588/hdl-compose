@@ -476,9 +476,9 @@ codegen or in the group collapse shows as a difference.
 - `make test-ui` runs the package `ui-tests`: the real `hdlc` program on a
   headless screen, with the test library of the `headless-computer-use`
   project. A test does the actions of a user and reads the window and the
-  files of a temporary folder. The 26 tests cover open, new, save,
+  files of a temporary folder. The 27 tests cover open, new, save,
   Generate HDL, the library and the list of designs, rename and delete,
-  the question about changes that are not saved, the recovery file after
+  the mark of the title and the question about changes that are not saved, the recovery file after
   a stop with `kill -9`, the recent designs, and on the canvas a drag, a
   wire from two clicks, and the Delete key. For these tests each block,
   pin and wire of the canvas has a name in `data(Qt::AccessibleTextRole)`
@@ -520,9 +520,9 @@ These stay:
    sequences of edits; that is evidence, not proof.
 3. **The tests of the GUI run the main flows only.** The offscreen tests
    and the tests of the application cover the window and the canvas. The
-   text editors, the drag of a module from the library, the groups, the
-   tool commands and the Chip View (`floorplan.h`) are checked by reading
-   only.
+   text editors, the start of a drag in the library list (the drop on
+   the canvas has a test), the groups, the tool commands and the Chip View
+   (`floorplan.h`) are checked by reading only.
 4. **Routing is global.** Each change calculates all wire routes again, and
    that time grows almost with the square of the number of blocks (see
    "How a change flows"). A drag of a block calculates them one time, at

@@ -370,18 +370,20 @@ C++ classes:
   pins of a changed source, the recovery file, the save key, the questions
   on close and on open, a new design in the folder of the open design, a
   click in the list of designs, the placement of a design from the library
-  list, and the removal of stale connections from the context menu.
+  list, the removal of stale connections from the context menu, and the
+  drop of a module from the library on the canvas.
 - Run the tests of the application: `make test-ui`. The package `ui-tests`
   starts the real `hdlc` program on a headless screen with the test
   library of the `headless-computer-use` project. Each test has a
-  temporary folder for its designs and its settings. The 26 tests cover:
+  temporary folder for its designs and its settings. The 27 tests cover:
   open (argument, dialog, list of designs, recent menu, most recent
   design), a new design, a block from a double-click in the library, save,
   Generate HDL, undo and redo, rename and delete from the Edit menu, the
-  three answers to the question about changes that are not saved, the
+  mark of the title for changes that are not saved, the three answers to the question about changes that are not saved, the
   recovery file after a stop with `kill -9`, and on the canvas the drag of
   a block to the next column, a click, a wire from clicks on two pins, two
   pins that do not connect, and the Delete key for a wire and for a block.
-- The text editors, the drag of a module from the library, the groups, the
-  tool commands and the Chip View have no test. Their code is compiled and
+- The text editors, the start of a drag in the library list (the offscreen
+  platform has no drag session), the groups, the tool commands and the
+  Chip View have no test. Their code is compiled and
   checked by reading.
