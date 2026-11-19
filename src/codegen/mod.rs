@@ -617,6 +617,34 @@ pub fn check_errors(diagnostics: &[Diagnostic]) -> Result<(), CodegenError> {
     }
 }
 
+/// The output net and the input expressions of a gate instance, for the
+/// assignment that the code generators write. `render` gives the expression
+/// of a reference in the target language. `None` when the output is on no
+/// net (no assignment is necessary) or an input has no connection (the
+/// validation gives an error for that, so codegen does not come here).
+pub fn gate_operands(
+    nets: &crate::nets::Nets,
+    inst: &Instance,
+    gate: &crate::gates::Gate,
+    render: impl Fn(&NetRef) -> String,
+) -> Option<(String, Vec<String>)> {
+    let actual = |port: &str| match inst.port_map.get(port) {
+        Some(Some(net_ref)) => Some(render(net_ref)),
+        // A port with no entry of its own can still be on a net.
+        _ => nets
+            .name_for(&NetRef::InstancePort(inst.name.clone(), port.to_string()))
+            .map(str::to_string),
+    };
+    let output = actual(crate::gates::OUTPUT)?;
+    let inputs = gate
+        .op
+        .inputs()
+        .iter()
+        .map(|port| actual(port))
+        .collect::<Option<Vec<String>>>()?;
+    Some((output, inputs))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

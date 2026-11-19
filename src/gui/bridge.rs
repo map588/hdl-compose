@@ -427,11 +427,30 @@ pub mod qobject {
         #[qinvokable]
         fn net_alias(self: &AppState, net_key: &QString) -> QString;
 
+        /// The number of modules that the library sources define. The
+        /// built-in gates are not in this count.
         #[qinvokable]
         fn library_module_count(self: &AppState) -> i32;
 
         #[qinvokable]
         fn library_module_name(self: &AppState, index: i32) -> QString;
+
+        /// The number of built-in logic gates. Each design can place them.
+        #[qinvokable]
+        fn gate_count(self: &AppState) -> i32;
+
+        /// The module name of a built-in gate, for `add_instance`.
+        #[qinvokable]
+        fn gate_name(self: &AppState, index: i32) -> QString;
+
+        /// The text of a built-in gate in a menu: its operation.
+        #[qinvokable]
+        fn gate_label(self: &AppState, index: i32) -> QString;
+
+        /// True for a gate of the menu "Vector Logic", false for a gate of
+        /// the menu "Basic Logic".
+        #[qinvokable]
+        fn gate_is_vector(self: &AppState, index: i32) -> bool;
 
         #[qinvokable]
         fn add_library_path(self: Pin<&mut AppState>, path: &QString) -> bool;
@@ -1295,10 +1314,12 @@ impl qobject::AppState {
             Some(s) => s.library_paths.clone(),
             None => return,
         };
-        let (library, lib_errors) = {
+        let (mut library, lib_errors) = {
             let cache = &mut self.as_mut().rust_mut().get_mut().parse_cache;
             resolve_library_cached(cache, &paths)
         };
+        // Each design has the built-in gates.
+        library.extend(crate::gates::modules());
         // A source can change on disk between two calls. Compare the ports
         // of each module with the library of the last call: a connection to
         // a changed port goes away and its instance gets the dirty flag.
@@ -3156,10 +3177,11 @@ impl qobject::AppState {
         // Parsing goes through the (just-cleared) cache so the rebuild
         // below reuses it instead of parsing the whole library a second
         // time.
-        let new_library: Vec<ModuleDef> = {
+        let mut new_library: Vec<ModuleDef> = {
             let cache = &mut self.as_mut().rust_mut().get_mut().parse_cache;
             resolve_library_cached(cache, &paths).0
         };
+        new_library.extend(crate::gates::modules());
         // The file watcher calls this for each save of a source. Only a
         // reload that changes an instance is an edit; each other reload
         // must leave the undo history as it is.
@@ -3754,16 +3776,51 @@ impl qobject::AppState {
     }
 
     // --- Library ---
+    /// The modules of the library sources. The library has the built-in
+    /// gates too; the view shows them from `gate_name`.
+    fn source_modules(&self) -> impl Iterator<Item = &ModuleDef> {
+        self.rust()
+            .library
+            .iter()
+            .filter(|m| crate::gates::Gate::of(&m.name).is_none())
+    }
+
     pub fn library_module_count(&self) -> i32 {
-        self.rust().library.len() as i32
+        self.source_modules().count() as i32
     }
 
     pub fn library_module_name(&self, index: i32) -> QString {
-        self.rust()
-            .library
+        self.source_modules()
+            .nth(index as usize)
+            .map(|m| QString::from(&m.name))
+            .unwrap_or_default()
+    }
+
+    pub fn gate_count(&self) -> i32 {
+        crate::gates::OPS.len() as i32 * 2
+    }
+
+    pub fn gate_name(&self, index: i32) -> QString {
+        crate::gates::modules()
             .get(index as usize)
             .map(|m| QString::from(&m.name))
             .unwrap_or_default()
+    }
+
+    fn gate(index: i32) -> Option<crate::gates::Gate> {
+        crate::gates::modules()
+            .get(index as usize)
+            .and_then(|m| crate::gates::Gate::of(&m.name))
+    }
+
+    pub fn gate_label(&self, index: i32) -> QString {
+        Self::gate(index)
+            .map(|gate| QString::from(&gate.label()))
+            .unwrap_or_default()
+    }
+
+    pub fn gate_is_vector(&self, index: i32) -> bool {
+        Self::gate(index).is_some_and(|gate| gate.vector)
     }
 
     pub fn add_library_path(mut self: Pin<&mut Self>, path: &QString) -> bool {
@@ -6049,6 +6106,62 @@ mod tests {
         assert!(!*state.dirty(), "redo gave the model of the file");
         assert!(state.pin_mut().redo());
         assert!(*state.dirty());
+    }
+
+    /// A built-in gate is an instance for the canvas and the validation,
+    /// and an assignment in the generated HDL.
+    #[test]
+    fn a_gate_is_an_instance_and_an_assignment_in_the_generated_hdl() {
+        let (dir, mut state) = state_with_library();
+        // The gates are not modules of the library sources.
+        assert_eq!(state.library_module_count(), 2);
+        assert_eq!(state.gate_count(), 14);
+        assert_eq!(state.gate_name(0).to_string(), "$and");
+        assert_eq!(state.gate_label(0).to_string(), "AND");
+        assert!(!state.gate_is_vector(0));
+        assert_eq!(state.gate_name(7).to_string(), "$and_vec");
+        assert_eq!(state.gate_label(7).to_string(), "AND");
+        assert!(state.gate_is_vector(7));
+
+        for (name, module) in [
+            ("u_a", "source"),
+            ("u_c", "source"),
+            ("u_b", "sink"),
+            ("g", "$and"),
+        ] {
+            assert!(state.pin_mut().add_instance(&q(name), &q(module)), "{name}");
+        }
+        // An input of a gate with no connection is an error: the
+        // assignment would have no operand.
+        assert_eq!(state.pin_issue_level(&q("g.a")), 2);
+        assert_eq!(state.pin_issue_level(&q("g.b")), 2);
+        for (from, to) in [
+            ("u_a.q", "g.a"),
+            ("u_c.q", "g.b"),
+            ("g.y", "u_b.d"),
+            ("g.y", "u_b.e"),
+        ] {
+            assert!(
+                state.pin_mut().connect_pins(&q(from), &q(to)).committed,
+                "{from} to {to}"
+            );
+        }
+        assert_eq!(
+            state.validation_error_count(),
+            0,
+            "{:?}",
+            state.validation_messages()
+        );
+
+        let out = dir.path().join("top.vhd");
+        assert!(
+            state.pin_mut().generate_code(&q(out.to_str().unwrap())),
+            "{}",
+            state.last_error()
+        );
+        let code = std::fs::read_to_string(out).unwrap();
+        assert!(code.contains("  g : g_y <= u_a_q and u_c_q;"), "{code}");
+        assert!(!code.contains("$and"), "{code}");
     }
 
     /// Regression: two input pins joined with no driver have a warning

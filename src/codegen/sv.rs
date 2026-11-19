@@ -6,6 +6,7 @@ use crate::codegen::{
     collect_top_intermediates, find_top_port_context, port_type_to_sv, port_type_to_sv_wire,
     resolve_port_type,
 };
+use crate::gates::Gate;
 use crate::nets::{Nets, resolve_nets};
 use crate::schematic::Diagnostic;
 use crate::types::*;
@@ -79,7 +80,9 @@ pub fn generate_sv(
     sorted_instances.sort_by(|a, b| a.name.cmp(&b.name));
 
     for inst in &sorted_instances {
-        if let Some(module) = lib_map.get(inst.module_ref.as_str()) {
+        if let Some(gate) = Gate::of(&inst.module_ref) {
+            emit_gate(&mut out, schematic, &nets, inst, &gate);
+        } else if let Some(module) = lib_map.get(inst.module_ref.as_str()) {
             emit_instance(&mut out, schematic, &nets, inst, module);
             writeln!(out).unwrap();
         }
@@ -196,6 +199,21 @@ fn emit_instance(
         writeln!(out, "    .{}({}){}", lhs, rhs, sep).unwrap();
     }
     writeln!(out, "  );").unwrap();
+}
+
+/// Write the assignment of a gate. The comment has the instance name.
+fn emit_gate(out: &mut String, schematic: &Schematic, nets: &Nets, inst: &Instance, gate: &Gate) {
+    let render = |net_ref: &NetRef| render_rhs_sv(schematic, nets, net_ref);
+    if let Some((output, inputs)) = crate::codegen::gate_operands(nets, inst, gate, render) {
+        writeln!(
+            out,
+            "  assign {output} = {}; // {}",
+            gate.sv(&inputs),
+            inst.name
+        )
+        .unwrap();
+        writeln!(out).unwrap();
+    }
 }
 
 /// Render a NetRef as a SystemVerilog expression: the net, with `[i]` for a

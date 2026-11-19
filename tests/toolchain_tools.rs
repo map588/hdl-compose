@@ -333,3 +333,278 @@ fn netlist_check_finds_a_connection_to_the_wrong_slice() {
         );
     }
 }
+
+// --- The built-in gates ---------------------------------------------------
+
+use hdl_compose::gates::{self, Gate, Op};
+use hdl_compose::types::{Direction, PortDef, PortType, Range, RangeDir, RangeExpr};
+
+/// The value of a gate, written with no use of the code generators.
+fn gate_value(op: Op, a: bool, b: bool) -> bool {
+    match op {
+        Op::And => a && b,
+        Op::Or => a || b,
+        Op::Xor => a != b,
+        Op::Not => !a,
+        Op::Nand => !(a && b),
+        Op::Nor => !(a || b),
+        Op::Xnor => a == b,
+    }
+}
+
+/// The name of an operation in the port names of `gates_design`.
+fn op_name(op: Op) -> String {
+    format!("{op:?}").to_lowercase()
+}
+
+/// The bits of the two vector inputs, most significant bit first. The four
+/// bit positions have the four combinations of two input bits.
+const VA: [bool; 4] = [true, true, false, false];
+const VB: [bool; 4] = [true, false, true, false];
+
+/// A design with each built-in gate. The scalar gates read the top-level
+/// ports `a` and `b`, the vector gates (4 bits) read `va` and `vb`. The
+/// gate of the operation `and` writes `y_and` or `v_and`.
+fn gates_design(language: Language) -> (Schematic, Vec<ModuleDef>) {
+    let vector = PortType::StdLogicVector(Range {
+        high: RangeExpr::Literal(3),
+        low: RangeExpr::Literal(0),
+        dir: RangeDir::Downto,
+    });
+    let mut s = Schematic::new("gates", language);
+    let top_port = |s: &mut Schematic, name: String, direction, port_type: &PortType| {
+        s.top_ports.push(PortDef {
+            name,
+            direction,
+            port_type: port_type.clone(),
+            bundle: None,
+        });
+    };
+    for (name, port_type) in [
+        ("a", &PortType::StdLogic),
+        ("b", &PortType::StdLogic),
+        ("va", &vector),
+        ("vb", &vector),
+    ] {
+        top_port(&mut s, name.to_string(), Direction::In, port_type);
+    }
+    for op in gates::OPS {
+        for is_vector in [false, true] {
+            let gate = Gate {
+                op,
+                vector: is_vector,
+            };
+            let (prefix, port_type) = if is_vector {
+                ("v", &vector)
+            } else {
+                ("y", &PortType::StdLogic)
+            };
+            let output = format!("{prefix}_{}", op_name(op));
+            let instance = format!("g{output}");
+            top_port(&mut s, output.clone(), Direction::Out, port_type);
+            s.add_instance(&instance, gate.module_name()).unwrap();
+            if is_vector {
+                s.set_generic_map_entry(&instance, gates::WIDTH, "4")
+                    .unwrap();
+            }
+            for input in op.inputs() {
+                let source = if is_vector {
+                    format!("v{input}")
+                } else {
+                    input.to_string()
+                };
+                s.set_port_map_entry(&instance, *input, Some(NetRef::TopPort(source)))
+                    .unwrap();
+            }
+            s.set_port_map_entry(&instance, gates::OUTPUT, Some(NetRef::TopPort(output)))
+                .unwrap();
+        }
+    }
+    (s, gates::modules())
+}
+
+fn bits(values: impl IntoIterator<Item = bool>) -> String {
+    values
+        .into_iter()
+        .map(|bit| if bit { '1' } else { '0' })
+        .collect()
+}
+
+/// A testbench for `gates_design`. It gives each combination of `a` and
+/// `b`, and stops with an error when an output is not the value of
+/// `gate_value`.
+fn gates_testbench(language: &Language) -> String {
+    let outputs: Vec<String> = gates::OPS
+        .iter()
+        .flat_map(|op| ["y", "v"].map(|prefix| format!("{prefix}_{}", op_name(*op))))
+        .collect();
+    let vector_value = |op: Op| bits(VA.iter().zip(VB).map(|(a, b)| gate_value(op, *a, b)));
+    let mut checks = String::new();
+    for (a, b) in [(false, false), (false, true), (true, false), (true, true)] {
+        let (a_bit, b_bit) = (bits([a]), bits([b]));
+        match language {
+            Language::Vhdl => {
+                checks += &format!("    a <= '{a_bit}'; b <= '{b_bit}'; wait for 1 ns;\n");
+                for op in gates::OPS {
+                    let name = op_name(op);
+                    checks += &format!(
+                        "    assert y_{name} = '{}' report \"y_{name} at a={a_bit} b={b_bit}\" severity failure;\n",
+                        bits([gate_value(op, a, b)])
+                    );
+                    checks += &format!(
+                        "    assert v_{name} = \"{}\" report \"v_{name}\" severity failure;\n",
+                        vector_value(op)
+                    );
+                }
+            }
+            Language::SystemVerilog => {
+                checks += &format!("    a = 1'b{a_bit}; b = 1'b{b_bit}; #1;\n");
+                for op in gates::OPS {
+                    let name = op_name(op);
+                    checks += &format!(
+                        "    if (y_{name} !== 1'b{}) $fatal(1, \"y_{name} at a={a_bit} b={b_bit}\");\n",
+                        bits([gate_value(op, a, b)])
+                    );
+                    checks += &format!(
+                        "    if (v_{name} !== 4'b{}) $fatal(1, \"v_{name}\");\n",
+                        vector_value(op)
+                    );
+                }
+            }
+        }
+    }
+    let (va, vb) = (bits(VA), bits(VB));
+    match language {
+        Language::Vhdl => {
+            let signals: String = outputs
+                .iter()
+                .map(|name| {
+                    let kind = if name.starts_with('v') {
+                        "std_logic_vector(3 downto 0)"
+                    } else {
+                        "std_logic"
+                    };
+                    format!("  signal {name} : {kind};\n")
+                })
+                .collect();
+            let map: String = outputs
+                .iter()
+                .map(|name| format!(", {name} => {name}"))
+                .collect();
+            format!(
+                "library ieee;\nuse ieee.std_logic_1164.all;\n\nentity gates_tb is\nend entity;\n\n\
+                 architecture sim of gates_tb is\n  signal a, b : std_logic;\n\
+                 \x20 signal va : std_logic_vector(3 downto 0) := \"{va}\";\n\
+                 \x20 signal vb : std_logic_vector(3 downto 0) := \"{vb}\";\n{signals}begin\n\
+                 \x20 dut : entity work.gates port map (a => a, b => b, va => va, vb => vb{map});\n\
+                 \x20 process\n  begin\n{checks}    wait;\n  end process;\nend architecture;\n"
+            )
+        }
+        Language::SystemVerilog => {
+            let signals: String = outputs
+                .iter()
+                .map(|name| {
+                    let kind = if name.starts_with('v') {
+                        "logic [3:0]"
+                    } else {
+                        "logic"
+                    };
+                    format!("  {kind} {name};\n")
+                })
+                .collect();
+            let map: String = outputs
+                .iter()
+                .map(|name| format!(", .{name}({name})"))
+                .collect();
+            format!(
+                "module gates_tb;\n  logic a, b;\n  logic [3:0] va = 4'b{va};\n\
+                 \x20 logic [3:0] vb = 4'b{vb};\n{signals}\
+                 \x20 gates dut (.a(a), .b(b), .va(va), .vb(vb){map});\n\
+                 \x20 initial begin\n{checks}    $finish;\n  end\nendmodule\n"
+            )
+        }
+    }
+}
+
+/// The generated HDL of each gate has the value of the gate, for each
+/// combination of the input bits, in the two languages. The reference is
+/// `gate_value`; a simulator runs the generated HDL.
+#[test]
+fn each_gate_has_its_truth_table_in_a_simulation() {
+    for language in [Language::Vhdl, Language::SystemVerilog] {
+        let tools: &[&str] = match language {
+            Language::Vhdl => &["ghdl"],
+            Language::SystemVerilog => &["iverilog", "vvp"],
+        };
+        if !have(tools) {
+            continue;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (schematic, library) = gates_design(language.clone());
+        let design = codegen::generate_design(&schematic, &library).expect("codegen");
+        let staged = toolchain::stage(
+            &schematic,
+            &library,
+            &design,
+            &ToolchainConfig::default(),
+            dir.path(),
+        )
+        .unwrap();
+        let ext = if language == Language::Vhdl {
+            "vhd"
+        } else {
+            "sv"
+        };
+        std::fs::write(
+            dir.path().join(format!("gates_tb.{ext}")),
+            gates_testbench(&language),
+        )
+        .unwrap();
+        let wave = toolchain::run_sim(&staged, &schematic, dir.path()).unwrap();
+        assert!(
+            wave.is_some(),
+            "{language:?}: the simulation stopped with an error\n{}",
+            design.top_code
+        );
+    }
+}
+
+/// The frontend of each language accepts a design with gates, and the
+/// netlist check accepts the logic cells that yosys makes from them.
+#[test]
+fn check_and_netlist_check_accept_a_design_with_gates() {
+    for language in [Language::Vhdl, Language::SystemVerilog] {
+        let check_tool: &[&str] = match language {
+            Language::Vhdl => &["ghdl"],
+            Language::SystemVerilog => &["slang"],
+        };
+        if !have(check_tool) || !netlist_tools(&language) {
+            continue;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (schematic, library) = gates_design(language.clone());
+        let design = codegen::generate_design(&schematic, &library).expect("codegen");
+        let staged = toolchain::stage(
+            &schematic,
+            &library,
+            &design,
+            &ToolchainConfig::default(),
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(toolchain::run_check(&staged), Ok(true), "{language:?}");
+        let json = toolchain::run_netlist(&staged)
+            .unwrap()
+            .expect("yosys reads the generated files");
+        // Each net has one top-level port and pins of gates only, and the
+        // check does not compare the pins of a gate.
+        assert_eq!(
+            netcheck::compare(&schematic, &library, &json),
+            Ok(Outcome::Same {
+                wires: 0,
+                unchecked: 0
+            }),
+            "{language:?}"
+        );
+    }
+}

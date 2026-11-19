@@ -174,6 +174,12 @@ fn resolve_modules_all_good_returns_empty_errors() {
     s.library_paths.push(PathBuf::from(FIFO_VHD));
 
     let (modules, errors) = s.resolve_modules();
-    assert_eq!(modules.len(), 2);
+    // The two modules of the sources, and the built-in gates.
+    let from_sources = modules
+        .iter()
+        .filter(|m| hdl_compose::gates::Gate::of(&m.name).is_none())
+        .count();
+    assert_eq!(from_sources, 2);
+    assert_eq!(modules.len(), 2 + hdl_compose::gates::modules().len());
     assert!(errors.is_empty());
 }

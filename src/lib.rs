@@ -2,6 +2,7 @@ pub mod board;
 pub mod codegen;
 pub mod designs;
 pub mod floorplan;
+pub mod gates;
 pub mod groups;
 #[cfg(feature = "gui")]
 pub mod gui;

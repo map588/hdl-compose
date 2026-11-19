@@ -3,9 +3,10 @@ use std::fmt::Write;
 
 use crate::codegen::{
     CodegenError, check_errors, check_no_dirty_instances, collect_internal_nets,
-    collect_top_intermediates, find_top_port_context, port_type_to_vhdl, port_type_to_vhdl_signal,
-    resolve_port_type,
+    collect_top_intermediates, find_top_port_context, gate_operands, port_type_to_vhdl,
+    port_type_to_vhdl_signal, resolve_port_type,
 };
+use crate::gates::Gate;
 use crate::nets::{Nets, resolve_nets};
 use crate::schematic::Diagnostic;
 use crate::types::*;
@@ -78,7 +79,10 @@ pub fn generate_vhdl(
 
     for inst in &sorted_instances {
         if !seen_modules.contains(&inst.module_ref) {
-            if let Some(module) = lib_map.get(inst.module_ref.as_str()) {
+            // A gate is an assignment: it has no component.
+            if let Some(module) = lib_map.get(inst.module_ref.as_str())
+                && Gate::of(&inst.module_ref).is_none()
+            {
                 emit_component(&mut out, module);
                 writeln!(out).unwrap();
             }
@@ -108,7 +112,9 @@ pub fn generate_vhdl(
 
     // Instance statements (alphabetical)
     for inst in &sorted_instances {
-        if let Some(module) = lib_map.get(inst.module_ref.as_str()) {
+        if let Some(gate) = Gate::of(&inst.module_ref) {
+            emit_gate(&mut out, schematic, &nets, inst, &gate);
+        } else if let Some(module) = lib_map.get(inst.module_ref.as_str()) {
             emit_instance(&mut out, schematic, &nets, inst, module);
             writeln!(out).unwrap();
         }
@@ -288,6 +294,15 @@ fn emit_instance(
         writeln!(out, "      {} => {}{}", lhs, rhs, sep).unwrap();
     }
     writeln!(out, "    );").unwrap();
+}
+
+/// Write the assignment of a gate, with the instance name as its label.
+fn emit_gate(out: &mut String, schematic: &Schematic, nets: &Nets, inst: &Instance, gate: &Gate) {
+    let render = |net_ref: &NetRef| render_rhs_vhdl(schematic, nets, net_ref);
+    if let Some((output, inputs)) = gate_operands(nets, inst, gate, render) {
+        writeln!(out, "  {} : {output} <= {};", inst.name, gate.vhdl(&inputs)).unwrap();
+        writeln!(out).unwrap();
+    }
 }
 
 /// Render a NetRef as a VHDL association RHS: the net, with `(i)` for a

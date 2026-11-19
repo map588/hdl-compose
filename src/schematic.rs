@@ -453,6 +453,8 @@ impl Schematic {
                 Err(e) => errors.push((path.clone(), e)),
             }
         }
+        // Each design has the built-in gates.
+        modules.extend(crate::gates::modules());
         (modules, errors)
     }
 
@@ -600,6 +602,38 @@ impl Schematic {
             let module_ports: HashMap<&str, &PortDef> = module_def
                 .map(|m| m.ports.iter().map(|p| (p.name.as_str(), p)).collect())
                 .unwrap_or_default();
+
+            // A gate is an assignment in the generated HDL. An input with
+            // no connection leaves the expression with no operand, and an
+            // assignment has no place for the slice of a port.
+            if let Some(gate) = crate::gates::Gate::of(&inst.module_ref) {
+                for port in gate.op.inputs() {
+                    let pin = NetRef::InstancePort(inst.name.clone(), port.to_string());
+                    let tied = matches!(inst.port_map.get(*port), Some(Some(_)));
+                    if !tied && nets.net_for(&pin).is_none() {
+                        diags.push(
+                            Diagnostic::error(format!(
+                                "input '{port}' of the logic gate '{}' is unconnected",
+                                inst.name
+                            ))
+                            .with_instance(&inst.name)
+                            .with_port(port),
+                        );
+                    }
+                }
+                let mut sliced: Vec<&String> = inst.consumer_slices.keys().collect();
+                sliced.sort();
+                for port in sliced {
+                    diags.push(
+                        Diagnostic::error(format!(
+                            "port '{port}' of the logic gate '{}' has a slice; a gate connects its full port",
+                            inst.name
+                        ))
+                        .with_instance(&inst.name)
+                        .with_port(port),
+                    );
+                }
+            }
 
             // Check each port map entry
             for (port_name, net_ref_opt) in &inst.port_map {
@@ -1282,6 +1316,52 @@ mod tests {
             diags
                 .iter()
                 .any(|d| d.is_error() && d.message.contains("alias 'sys_clk'"))
+        );
+    }
+
+    /// A gate is an assignment in the generated HDL: each input needs a
+    /// value, and no port can have a slice.
+    #[test]
+    fn validate_gate_inputs_and_slices() {
+        let lib = crate::gates::modules();
+        let mut s = Schematic::new("top", Language::Vhdl);
+        for (name, direction) in [("a", Direction::In), ("y", Direction::Out)] {
+            s.top_ports.push(PortDef {
+                name: name.into(),
+                direction,
+                port_type: PortType::StdLogic,
+                bundle: None,
+            });
+        }
+        s.add_instance("g", "$and").unwrap();
+        s.set_port_map_entry("g", "a", Some(NetRef::TopPort("a".into())))
+            .unwrap();
+        s.set_port_map_entry("g", "y", Some(NetRef::TopPort("y".into())))
+            .unwrap();
+        let errors = |s: &Schematic| -> Vec<String> {
+            s.validate(&lib)
+                .into_iter()
+                .filter(|d| d.is_error())
+                .map(|d| d.message)
+                .collect()
+        };
+        assert_eq!(
+            errors(&s),
+            ["input 'b' of the logic gate 'g' is unconnected"]
+        );
+
+        // A constant is a value for an input.
+        s.set_port_map_entry("g", "b", Some(NetRef::Constant("'1'".into())))
+            .unwrap();
+        assert_eq!(errors(&s), Vec::<String>::new());
+
+        s.get_instance_mut("g")
+            .unwrap()
+            .consumer_slices
+            .insert("a".into(), SliceExpr::Bit(0));
+        assert_eq!(
+            errors(&s),
+            ["port 'a' of the logic gate 'g' has a slice; a gate connects its full port"]
         );
     }
 

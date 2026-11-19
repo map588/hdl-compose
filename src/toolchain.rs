@@ -477,6 +477,10 @@ pub fn dependency_ordered_sources(library: &[ModuleDef]) -> Vec<PathBuf> {
     // so every module in it has its dependencies analyzed beforehand.
     let mut files: Vec<PathBuf> = Vec::new();
     for &i in order.iter().rev() {
+        // A built-in gate has no source file.
+        if crate::gates::Gate::of(&library[i].name).is_some() {
+            continue;
+        }
         let p = &library[i].source_path;
         if !files.contains(p) {
             files.push(p.clone());
@@ -602,6 +606,8 @@ pub fn stage(
     let leaf_modules: Vec<String> = schematic
         .instances
         .iter()
+        // A gate is logic of the generated file, not a module.
+        .filter(|instance| crate::gates::Gate::of(&instance.module_ref).is_none())
         .map(|instance| instance.module_ref.clone())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()

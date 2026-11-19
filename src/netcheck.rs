@@ -129,6 +129,17 @@ fn connected_positions(port_type: &PortType, consumer: Option<&SliceExpr>) -> Op
         .collect()
 }
 
+/// True when `name` is the instance of a built-in gate. The generated HDL
+/// has an assignment for a gate, and yosys makes logic cells with names of
+/// its own from it. The check thus ignores the pins of a gate on the two
+/// sides: it does not check the connections to a gate.
+fn is_gate_instance(schematic: &Schematic, name: &str) -> bool {
+    schematic
+        .instances
+        .iter()
+        .any(|i| i.name == name && crate::gates::Gate::of(&i.module_ref).is_some())
+}
+
 /// The connections of the schematic, from `resolve_nets`. The groups have
 /// no effect. A bound that uses a top-level generic is evaluated at the
 /// default value of that generic, because yosys elaborates the top level
@@ -150,6 +161,10 @@ pub fn expected(schematic: &Schematic, library: &[ModuleDef]) -> Expected {
                 Some(((None, fold(name, fold_case)), positions))
             }
             NetRef::InstancePort(instance_name, port_name) => {
+                // A gate is not a cell with this name in the netlist.
+                if is_gate_instance(schematic, instance_name) {
+                    return None;
+                }
                 let pin = (
                     Some(fold(instance_name, fold_case)),
                     fold(port_name, fold_case),
@@ -215,7 +230,14 @@ pub fn expected(schematic: &Schematic, library: &[ModuleDef]) -> Expected {
 
 /// The connections in the netlist that yosys wrote as JSON for the module
 /// `top`. Each cell of the module must be an instance of a library module.
-pub fn observed(json: &str, top: &str, fold_case: bool) -> Result<Connectivity, String> {
+/// With `gates` the module can also have logic cells, for the gates of the
+/// schematic; the function ignores them.
+pub fn observed(
+    json: &str,
+    top: &str,
+    fold_case: bool,
+    gates: bool,
+) -> Result<Connectivity, String> {
     let netlist: serde_json::Value =
         serde_json::from_str(json).map_err(|e| format!("the netlist is not JSON: {e}"))?;
     let module = netlist["modules"]
@@ -247,6 +269,9 @@ pub fn observed(json: &str, top: &str, fold_case: bool) -> Result<Connectivity, 
     for (name, cell) in module["cells"].as_object().into_iter().flatten() {
         let cell_type = cell["type"].as_str().unwrap_or_default();
         if cell_type.starts_with('$') {
+            if gates {
+                continue;
+            }
             return Err(format!(
                 "the top level has logic of its own (a `{cell_type}` cell)"
             ));
@@ -317,7 +342,11 @@ pub fn compare(
 ) -> Result<Outcome, String> {
     let fold_case = schematic.language == Language::Vhdl;
     let expected = expected(schematic, library);
-    let mut observed = observed(json, &schematic.top_name, fold_case)?;
+    let gates = schematic
+        .instances
+        .iter()
+        .any(|i| crate::gates::Gate::of(&i.module_ref).is_some());
+    let mut observed = observed(json, &schematic.top_name, fold_case, gates)?;
     if !expected.unchecked.is_empty() {
         observed = observed
             .into_iter()
@@ -509,6 +538,29 @@ mod tests {
         };
         assert_eq!(lines.len(), 8);
         assert!(lines[0].starts_with("dst.d bit 0: the schematic connects it to nothing;"));
+    }
+
+    /// A logic cell in the top level is an error of codegen, but not when
+    /// the schematic has gates: yosys makes such cells from them.
+    #[test]
+    fn a_logic_cell_is_accepted_only_for_a_schematic_with_gates() {
+        let json = r#"{"modules": {"top": {"ports": {}, "cells": {
+            "$and$top.vhd:9$1": {"type": "$and", "connections": {"A": [2], "B": [3], "Y": [4]}}
+        }}}}"#;
+        assert!(observed(json, "top", true, false).is_err());
+        assert_eq!(observed(json, "top", true, true), Ok(Connectivity::new()));
+    }
+
+    /// The pins of a gate are not in the expected connections.
+    #[test]
+    fn expected_has_no_pin_of_a_gate() {
+        let (mut s, mut library) = design();
+        library.extend(crate::gates::modules());
+        let before = expected(&s, &library).nets;
+        s.add_instance("g", "$not").unwrap();
+        s.set_port_map_entry("g", "a", Some(NetRef::TopPort("clk".into())))
+            .unwrap();
+        assert_eq!(expected(&s, &library).nets, before);
     }
 
     #[test]
