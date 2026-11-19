@@ -27,6 +27,7 @@
 #include <QContextMenuEvent>
 #include <QDateTime>
 #include <QDialog>
+#include <QDropEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileSystemWatcher>
@@ -39,6 +40,7 @@
 #include <QMainWindow>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTest>
@@ -1152,6 +1154,52 @@ void GuiTests::generatedDesignIsInTheLibraryOfANewDesignAndADoubleClickPlacesIt(
     QCOMPARE(blocks_on_canvas(), 0);
     QCOMPARE(g->state->library_path_count(), 0);
     QCOMPARE(libraryRows(), QStringList{QStringLiteral("top (design)")});
+    QVERIFY(!g->state->can_undo());
+}
+
+// A drag of a module from the library list ends with a drop on the canvas.
+// The offscreen platform has no drag session, so the test sends the events
+// of the drop itself. The data is the data that `LibraryView::startDrag`
+// gives: the module name of the row. The block lands in the column of the
+// pointer, and the drop is one undo step.
+void GuiTests::dropOfAModuleFromTheLibraryPlacesABlockInTheColumnOfThePointer() {
+    QCOMPARE(libraryRows(), (QStringList{QStringLiteral("source"), QStringLiteral("sink")}));
+    const QModelIndex row = libraryView()->model()->index(1, 0);
+    QMimeData module;
+    module.setData(QString::fromLatin1(kModuleMimeType), row.data(Qt::UserRole).toString().toUtf8());
+    QWidget *viewport = g->view->viewport();
+    const QPoint at = viewport->rect().center();
+    const qreal column = std::round(g->view->mapToScene(at).x() / kColumnPitch);
+
+    // The canvas refuses data that is not a module.
+    QMimeData text;
+    text.setText(QStringLiteral("sink"));
+    QDragEnterEvent refused(QPointF(at), Qt::CopyAction, &text, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(viewport, &refused);
+    QVERIFY(!refused.isAccepted());
+    QDropEvent no_drop(QPointF(at), Qt::CopyAction, &text, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(viewport, &no_drop);
+    QCOMPARE(blocks_on_canvas(), 0);
+
+    QDragEnterEvent enter(QPointF(at), Qt::CopyAction, &module, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(viewport, &enter);
+    QVERIFY(enter.isAccepted());
+    QDragMoveEvent move(QPointF(at), Qt::CopyAction, &module, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(viewport, &move);
+    QVERIFY(move.isAccepted());
+    QDropEvent drop(QPointF(at), Qt::CopyAction, &module, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(viewport, &drop);
+    QVERIFY(drop.isAccepted());
+    settle();
+
+    QCOMPARE(blocks_on_canvas(), 1);
+    QCOMPARE(g->state->instance_name(0), QStringLiteral("sink_0"));
+    InstanceItem *block = blocks().first();
+    QCOMPARE(block->pos().x() + block->width() / 2.0, column * kColumnPitch);
+
+    action(QStringLiteral("Undo"))->trigger();
+    settle();
+    QCOMPARE(blocks_on_canvas(), 0);
     QVERIFY(!g->state->can_undo());
 }
 

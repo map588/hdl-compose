@@ -37,4 +37,5 @@ class GuiTests : public QObject {
     void clickInTheListOfDesignsOpensThatDesign();
     void generatedDesignIsInTheLibraryOfANewDesignAndADoubleClickPlacesIt();
     void contextMenuRemovesAConnectionToAPortThatIsGone();
+    void dropOfAModuleFromTheLibraryPlacesABlockInTheColumnOfThePointer();
 };
