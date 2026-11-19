@@ -1,8 +1,4 @@
 {
-  "extra_sources": [
-    "rtl/audio/i2s_tx.vhd",
-    "sim/selectio_sim.vhd"
-  ],
   "exclude_sources": ["rtl/audio/clocked_data_out.v"],
   "ghdl_synth_flags": ["--latches"]
 }

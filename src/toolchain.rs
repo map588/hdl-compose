@@ -2840,8 +2840,8 @@ mod config_tests {
         let own = ToolchainConfig::load_for(&folder.join("synth_top.hdlc")).unwrap();
         assert_eq!(
             sources_of(&own).1,
-            ["rtl/audio/i2s_tx.vhd", "sim/selectio_sim.vhd"],
-            "the config of the parent has only its own sources"
+            Vec::<String>::new(),
+            "the config of the parent has no extra source of its own"
         );
         assert!(own.vhdl_libraries.is_empty());
         let (libraries, extra, exclude) = sources_of(&load("synth_top.hdlc"));
@@ -2858,8 +2858,6 @@ mod config_tests {
                 "rtl/registers/addressed_pl_reg.vhd",
                 "rtl/registers/map_reg.vhd",
                 "rtl/midi/edge_detect.vhd",
-                "rtl/audio/i2s_tx.vhd",
-                "sim/selectio_sim.vhd",
             ]
         );
         assert_eq!(exclude, ["rtl/audio/clocked_data_out.v"]);

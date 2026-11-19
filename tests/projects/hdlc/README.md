@@ -47,14 +47,16 @@ hdlc synth synth_top.hdlc     # yosys synthesizability + cell stats
 
 `*.toolchain.json` sidecars tell those commands what the .hdlc files can't:
 the `loot` LUT packages (analyzed as a named library), leaf dependencies of
-the library modules (register chain, i2s_tx, edge_detect), the GHDL-only
-`selectio_sim.vhd`, the Vivado-only `clocked_data_out.v` exclusion, and
-`--latches` for the midi_processor state decode.
+the library modules (register chain, edge_detect), the Vivado-only
+`clocked_data_out.v` exclusion, and `--latches` for the midi_processor
+state decode.
 
 `synth_top` uses the design `voice_chain`. A tool run of `synth_top` takes
 the `loot` packages and the leaf sources from `voice_chain.toolchain.json`,
-so `synth_top.toolchain.json` holds only what `synth_top` adds: `i2s_tx`,
-`selectio_sim.vhd`, the exclusion and the `--latches` flag.
+so `synth_top.toolchain.json` holds only what `synth_top` adds: the
+exclusion and the `--latches` flag. `i2s_tx.vhd` is a library source of the
+design, and no source instantiates `selectio`, so the tool runs do not need
+`sim/selectio_sim.vhd`; `run_sims.sh` still compiles it.
 
 Net convention: a `port_map` entry states that two pins are connected, and
 its direction has no effect. `hdlc` merges all pins that reference each
