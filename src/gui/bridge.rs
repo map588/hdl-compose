@@ -2496,6 +2496,10 @@ impl qobject::AppState {
         }
         if pa.is_top || pb.is_top {
             let (top, pin) = if pa.is_top { (&pa, &pb) } else { (&pb, &pa) };
+            // A top-level input drives an input pin.
+            if top.direction == 0 && pin.direction == 0 {
+                return done(self.as_mut().drive_load(pin, &top.port), false);
+            }
             let committed = self.as_mut().set_port_map_entry(
                 &QString::from(&pin.instance),
                 &QString::from(&pin.port),
@@ -2531,12 +2535,45 @@ impl qobject::AppState {
         } else {
             format!("{}.{}", driver.instance, driver.port)
         };
-        let committed = self.as_mut().set_port_map_entry(
-            &QString::from(&load.instance),
-            &QString::from(&load.port),
-            &QString::from(&rhs),
-        );
-        done(committed, false)
+        done(self.as_mut().drive_load(load, &rhs), false)
+    }
+
+    /// Connect the pin `load` to the driver `rhs`. When `load` is on a net
+    /// with no driver (input pins that the user joined), each pin of that
+    /// net gets the driver, in one undo step. A change of `load` only
+    /// would leave the other pins on the net with no driver.
+    fn drive_load(mut self: Pin<&mut Self>, load: &PinInfo, rhs: &str) -> bool {
+        let pin = NetRef::InstancePort(load.instance.clone(), load.port.clone());
+        let mut pins = vec![pin.clone()];
+        {
+            let r = self.as_ref();
+            let m = r.rust();
+            if let Some(s) = m.schematic.as_ref() {
+                let nets = crate::nets::resolve_nets(s, &m.library);
+                // A top-level port is on a net through the entry of a pin,
+                // so a net with one stays as it is.
+                if let Some(net) = nets.net_for(&pin)
+                    && net.drivers.is_empty()
+                    && !net.has_top
+                {
+                    pins.extend(net.members.iter().filter(|member| **member != pin).cloned());
+                }
+            }
+        }
+        let rhs = QString::from(rhs);
+        self.as_mut().begin_batch();
+        let mut committed = true;
+        for member in &pins {
+            if let NetRef::InstancePort(instance, port) = member {
+                committed &= self.as_mut().set_port_map_entry(
+                    &QString::from(instance),
+                    &QString::from(port),
+                    &rhs,
+                );
+            }
+        }
+        self.as_mut().end_batch();
+        committed
     }
 
     /// Input-to-input wiring: join two undriven (or differently-driven)
@@ -6012,6 +6049,52 @@ mod tests {
         assert!(!*state.dirty(), "redo gave the model of the file");
         assert!(state.pin_mut().redo());
         assert!(*state.dirty());
+    }
+
+    /// Regression: two input pins joined with no driver have a warning
+    /// ring. A driver connected to one pin of the pair replaced the entry
+    /// of that pin only. The other pin stayed alone on the net with no
+    /// driver, and kept its ring.
+    #[test]
+    fn a_driver_for_one_pin_of_a_joined_net_drives_each_pin() {
+        for driven in ["u_b.e", "u_c.e"] {
+            let (_dir, mut state) = state_with_library();
+            assert!(state.pin_mut().add_instance(&q("u_a"), &q("source")));
+            assert!(state.pin_mut().add_instance(&q("u_b"), &q("sink")));
+            assert!(state.pin_mut().add_instance(&q("u_c"), &q("sink")));
+            assert!(
+                state
+                    .pin_mut()
+                    .connect_pins(&q("u_b.e"), &q("u_c.e"))
+                    .committed
+            );
+            assert_eq!(state.pin_issue_level(&q("u_b.e")), 1);
+            assert_eq!(state.pin_issue_level(&q("u_c.e")), 1);
+            let joined = model(&state);
+
+            assert!(
+                state
+                    .pin_mut()
+                    .connect_pins(&q("u_a.q"), &q(driven))
+                    .committed
+            );
+            for instance in ["u_b", "u_c"] {
+                assert_eq!(
+                    state.port_map_entry(&q(instance), &q("e")).to_string(),
+                    "u_a.q",
+                    "{instance}.e after a driver on {driven}"
+                );
+                assert_eq!(
+                    state.pin_issue_level(&q(&format!("{instance}.e"))),
+                    0,
+                    "{instance}.e after a driver on {driven}: {}",
+                    state.pin_issue_message(&q(&format!("{instance}.e")))
+                );
+            }
+            // The driver for the pair is one undo step.
+            assert!(state.pin_mut().undo());
+            assert_eq!(model(&state), joined);
+        }
     }
 
     /// Regression: the menu followed five signals of the model. To lock a
