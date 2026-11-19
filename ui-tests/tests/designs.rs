@@ -114,6 +114,33 @@ fn the_title_marks_changes_that_are_not_saved() -> Result<(), Failure> {
     Ok(())
 }
 
+/// The menu "Logic" places a built-in gate, and a wire connects its input.
+#[test]
+fn the_logic_menu_places_a_gate_and_a_wire_connects_it() -> Result<(), Failure> {
+    let workspace = Workspace::with_example();
+    let mut app = workspace.open(EXAMPLE)?;
+
+    app.click(menu("Logic"))?;
+    app.click(menu("Basic Logic"))?;
+    app.click(menu("NOT"))?;
+    app.expect(tree_item("not_0 : $not")).exists()?;
+    // The input of the gate has no connection.
+    app.expect(button("No issues")).absent()?;
+
+    // The input of the gate gets the top-level port `clk`.
+    app.click(hdlc_ui_tests::top_port("clk"))?;
+    app.click(hdlc_ui_tests::pin("not_0", "a"))?;
+    app.expect(hdlc_ui_tests::wire("top:clk", "not_0.a"))
+        .exists()?;
+    app.click(button("Save"))?;
+    app.expect(role("StatusBar")).name("Saved")?;
+    assert_eq!(
+        workspace.saved(EXAMPLE).connection("not_0", "a"),
+        serde_json::json!({"TopPort": "clk"})
+    );
+    Ok(())
+}
+
 #[test]
 fn undo_removes_the_added_block_and_redo_adds_it_again() -> Result<(), Failure> {
     let workspace = Workspace::with_example();

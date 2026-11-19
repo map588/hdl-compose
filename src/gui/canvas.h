@@ -41,10 +41,25 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <functional>
 #include <utility>
 #include <vector>
 
 namespace hdlc {
+
+// Add the menus "Basic Logic" and "Vector Logic" to `menu`, with one entry
+// for each built-in gate. `place` gets the module name of the chosen gate.
+inline void add_gate_menus(QMenu *menu, AppState *state, const std::function<void(const QString &)> &place) {
+    QMenu *basic = menu->addMenu(QStringLiteral("Basic Logic"));
+    QMenu *vector = menu->addMenu(QStringLiteral("Vector Logic"));
+    const int count = state->gate_count();
+    for (int i = 0; i < count; ++i) {
+        const QString module = state->gate_name(i);
+        QMenu *group = state->gate_is_vector(i) ? vector : basic;
+        QObject::connect(group->addAction(state->gate_label(i)), &QAction::triggered, group,
+                         [place, module]() { place(module); });
+    }
+}
 
 // --- WireTool ---------------------------------------------------------------
 
@@ -247,6 +262,21 @@ class CanvasView : public QGraphicsView {
             }
         }
         return QGraphicsView::viewportEvent(event);
+    }
+
+    // A right click on the empty canvas offers the built-in gates. The gate
+    // goes where the pointer is. A right click on an item is for the menu
+    // of that item.
+    void contextMenuEvent(QContextMenuEvent *event) override {
+        if (itemAt(event->pos()) != nullptr || !m_state->has_project()) {
+            QGraphicsView::contextMenuEvent(event);
+            return;
+        }
+        const QPointF at = mapToScene(event->pos());
+        QMenu menu;
+        add_gate_menus(&menu, m_state, [this, at](const QString &module) { placeModule(module, at); });
+        menu.exec(event->globalPos());
+        event->accept();
     }
 
     void mousePressEvent(QMouseEvent *event) override {

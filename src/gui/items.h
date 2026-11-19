@@ -43,6 +43,12 @@
 
 namespace hdlc {
 
+// The symbol of a built-in gate (module name `$and`, `$nor_vec`, ...), in
+// the rectangle `box`: the usual shape of the operation, with a circle at
+// the output for an operation that inverts. An empty path for a module that
+// is not a gate.
+QPainterPath gate_symbol(const QString &module, const QRectF &box);
+
 class WireTool;
 class CanvasLayer;
 

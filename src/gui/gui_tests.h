@@ -38,4 +38,7 @@ class GuiTests : public QObject {
     void generatedDesignIsInTheLibraryOfANewDesignAndADoubleClickPlacesIt();
     void contextMenuRemovesAConnectionToAPortThatIsGone();
     void dropOfAModuleFromTheLibraryPlacesABlockInTheColumnOfThePointer();
+    void logicMenuPlacesAGate();
+    void rightClickOnTheEmptyCanvasPlacesAGateAtThePointer();
+    void eachGateHasASymbolOfItsOwn();
 };

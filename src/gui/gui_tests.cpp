@@ -272,6 +272,30 @@ void chooseFromNextMenu(const QString &text, int *answered) {
         answered);
 }
 
+// Trigger the entry `text` of the submenu `group` of the next menu that
+// opens.
+void chooseFromSubmenuOfNextMenu(const QString &group, const QString &text, int *answered) {
+    answerNext(
+        [group, text](QWidget *open) {
+            auto *menu = qobject_cast<QMenu *>(open);
+            if (!menu)
+                return false;
+            for (QAction *submenu : menu->actions()) {
+                if (!submenu->menu() || submenu->text() != group)
+                    continue;
+                for (QAction *a : submenu->menu()->actions()) {
+                    if (a->text() == text) {
+                        a->trigger();
+                        menu->close();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        },
+        answered);
+}
+
 // Click the button with the text `text` of the next message box that opens.
 void clickTextInNextMessageBox(const QString &text, int *answered) {
     answerNext(
@@ -1201,6 +1225,82 @@ void GuiTests::dropOfAModuleFromTheLibraryPlacesABlockInTheColumnOfThePointer() 
     settle();
     QCOMPARE(blocks_on_canvas(), 0);
     QVERIFY(!g->state->can_undo());
+}
+
+// The menu "Logic" of the menu bar has the built-in gates in two groups. An
+// entry places its gate as a block. The name of the block has no `$`, and
+// an input with no connection is an error. The library list has no gate.
+void GuiTests::logicMenuPlacesAGate() {
+    QHash<QString, QStringList> entries;
+    QAction *not_gate = nullptr;
+    for (QMenu *menu : g->window->findChildren<QMenu *>()) {
+        for (QAction *a : menu->actions()) {
+            entries[menu->title()] << a->text();
+            if (menu->title() == QStringLiteral("Basic Logic") && a->text() == QStringLiteral("NOT"))
+                not_gate = a;
+        }
+    }
+    const QStringList gates{QStringLiteral("AND"),  QStringLiteral("OR"),  QStringLiteral("XOR"),
+                            QStringLiteral("NOT"),  QStringLiteral("NAND"), QStringLiteral("NOR"),
+                            QStringLiteral("XNOR")};
+    QCOMPARE(entries.value(QStringLiteral("Basic Logic")), gates);
+    QCOMPARE(entries.value(QStringLiteral("Vector Logic")), gates);
+    QCOMPARE(libraryRows(), (QStringList{QStringLiteral("source"), QStringLiteral("sink")}));
+
+    QVERIFY(not_gate);
+    not_gate->trigger();
+    settle();
+    QCOMPARE(blocks_on_canvas(), 1);
+    QCOMPARE(g->state->instance_name(0), QStringLiteral("not_0"));
+    QCOMPARE(g->state->instance_module(0), QStringLiteral("$not"));
+    QCOMPARE(pinCount(blocks().first()), 2);
+    QCOMPARE(g->state->validation_error_count(), 1);
+
+    action(QStringLiteral("Undo"))->trigger();
+    settle();
+    QCOMPARE(blocks_on_canvas(), 0);
+}
+
+// A right click on the empty canvas opens the menu of the gates, and the
+// gate goes into the column of the pointer.
+void GuiTests::rightClickOnTheEmptyCanvasPlacesAGateAtThePointer() {
+    const QPoint at = g->view->viewport()->rect().center();
+    const qreal column = std::round(g->view->mapToScene(at).x() / kColumnPitch);
+
+    int chosen = 0;
+    chooseFromSubmenuOfNextMenu(QStringLiteral("Vector Logic"), QStringLiteral("XOR"), &chosen);
+    QContextMenuEvent event(QContextMenuEvent::Mouse, at, g->view->viewport()->mapToGlobal(at));
+    QApplication::sendEvent(g->view->viewport(), &event);
+    settle();
+
+    QCOMPARE(chosen, 1);
+    QCOMPARE(blocks_on_canvas(), 1);
+    QCOMPARE(g->state->instance_name(0), QStringLiteral("xor_vec_0"));
+    QCOMPARE(g->state->instance_module(0), QStringLiteral("$xor_vec"));
+    InstanceItem *block = blocks().first();
+    QCOMPARE(block->pos().x() + block->width() / 2.0, column * kColumnPitch);
+}
+
+// The block of a gate shows the symbol of its operation. The symbols of two
+// operations are different, a vector gate has the symbol of its scalar gate,
+// and a module of the library has no symbol.
+void GuiTests::eachGateHasASymbolOfItsOwn() {
+    const QRectF box(10, 20, 60, 40);
+    QList<QPainterPath> symbols;
+    for (int i = 0; i < g->state->gate_count(); ++i) {
+        const QString module = g->state->gate_name(i);
+        const QPainterPath symbol = gate_symbol(module, box);
+        QVERIFY2(!symbol.isEmpty(), qPrintable(module));
+        QVERIFY2(box.adjusted(-0.5, -0.5, 0.5, 0.5).contains(symbol.boundingRect()), qPrintable(module));
+        if (g->state->gate_is_vector(i)) {
+            QCOMPARE(symbol, gate_symbol(module.chopped(4), box));
+        } else {
+            QVERIFY2(!symbols.contains(symbol), qPrintable(module));
+            symbols << symbol;
+        }
+    }
+    QCOMPARE(symbols.size(), 7);
+    QVERIFY(gate_symbol(QStringLiteral("source"), box).isEmpty());
 }
 
 // A module lost a port while the design was closed. The connection to that

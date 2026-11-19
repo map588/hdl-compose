@@ -26,8 +26,14 @@ QString allocate_instance_name(AppState *state, const QString &module) {
     for (int i = 0; i < count; ++i) {
         existing << state->instance_name(i);
     }
+    // The name of a built-in gate starts with `$`, and that is not a
+    // character of an HDL name.
+    QString base = module;
+    if (base.startsWith(QLatin1Char('$'))) {
+        base.remove(0, 1);
+    }
     for (int i = 0;; ++i) {
-        QString candidate = QStringLiteral("%1_%2").arg(module).arg(i);
+        QString candidate = QStringLiteral("%1_%2").arg(base).arg(i);
         if (!existing.contains(candidate)) {
             return candidate;
         }

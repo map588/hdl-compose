@@ -533,6 +533,58 @@ void InstanceItem::layoutPins() {
     setRect(0, 0, m_width, kInstanceHeaderHeight + body);
 }
 
+QPainterPath gate_symbol(const QString &module, const QRectF &box) {
+    QPainterPath path;
+    if (!module.startsWith(QLatin1Char('$'))) {
+        return path;
+    }
+    QString op = module.mid(1);
+    if (op.endsWith(QStringLiteral("_vec"))) {
+        op.chop(4);
+    }
+    const bool inverts = op == QStringLiteral("not") || op == QStringLiteral("nand")
+                         || op == QStringLiteral("nor") || op == QStringLiteral("xnor");
+    // The circle of an inverted output takes the right-hand end of the box.
+    const qreal bubble = inverts ? box.height() * 0.2 : 0.0;
+    const qreal x0 = box.left(), x1 = box.right() - bubble;
+    const qreal y0 = box.top(), y1 = box.bottom(), ym = box.center().y();
+    const qreal w = x1 - x0, h = box.height();
+
+    if (op == QStringLiteral("not")) {
+        path.moveTo(x0, y0);
+        path.lineTo(x1, ym);
+        path.lineTo(x0, y1);
+        path.closeSubpath();
+    } else if (op == QStringLiteral("and") || op == QStringLiteral("nand")) {
+        // A flat back and a half circle at the front.
+        path.moveTo(x0, y0);
+        path.lineTo(x1 - h / 2.0, y0);
+        path.arcTo(QRectF(x1 - h, y0, h, h), 90, -180);
+        path.lineTo(x0, y1);
+        path.closeSubpath();
+    } else if (op == QStringLiteral("or") || op == QStringLiteral("nor") || op == QStringLiteral("xor")
+               || op == QStringLiteral("xnor")) {
+        // A curved back and a pointed front. XOR has a second curve behind
+        // the back.
+        const bool exclusive = op.startsWith(QLatin1Char('x'));
+        const qreal back = exclusive ? x0 + w * 0.15 : x0;
+        path.moveTo(back, y0);
+        path.quadTo(back + w * 0.55, y0, x1, ym);
+        path.quadTo(back + w * 0.55, y1, back, y1);
+        path.quadTo(back + w * 0.25, ym, back, y0);
+        if (exclusive) {
+            path.moveTo(x0, y0);
+            path.quadTo(x0 + w * 0.25, ym, x0, y1);
+        }
+    } else {
+        return path;
+    }
+    if (inverts) {
+        path.addEllipse(QPointF(x1 + bubble / 2.0, ym), bubble / 2.0, bubble / 2.0);
+    }
+    return path;
+}
+
 void InstanceItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) {
     QRectF r = rect();
     painter->setRenderHint(QPainter::Antialiasing);
@@ -589,6 +641,19 @@ void InstanceItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *opti
     painter->drawText(QRectF(r.left() + 12, r.top() + 30, r.width() - 24, 16),
                       Qt::AlignLeft | Qt::AlignVCenter,
                       painter->fontMetrics().elidedText(m_module, Qt::ElideRight, static_cast<int>(r.width()) - 24));
+
+    // A built-in gate shows the symbol of its operation in the middle of
+    // the body, between the labels of its pins.
+    if (m_module.startsWith(QLatin1Char('$'))) {
+        const QRectF body(r.left(), r.top() + kInstanceHeaderHeight, r.width(), r.height() - kInstanceHeaderHeight);
+        const qreal symbol_h = body.height() - 10;
+        const qreal symbol_w = symbol_h * 1.5;
+        const QRectF box(body.center().x() - symbol_w / 2.0, body.center().y() - symbol_h / 2.0, symbol_w,
+                         symbol_h);
+        painter->setPen(QPen(QColor(232, 234, 238), 1.6));
+        painter->setBrush(QColor(58, 63, 72));
+        painter->drawPath(gate_symbol(m_module, box));
+    }
 
     // Locked blocks: padlock in the header's top-right corner.
     if (m_state->instance_locked(m_name)) {

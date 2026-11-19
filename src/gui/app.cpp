@@ -889,6 +889,15 @@ class MainWindow : public QMainWindow {
             "Re-place all blocks: drivers left of loads, wire length minimized, runs straightened"));
         auto *issuesAct = viewMenu->addAction(QStringLiteral("Validation &Issues..."));
 
+        // Logic menu: the built-in gates. An entry places its gate at the
+        // middle of the canvas.
+        auto *logicMenu = menuBar()->addMenu(QStringLiteral("&Logic"));
+        add_gate_menus(logicMenu, m_state, [this](const QString &module) {
+            if (!m_canvas->placeModuleAtCenter(module)) {
+                show_state_error(this, m_state, QStringLiteral("Add Gate"));
+            }
+        });
+
         // Toolchain menu — drives the CLI subcommands (check/synth/build/
         // flash) against the saved project via QProcess; output streams into
         // the Tool Output dock. Requires oss-cad-suite on PATH.
